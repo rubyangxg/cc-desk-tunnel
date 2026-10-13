@@ -6,12 +6,10 @@ import { join } from 'node:path';
 import type { IncomingMessage, RequestListener } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { WebSocket, WebSocketServer } from 'ws';
-import {
-  deleteSession,
-  forkSession,
-  getSessionMessages,
-  renameSession,
-} from '@anthropic-ai/claude-agent-sdk';
+import { nativeStore } from './native-store.ts';
+import { AccountPool, orderedAccounts } from './account-pool.ts';
+import { poolHandoff, canHandoff } from './pool-handoff.ts';
+import { accountStatus, accountLogout, NativeLogin } from './native-account.ts';
 import {
   authSchema,
   commandSchema,
@@ -42,10 +40,9 @@ import { runClaude, nativeDirectory, prepareNativeDirectory, readNativeStatus } 
 import type { ClaudeOptions } from './claude.ts';
 import { ClientReleases } from './client-release.ts';
 import { DomainError } from './errors.ts';
-import type { NativeLogin } from './native-account.ts';
 import { NativeInput } from './native-input.ts';
 import { completeOnboarding } from './native-onboarding.ts';
-import { readNativeSettings, updateNativeSettings } from './native-settings.ts';
+import { readNativeSettings, updateNativeSettings, settingsPath } from './native-settings.ts';
 import type { NativeTerminal } from './native-terminal.ts';
 import { simulate } from './simulation.ts';
 import { SessionStore } from './store.ts';
@@ -70,6 +67,7 @@ type Peer = {
   left: boolean;
   subscriptions: Set<string>;
   responses: Map<string, { command: string; response: Promise<ServerMessage> }>;
+  poolClient?: boolean;
 };
 // A run belongs to the computer its session is on, not to the connection that started it: connections come
 // and go with the network, and the CLI goes on working here meanwhile. `connectionId` only names the one that
@@ -91,6 +89,8 @@ export type Run = {
   open?: Fragment;
   input?: NativeInput;
   controls: { refresh?: () => Promise<void>; stopTask?: (taskId: string) => Promise<void> };
+  attempted?: Set<string>;
+  nativeId?: string;
 };
 type Terminal = { id: string; sessionId: string; owner: Peer; process?: NativeTerminal };
 // One of the user's computers, while it is connected or expected back: its connections, the door its commands
@@ -152,6 +152,13 @@ export function createProxyServer(options: ServerOptions) {
   const runs = new Map<string, Run>();
   const mutations = new Set<string>();
   const terminals = new Map<string, Terminal>();
+  const pool = options.claude
+    ? new AccountPool(store.database, store.directory, options.claude)
+    : undefined;
+  const poolLogins = new Map<string, Login>();
+  const poolProbes = new Map<string, AbortController>();
+  let poolRefresh: Promise<void> | undefined;
+  let poolTimer: NodeJS.Timeout | undefined;
   const seats = new Map<string, Seat>();
   const graceMs = options.graceMs ?? (options.claude ? 300_000 : 0);
   let login: Login | undefined;
@@ -288,10 +295,232 @@ export function createProxyServer(options: ServerOptions) {
   function updated(sessionId: string) {
     broadcast({ type: 'session.updated', session: store.get(sessionId).session });
   }
+  function accountBusy(id: string) {
+    if (pool?.locked.has(id)) return true;
+    return [...runs.keys(), ...terminals.keys(), ...mutations].some((sessionId) => {
+      try {
+        return (store.get(sessionId).session.accountId ?? 'default') === id;
+      } catch {
+        return false;
+      }
+    });
+  }
+  function publishPool(target?: Peer) {
+    if (!pool || closing) return;
+    const state = pool.snapshot();
+    for (const account of state.accounts) account.busy = accountBusy(account.id);
+    const message = { type: 'pool.state' as const, ...state };
+    if (target) send(target, message);
+    else for (const peer of peers) if (peer.authenticated && peer.poolClient) send(peer, message);
+  }
+  async function refreshPool() {
+    if (!pool || closing) return;
+    if (poolRefresh) return poolRefresh;
+    pool.refreshing = true;
+    publishPool();
+    poolRefresh = (async () => {
+      for (const account of pool.accounts) {
+        if (closing) break;
+        if (
+          !account.enabled ||
+          pool.locked.has(account.id) ||
+          poolLogins.has(account.id) ||
+          (account.id === 'default' && login)
+        )
+          continue;
+        const claude = pool.options(account.id);
+        try {
+          const identity = await accountStatus(claude.executable, claude.environment);
+          if (closing) break;
+          pool.update(account.id, {
+            loggedIn: identity.loggedIn,
+            email: identity.email,
+            subscriptionType: identity.subscriptionType,
+          });
+          if (!identity.loggedIn) {
+            pool.update(account.id, {
+              limits: null,
+              checkedAt: Date.now(),
+              error: '尚未登录或登录已失效',
+            });
+            publishPool();
+            continue;
+          }
+          const active = [...runs.values()].find(
+            (run) =>
+              (store.get(run.sessionId).session.accountId ?? 'default') === account.id &&
+              run.controls.refresh,
+          );
+          if (active?.controls.refresh) await active.controls.refresh();
+          else {
+            const controller = new AbortController();
+            poolProbes.set(account.id, controller);
+            const probeId =
+              account.id === 'default' ? '00000000-0000-4000-8000-000000000000' : account.id;
+            try {
+              const events = await readNativeStatus(
+                claude,
+                store.directory,
+                probeId,
+                probeId,
+                controller.signal,
+              );
+              const metrics = events.find((event) => event.type === 'native.metrics');
+              if (!closing && metrics?.type === 'native.metrics')
+                pool.observe(account.id, metrics.rateLimits, metrics.errors?.usage);
+            } finally {
+              poolProbes.delete(account.id);
+            }
+          }
+        } catch {
+          if (!closing)
+            pool.update(account.id, {
+              checkedAt: Date.now(),
+              error: '检测失败，请检查此账号的登录状态与服务网络',
+            });
+        }
+        publishPool();
+      }
+    })().finally(() => {
+      pool.refreshing = false;
+      poolRefresh = undefined;
+      publishPool();
+    });
+    return poolRefresh;
+  }
+  async function refreshFor(run: Run) {
+    let abort!: () => void;
+    const stopped = new Promise<void>((resolve) => {
+      abort = resolve;
+      run.controller.signal.addEventListener('abort', abort, { once: true });
+      if (run.controller.signal.aborted) resolve();
+    });
+    try {
+      await Promise.race([refreshPool(), stopped]);
+    } finally {
+      run.controller.signal.removeEventListener('abort', abort);
+    }
+  }
+  async function logoutAccount(id: string) {
+    const claude = pool!.options(id);
+    pool!.locked.add(id);
+    publishPool();
+    try {
+      await accountLogout(claude.executable, claude.environment);
+      pool!.update(id, {
+        loggedIn: false,
+        email: undefined,
+        subscriptionType: undefined,
+        limits: null,
+        checkedAt: Date.now(),
+        error: undefined,
+        blockedUntil: null,
+      });
+    } finally {
+      pool!.locked.delete(id);
+      publishPool();
+    }
+  }
+  async function poolCommand(peer: Peer, command: Extract<Command, { type: `pool.${string}` }>) {
+    if (!pool) throw new DomainError('native_unavailable', '请连接已升级的 Claude Code 代理服务。');
+    peer.poolClient = true;
+    if (command.type === 'pool.status') {
+      publishPool(peer);
+      if (command.refresh || pool.accounts.some((account) => account.checkedAt === null))
+        track(refreshPool());
+      return;
+    }
+    if (command.type === 'pool.add') {
+      pool.add(command.requestId, command.name);
+      publishPool();
+      return;
+    }
+    if (command.type === 'pool.configure') {
+      pool.configure(command.values);
+      publishPool();
+      return;
+    }
+    const id = command.accountId;
+    const account = pool.get(id);
+    if (command.type === 'pool.account.update') {
+      pool.update(id, {
+        ...(command.name !== undefined ? { name: command.name } : {}),
+        ...(command.enabled !== undefined ? { enabled: command.enabled } : {}),
+      });
+      publishPool();
+      return;
+    }
+    if (id === 'default' && login)
+      throw new DomainError('login_active', '原有账号正在其他页面登录，请先完成该流程。');
+    const current = poolLogins.get(id);
+    if (command.type === 'pool.account.code') {
+      if (!current?.url || current.owner !== peer)
+        throw new DomainError('login_inactive', '请在发起登录的窗口完成授权，或重新获取链接。');
+      current.process.submit(command.code);
+      return;
+    }
+    if (command.type === 'pool.account.cancel') {
+      current?.process.cancel();
+      return;
+    }
+    if (accountBusy(id) || pool.refreshing)
+      throw new DomainError('account_busy', '请等待该账号的任务或额度检测结束，再管理登录。');
+    if (current) throw new DomainError('login_active', '该账号已经在等待授权。');
+    const claude = pool.options(id);
+    if (command.type === 'pool.account.logout') {
+      await logoutAccount(id);
+      return;
+    }
+    pool.update(id, { error: undefined, limits: null });
+    const signing: Login = {
+      owner: peer,
+      process: new NativeLogin(
+        claude.executable,
+        (succeeded) => {
+          if (poolLogins.get(id) === signing) poolLogins.delete(id);
+          if (closing) return;
+          pool.update(id, {
+            login: null,
+            error:
+              succeeded || signing.process.cancelled ? undefined : '登录未完成，请重新获取授权链接',
+          });
+          if (succeeded) completeOnboarding(claude.environment?.CLAUDE_CONFIG_DIR);
+          publishPool();
+          track(refreshPool());
+        },
+        (notice) => {
+          if (!closing) {
+            pool.update(id, { error: notice });
+            publishPool();
+          }
+        },
+        undefined,
+        undefined,
+        claude.environment,
+      ),
+    };
+    poolLogins.set(id, signing);
+    try {
+      signing.url = await signing.process.url;
+    } catch {
+      throw new DomainError('login_failed', '官方登录命令未返回链接，请检查 CLI 和网络。');
+    }
+    pool.update(id, { login: { url: signing.url } });
+    publishPool();
+  }
 
   // Stores an event and sends it to the session's subscribers; quota readings also drive the usage periods.
   function record(sessionId: string, runId: string, payload: EventPayload) {
-    if (payload.type === 'native.metrics' && payload.rateLimits?.available)
+    const accountId = store.get(sessionId).session.accountId ?? 'default';
+    if (payload.type === 'native.metrics' && pool) {
+      pool.observe(accountId, payload.rateLimits, payload.errors?.usage);
+      publishPool();
+    }
+    if (
+      payload.type === 'native.metrics' &&
+      payload.rateLimits?.available &&
+      accountId === 'default'
+    )
       usage.observe(payload.rateLimits);
     const event = store.append(sessionId, runId, payload);
     broadcast({ type: 'session.event', event }, sessionId);
@@ -318,6 +547,7 @@ export function createProxyServer(options: ServerOptions) {
     }
     settle(run);
     record(run.sessionId, run.id, payload);
+    if (payload.type === 'native.session') store.handoffSubmitted(run.sessionId);
     if (payload.type === 'native.title' && store.get(run.sessionId).session.autoTitle)
       broadcast({
         type: 'session.updated',
@@ -343,12 +573,13 @@ export function createProxyServer(options: ServerOptions) {
     // turn, which includes its subagents. Subagent records must not stand in for a main request that is still on its way.
     const complete = (stats: { mainRequests: number; outputTokens: number }) =>
       stats.mainRequests >= turn.requests && stats.outputTokens >= turn.outputTokens;
-    let stats = usage.turnStats(run.sessionId, turn);
+    const nativeId = run.nativeId ?? run.sessionId;
+    let stats = usage.turnStats(nativeId, turn);
     // Without a count of requests to wait for, give the usual export delay one chance.
     for (let waited = 0; waited < 8000; waited += 500) {
       if (turn.requests ? complete(stats) : waited >= 3000) break;
       await new Promise((resolve) => setTimeout(resolve, 500));
-      stats = usage.turnStats(run.sessionId, turn);
+      stats = usage.turnStats(nativeId, turn);
     }
     const { mainRequests, ...figures } = stats;
     if (figures.requests)
@@ -373,6 +604,7 @@ export function createProxyServer(options: ServerOptions) {
     }
     emit(run, { type: 'run.status', status, reason, connectionId: run.connectionId });
     runs.delete(run.sessionId);
+    publishPool();
     run.controller.abort();
     run.decide?.(false);
     for (const decide of run.approvals.values()) decide(false);
@@ -395,51 +627,133 @@ export function createProxyServer(options: ServerOptions) {
   }
   async function native(run: Run) {
     try {
-      const { session } = store.get(run.sessionId);
-      const ssh = seats.get(run.device)!.door!.ssh!;
-      const said = store.promptValues(run.sessionId);
-      const status = await runClaude(options.claude!, {
-        sessionId: run.sessionId,
-        nativeRoot: session.nativeRoot ?? session.id,
-        projectPath: said.projectPath,
-        platform: said.platform,
-        permissionMode: session.permissionMode,
-        model: session.model,
-        effort: session.effort,
-        input: run.input!,
-        controls: run.controls,
-        waiting: (background) =>
-          emit(run, {
-            type: 'run.status',
-            status: 'running',
-            connectionId: run.connectionId,
-            ...(background ? { waiting: 'background' as const } : {}),
-          }),
-        turnEnded: (turn) => track(turnStats(run, turn).catch(() => {})),
-        dataDir: store.directory,
-        resume: store.hasNativeContext(run.sessionId),
-        signal: run.controller.signal,
-        ssh: sessionSsh(store.directory, run.sessionId, ssh),
-        emit: (event) => emit(run, event),
-        approve: (toolId, waiting) => {
-          if (run.controller.signal.aborted) return Promise.resolve({ allowed: false });
-          const approvalId = randomUUID();
-          return new Promise((resolve) => {
-            run.approvals.set(approvalId, (allowed, answers) => {
-              emit(run, { type: 'approval.resolved', approvalId, allowed });
-              resolve({ allowed, answers });
-            });
-            emit(run, { type: 'approval.requested', approvalId, toolId });
+      while (!run.controller.signal.aborted) {
+        const { session } = store.get(run.sessionId);
+        const accountId = session.accountId ?? 'default';
+        const claude = pool!.options(accountId);
+        run.nativeId = session.nativeSessionId ?? session.id;
+        const ssh = seats.get(run.device)!.door!.ssh!;
+        const said = store.promptValues(run.sessionId);
+        let quota: Extract<EventPayload, { type: 'run.error' }> | undefined;
+        const status = await runClaude(claude, {
+          sessionId: run.sessionId,
+          nativeSessionId: run.nativeId,
+          stopAtQuota: pool!.settings.enabled,
+          nativeRoot: session.nativeRoot ?? session.id,
+          projectPath: said.projectPath,
+          platform: said.platform,
+          permissionMode: session.permissionMode,
+          model: session.model,
+          effort: session.effort,
+          input: run.input!,
+          controls: run.controls,
+          waiting: (background) =>
             emit(run, {
               type: 'run.status',
-              status: 'awaiting_approval',
+              status: 'running',
               connectionId: run.connectionId,
-              waiting,
+              ...(background ? { waiting: 'background' as const } : {}),
+            }),
+          turnEnded: (turn) => track(turnStats(run, turn).catch(() => {})),
+          dataDir: store.directory,
+          resume: store.hasNativeContext(run.sessionId),
+          signal: run.controller.signal,
+          ssh: sessionSsh(store.directory, run.sessionId, ssh),
+          emit: (event) => {
+            if (event.type === 'run.error' && event.code === 'quota_five_hour') quota = event;
+            emit(run, event);
+          },
+          approve: (toolId, waiting) => {
+            if (run.controller.signal.aborted) return Promise.resolve({ allowed: false });
+            const approvalId = randomUUID();
+            return new Promise((resolve) => {
+              run.approvals.set(approvalId, (allowed, answers) => {
+                emit(run, { type: 'approval.resolved', approvalId, allowed });
+                resolve({ allowed, answers });
+              });
+              emit(run, { type: 'approval.requested', approvalId, toolId });
+              emit(run, {
+                type: 'run.status',
+                status: 'awaiting_approval',
+                connectionId: run.connectionId,
+                waiting,
+              });
             });
+          },
+        });
+        const events = store.runEvents(run.sessionId, run.id);
+        if (
+          status !== 'failed' ||
+          run.controller.signal.aborted ||
+          !pool!.settings.enabled ||
+          !quota ||
+          !canHandoff(events, run.id)
+        ) {
+          if (status === 'failed' && !quota)
+            pool!.update(accountId, { error: '本次运行异常，请检测账号后再参与自动调度' });
+          finish(run, status, run.cancelReason);
+          return;
+        }
+        pool!.block(accountId, quota.resetsAt);
+        run.attempted ??= new Set();
+        run.attempted.add(accountId);
+        publishPool();
+        await refreshFor(run);
+        let next = orderedAccounts(pool!.snapshot(), [...run.attempted, ...pool!.locked])[0];
+        if (!next)
+          emit(run, {
+            type: 'native.notice',
+            text: '账号池暂时没有可用额度，任务已暂停；服务端会检测额度恢复后继续。可以随时停止。',
           });
-        },
-      });
-      finish(run, status, run.cancelReason);
+        while (!next && !run.controller.signal.aborted && pool!.settings.enabled) {
+          await new Promise<void>((resolve) => {
+            const done = () => {
+              clearTimeout(timer);
+              run.controller.signal.removeEventListener('abort', done);
+              resolve();
+            };
+            const timer = setTimeout(done, 30_000);
+            run.controller.signal.addEventListener('abort', done, { once: true });
+            if (run.controller.signal.aborted) done();
+          });
+          if (run.controller.signal.aborted) break;
+          await refreshFor(run);
+          next = orderedAccounts(pool!.snapshot(), [...pool!.locked])[0];
+        }
+        if (
+          !next ||
+          run.controller.signal.aborted ||
+          !seats.get(run.device)?.door?.ssh ||
+          !pool!.settings.enabled
+        ) {
+          finish(
+            run,
+            run.controller.signal.aborted ? 'cancelled' : 'failed',
+            run.cancelReason ?? '账号池续接已暂停。',
+          );
+          return;
+        }
+        const source = pool!.get(accountId).name;
+        const selected = store.selectAccount(run.sessionId, next.id);
+        emit(run, {
+          type: 'native.notice',
+          text:
+            next.id === accountId
+              ? `账号 ${next.name} 的额度已恢复，继续原生会话。`
+              : `账号池续接：${source} → ${next.name}。本机项目和当前会话保留，使用最近对话与任务进度继续。`,
+        });
+        updated(run.sessionId);
+        const messageId = randomUUID();
+        const prompt =
+          next.id === accountId
+            ? CONTINUE
+            : poolHandoff(store.history(run.sessionId, randomUUID(), 0).events);
+        run.input = new NativeInput(selected.nativeSessionId ?? selected.id, (event) =>
+          emit(run, event),
+        );
+        run.input.submit(messageId, prompt);
+      }
+      finish(run, 'cancelled', run.cancelReason);
     } catch {
       emit(run, {
         type: 'run.error',
@@ -453,19 +767,29 @@ export function createProxyServer(options: ServerOptions) {
   async function publishAccount(target?: Peer, notice?: string) {
     const { accountStatus } = await import('./native-account.ts');
     const state: AccountState = {
-      ...(await accountStatus(options.claude!.executable)),
+      ...(await accountStatus(options.claude!.executable, options.claude!.environment)),
       login: login?.url ? { url: login.url } : null,
       notice,
     };
+    if (pool)
+      pool.update('default', {
+        loggedIn: state.loggedIn,
+        email: state.email,
+        subscriptionType: state.subscriptionType,
+      });
     if (target) send(target, { type: 'account.state', ...state });
     else broadcast({ type: 'account.state', ...state });
+    publishPool();
   }
   async function account(peer: Peer, command: CommandOf<`account.${string}` & Command['type']>) {
     if (!options.claude) throw new DomainError('native_unavailable', '离线模拟没有原生账号。');
     if (command.type === 'account.status') {
+      if (pool?.locked.has('default')) return;
       await publishAccount(peer);
       return;
     }
+    if (poolLogins.has('default'))
+      throw new DomainError('login_active', '原有账号正在账号池页面登录，请在那里完成。');
     if (command.type === 'account.code') {
       if (!login?.url) throw new DomainError('login_inactive', '登录流程已结束，请重新获取链接。');
       login.process.submit(command.code);
@@ -475,13 +799,18 @@ export function createProxyServer(options: ServerOptions) {
       login?.process.cancel();
       return;
     }
-    if (terminals.size || runs.size || mutations.size)
+    if (
+      terminals.size ||
+      runs.size ||
+      mutations.size ||
+      pool?.refreshing ||
+      pool?.locked.has('default')
+    )
       throw new DomainError('native_busy', '请先结束原生运行或终端，再管理账号。');
-    const { NativeLogin, accountLogout } = await import('./native-account.ts');
     if (command.type === 'account.logout') {
       login?.process.cancel();
       try {
-        await accountLogout(options.claude.executable);
+        await logoutAccount('default');
       } catch {
         throw new DomainError('logout_failed', '退出登录失败，请在原生终端执行 /logout 确认。');
       }
@@ -496,7 +825,7 @@ export function createProxyServer(options: ServerOptions) {
           (succeeded) => {
             if (login === current) login = undefined;
             if (closing) return;
-            if (succeeded) completeOnboarding();
+            if (succeeded) completeOnboarding(options.claude?.environment?.CLAUDE_CONFIG_DIR);
             track(
               publishAccount(
                 undefined,
@@ -510,6 +839,9 @@ export function createProxyServer(options: ServerOptions) {
             if (closing || login !== current) return;
             track(publishAccount(undefined, text).catch(() => {}));
           },
+          undefined,
+          undefined,
+          options.claude.environment,
         ),
       };
       login = current;
@@ -527,7 +859,13 @@ export function createProxyServer(options: ServerOptions) {
     if (!options.claude) throw new DomainError('native_unavailable', '离线模拟没有原生账号状态。');
     // During a run its own CLI answers, so quota can be reread without waiting for the turn to end.
     const active =
-      runs.get(command.sessionId) ?? [...runs.values()].find((run) => run.controls.refresh);
+      runs.get(command.sessionId) ??
+      [...runs.values()].find(
+        (run) =>
+          run.controls.refresh &&
+          (store.get(run.sessionId).session.accountId ?? 'default') ===
+            (store.get(command.sessionId).session.accountId ?? 'default'),
+      );
     if (active?.controls.refresh && !mutations.size) {
       await active.controls.refresh();
       return;
@@ -540,10 +878,10 @@ export function createProxyServer(options: ServerOptions) {
     peer.socket.once('close', closed);
     try {
       const events = await readNativeStatus(
-        options.claude,
+        pool!.options(store.get(command.sessionId).session.accountId ?? 'default'),
         store.directory,
         nativeRoot(command.sessionId),
-        command.sessionId,
+        store.get(command.sessionId).session.nativeSessionId ?? command.sessionId,
         controller.signal,
       );
       for (const payload of events) {
@@ -573,6 +911,12 @@ export function createProxyServer(options: ServerOptions) {
     if (!ssh) throw new DomainError('execution_offline', '本机的执行通道尚未就绪。');
     onDevice(peer, session);
     room();
+    const selectedAccount = pool!.choose(
+      session.accountId ?? (store.hasNativeContext(session.id) ? 'default' : undefined),
+    );
+    if (poolLogins.has(selectedAccount.id) || (selectedAccount.id === 'default' && login))
+      throw new DomainError('login_active', '请先完成此账号的登录。');
+    session = store.selectAccount(session.id, selectedAccount.id);
     const current: Terminal = { id: randomUUID(), sessionId: command.sessionId, owner: peer };
     terminals.set(current.sessionId, current);
     try {
@@ -580,15 +924,16 @@ export function createProxyServer(options: ServerOptions) {
         await import('./native-terminal.ts');
       if (closing || peer.socket.readyState !== WebSocket.OPEN)
         throw new Error('Connection closed');
-      completeOnboarding();
+      const claude = pool!.options(session.accountId ?? pool!.settings.preferredId);
+      completeOnboarding(claude.environment?.CLAUDE_CONFIG_DIR);
       current.process = new NativeTerminal(
-        options.claude.executable,
-        terminalArguments(options.claude, session, sessionSsh(store.directory, session.id, ssh)),
+        claude.executable,
+        terminalArguments(claude, session, sessionSsh(store.directory, session.id, ssh)),
         {
-          cwd: prepareNativeDirectory(options.claude, store.directory, nativeRoot(session.id)),
+          cwd: prepareNativeDirectory(claude, store.directory, nativeRoot(session.id)),
           cols: command.cols,
           rows: command.rows,
-          env: terminalEnvironment(options.claude),
+          env: terminalEnvironment(claude),
         },
         (data, bytes) =>
           send(peer, {
@@ -638,13 +983,25 @@ export function createProxyServer(options: ServerOptions) {
     if (session.activeRun) throw new DomainError('run_active', '请先结束当前运行再管理会话。');
     mutations.add(command.sessionId);
     try {
-      if (options.claude && store.hasNativeContext(command.sessionId)) {
-        const nativeOptions = {
-          dir: nativeDirectory(store.directory, nativeRoot(command.sessionId)),
-        };
-        if (command.type === 'session.delete')
-          await deleteSession(command.sessionId, nativeOptions);
-        else await renameSession(command.sessionId, command.title, nativeOptions);
+      if (options.claude) {
+        const segments =
+          command.type === 'session.delete'
+            ? store.nativeSegments(session.id)
+            : [
+                {
+                  id: session.nativeSessionId ?? session.id,
+                  accountId: session.accountId ?? 'default',
+                  root: nativeRoot(session.id),
+                },
+              ];
+        for (const segment of segments) {
+          const claude = pool!.options(segment.accountId);
+          const nativeOptions = { dir: nativeDirectory(store.directory, segment.root) };
+          if (!(await nativeStore(claude, 'info', segment.id, nativeOptions))) continue;
+          if (command.type === 'session.delete')
+            await nativeStore(claude, 'delete', segment.id, nativeOptions);
+          else await nativeStore(claude, 'rename', segment.id, nativeOptions, command.title);
+        }
       }
       if (command.type === 'session.delete') {
         store.delete(command.sessionId);
@@ -685,24 +1042,31 @@ export function createProxyServer(options: ServerOptions) {
     try {
       if (options.claude && store.hasNativeContext(command.sessionId)) {
         const dir = nativeDirectory(store.directory, nativeRoot(command.sessionId));
+        const claude = pool!.options(session.accountId ?? 'default');
+        const nativeId = session.nativeSessionId ?? session.id;
         if (!command.beforeMessageId) {
-          id = (await forkSession(command.sessionId, { dir, title })).sessionId;
+          id = (await nativeStore(claude, 'fork', nativeId, { dir, title })).sessionId;
           resumable = true;
         } else {
-          const through = await forkSession(command.sessionId, {
+          const through = await nativeStore(claude, 'fork', nativeId, {
             dir,
             upToMessageId: command.beforeMessageId,
           });
           try {
-            const kept = (await getSessionMessages(through.sessionId, { dir })).at(-2);
+            const kept = (await nativeStore(claude, 'messages', through.sessionId, { dir })).at(-2);
             // Nothing before the message: the fork starts a native session of its own.
             if (kept) {
-              id = (await forkSession(through.sessionId, { dir, upToMessageId: kept.uuid, title }))
-                .sessionId;
+              id = (
+                await nativeStore(claude, 'fork', through.sessionId, {
+                  dir,
+                  upToMessageId: kept.uuid,
+                  title,
+                })
+              ).sessionId;
               resumable = true;
             }
           } finally {
-            await deleteSession(through.sessionId, { dir });
+            await nativeStore(claude, 'delete', through.sessionId, { dir });
           }
         }
       }
@@ -773,6 +1137,22 @@ export function createProxyServer(options: ServerOptions) {
       );
     onDevice(peer, session);
     room();
+    if (pool) {
+      const current =
+        session.accountId ?? (store.hasNativeContext(session.id) ? 'default' : undefined);
+      const selected = pool.choose(current);
+      if (poolLogins.has(selected.id) || (selected.id === 'default' && login))
+        throw new DomainError('login_active', '所选账号正在登录，请稍后发送。');
+      const previous = session.accountId ?? 'default';
+      const changed = store.selectAccount(session.id, selected.id);
+      if (previous !== selected.id && changed.accountHandoff)
+        record(session.id, command.requestId, {
+          type: 'native.notice',
+          text: `任务使用 ${selected.name} 继续；当前会话和本机项目保留，最近上下文将用于续接。`,
+        });
+      session = changed;
+      updated(session.id);
+    }
     peer.subscriptions.add(command.sessionId);
     const run: Run = {
       id: randomUUID(),
@@ -785,7 +1165,10 @@ export function createProxyServer(options: ServerOptions) {
       controls: {},
     };
     runs.set(command.sessionId, run);
-    if (options.claude) run.input = new NativeInput(run.sessionId, (event) => emit(run, event));
+    if (options.claude)
+      run.input = new NativeInput(session.nativeSessionId ?? run.sessionId, (event) =>
+        emit(run, event),
+      );
     emit(run, {
       type: 'message.user',
       messageId: command.requestId,
@@ -796,7 +1179,12 @@ export function createProxyServer(options: ServerOptions) {
     emit(run, { type: 'run.status', status: 'running', connectionId: run.connectionId });
     // What Claude's system prompt no longer has right is told to it with this message; the transcript shows the
     // user's own text.
-    run.input?.submit(command.requestId, store.notice(command.sessionId) + text);
+    run.input?.submit(
+      command.requestId,
+      session.accountHandoff
+        ? poolHandoff(store.history(session.id, randomUUID(), 0).events)
+        : store.notice(command.sessionId) + text,
+    );
     track(
       options.claude
         ? native(run)
@@ -855,6 +1243,16 @@ export function createProxyServer(options: ServerOptions) {
   // Resolves to the session ID carried in the response frame; account and usage commands have none.
   async function execute(peer: Peer, command: Command): Promise<string | undefined> {
     switch (command.type) {
+      case 'pool.status':
+      case 'pool.add':
+      case 'pool.configure':
+      case 'pool.account.update':
+      case 'pool.account.login':
+      case 'pool.account.logout':
+      case 'pool.account.cancel':
+      case 'pool.account.code':
+        await poolCommand(peer, command);
+        return undefined;
       case 'account.status':
       case 'account.login':
       case 'account.code':
@@ -866,10 +1264,13 @@ export function createProxyServer(options: ServerOptions) {
       case 'settings.update': {
         if (!options.claude) throw new DomainError('native_unavailable', '离线模拟没有原生设置。');
         try {
+          const path = settingsPath(
+            pool!.options(command.accountId ?? 'default').environment?.CLAUDE_CONFIG_DIR,
+          );
           const values =
             command.type === 'settings.get'
-              ? readNativeSettings()
-              : updateNativeSettings(command.values);
+              ? readNativeSettings(path)
+              : updateNativeSettings(command.values, path);
           send(peer, { type: 'settings.state', requestId: command.requestId, values });
         } catch {
           throw new DomainError(
@@ -889,7 +1290,14 @@ export function createProxyServer(options: ServerOptions) {
       case 'service.update.install':
         if (!updates) throw new DomainError('updates_unavailable', '此服务未启用版本跟踪。');
         // The restart at the end would cut these off.
-        if (terminals.size || runs.size || mutations.size || login)
+        if (
+          terminals.size ||
+          runs.size ||
+          mutations.size ||
+          login ||
+          poolLogins.size ||
+          pool?.refreshing
+        )
           throw new DomainError('native_busy', '请先结束运行、终端或登录流程，再升级服务端。');
         try {
           updates.install(command.version);
@@ -899,10 +1307,21 @@ export function createProxyServer(options: ServerOptions) {
         return undefined;
       case 'usage.query': {
         const titles = new Map(store.list().map((session) => [session.id, session.title]));
+        const logical = new Map(
+          store.database
+            .prepare('SELECT native_id, session_id FROM native_segments')
+            .all()
+            .map((row) => [String(row.native_id), String(row.session_id)]),
+        );
+        const page = usage.query(command, (id) => titles.get(logical.get(id) ?? id) ?? null);
+        page.rows = page.rows.map((row) => ({
+          ...row,
+          sessionId: row.sessionId ? (logical.get(row.sessionId) ?? row.sessionId) : null,
+        }));
         send(peer, {
           type: 'usage.page',
           requestId: command.requestId,
-          ...usage.query(command, (sessionId) => titles.get(sessionId) ?? null),
+          ...page,
         });
         return undefined;
       }
@@ -923,6 +1342,29 @@ export function createProxyServer(options: ServerOptions) {
     if (mutations.has(command.sessionId))
       throw new DomainError('session_busy', '会话正在更新，请稍后重试。');
     switch (command.type) {
+      case 'session.account': {
+        if (!pool) throw new DomainError('native_unavailable', '此服务不支持账号池。');
+        if (session.activeRun)
+          throw new DomainError('run_active', '请先停止当前任务，再手动切换账号。');
+        onDevice(peer, session);
+        const account = pool.get(command.accountId);
+        if (
+          !account.enabled ||
+          account.loggedIn !== true ||
+          poolLogins.has(account.id) ||
+          pool.locked.has(account.id)
+        )
+          throw new DomainError('account_unavailable', '请先登录并启用这个账号。');
+        if ((session.accountId ?? 'default') !== account.id) {
+          store.selectAccount(session.id, account.id);
+          record(session.id, command.requestId, {
+            type: 'native.notice',
+            text: `已选择 ${account.name}。下一条消息会携带最近对话和任务进度，在同一本机项目继续。`,
+          });
+          updated(session.id);
+        }
+        return session.id;
+      }
       case 'session.status':
         await readStatus(peer, command);
         return command.sessionId;
@@ -1055,6 +1497,7 @@ export function createProxyServer(options: ServerOptions) {
       update: updates?.state,
       client: installer(),
       sessions: store.list(),
+      ...(pool ? { features: ['account-pool'] } : {}),
     });
     // Every connection that asks has an execution channel of its own, to the computer it comes from.
     if (auth.data.tunnel && options.tunnel) {
@@ -1239,6 +1682,7 @@ export function createProxyServer(options: ServerOptions) {
   function release(peer: Peer) {
     peers.delete(peer);
     if (login?.owner === peer) login.process.cancel();
+    for (const item of poolLogins.values()) if (item.owner === peer) item.process.cancel();
     for (const terminal of terminals.values())
       if (terminal.owner === peer) {
         const task = terminal.process?.close();
@@ -1396,7 +1840,14 @@ export function createProxyServer(options: ServerOptions) {
       await releases.refresh();
       updates?.start();
       if (usageReceiver)
-        options.claude!.environment = telemetryEnvironment(await usageReceiver.listen());
+        options.claude!.environment = {
+          ...options.claude!.environment,
+          ...telemetryEnvironment(await usageReceiver.listen()),
+        };
+      if (pool)
+        poolTimer = setInterval(() => {
+          if ([...peers].some((peer) => peer.poolClient) || runs.size) track(refreshPool());
+        }, 60_000);
       await new Promise<void>((resolve, reject) => {
         server.once('error', reject);
         server.listen(port, options.host ?? '127.0.0.1', () => {
@@ -1410,6 +1861,9 @@ export function createProxyServer(options: ServerOptions) {
     },
     async close() {
       closing = true;
+      clearInterval(poolTimer);
+      for (const item of poolLogins.values()) item.process.cancel();
+      for (const controller of poolProbes.values()) controller.abort();
       updates?.stop();
       login?.process.cancel();
       const terminalCleanup = Promise.all(
@@ -1423,6 +1877,7 @@ export function createProxyServer(options: ServerOptions) {
       ];
       for (const peer of peers) peer.socket.terminate();
       await Promise.all([...tasks]);
+      await poolRefresh;
       await terminalCleanup;
       await Promise.all([...tunnelTasks]);
       await Promise.all(cleanup);

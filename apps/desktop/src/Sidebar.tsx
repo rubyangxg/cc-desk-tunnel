@@ -28,6 +28,7 @@ function activity(session: Session) {
 
 export default function Sidebar({
   serviceName,
+  unifiedHistory = false,
   sessions,
   elsewhere,
   selectedId,
@@ -46,6 +47,7 @@ export default function Sidebar({
   projectMenu,
 }: {
   serviceName?: string;
+  unifiedHistory?: boolean;
   sessions: Session[];
   // Sessions on the user's other computers: listed apart, by computer, and not part of any project here.
   elsewhere: Session[];
@@ -245,7 +247,11 @@ export default function Sidebar({
         {serviceName && (
           <p className="session-source">
             <strong>当前会话来源：{serviceName}</strong>
-            <span>本机项目共用；其他服务的历史请切换后查看。</span>
+            <span>
+              {unifiedHistory
+                ? '此服务内所有账号共用项目与会话列表。'
+                : '本机项目共用；其他服务的历史请切换后查看。'}
+            </span>
           </p>
         )}
         {pinned.length > 0 && <div className="list-heading">置顶</div>}

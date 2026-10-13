@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+// Additive account-pool commands are gated by ready.features; old peers never receive pool.state.
 export const PROTOCOL_VERSION = 17;
 export const MAX_FRAME_BYTES = 256 * 1024;
 const id = z.uuid();
@@ -106,6 +107,35 @@ export const rateLimitsSchema = z.object({
   ),
   measuredAt: timestamp.optional(),
 });
+export const poolAccountIdSchema = z.union([z.literal('default'), id]);
+export const serverPoolSettingsSchema = z.object({
+  enabled: z.boolean(),
+  strategy: z.enum(['reset', 'order']),
+  order: z.array(poolAccountIdSchema).max(10),
+  preferredId: poolAccountIdSchema,
+});
+export const serverPoolAccountSchema = z.object({
+  id: poolAccountIdSchema,
+  name: z.string().trim().min(1).max(80),
+  enabled: z.boolean(),
+  loggedIn: z.boolean().nullable(),
+  email: z.string().optional(),
+  subscriptionType: z.string().optional(),
+  limits: rateLimitsSchema.nullable(),
+  checkedAt: z.number().nonnegative().nullable(),
+  blockedUntil: z.number().nonnegative().nullable(),
+  error: z.string().optional(),
+  login: z.object({ url: z.url() }).nullable(),
+  busy: z.boolean(),
+});
+export const serverPoolStateSchema = z.object({
+  settings: serverPoolSettingsSchema,
+  accounts: z.array(serverPoolAccountSchema).max(10),
+  refreshing: z.boolean(),
+});
+export type ServerPoolSettings = z.infer<typeof serverPoolSettingsSchema>;
+export type ServerPoolAccount = z.infer<typeof serverPoolAccountSchema>;
+export type ServerPoolState = z.infer<typeof serverPoolStateSchema>;
 const usageTotals = {
   requests: z.number().int().nonnegative(),
   inputTokens: z.number().nonnegative(),
@@ -365,6 +395,10 @@ export const sessionSchema = z.object({
   effort: effortSchema.nullable().default(null),
   // A fork keeps its native history beside the session it was forked from; this names that session.
   nativeRoot: id.optional(),
+  // The UI session stays the same while its account and underlying native segment change.
+  accountId: poolAccountIdSchema.optional(),
+  nativeSessionId: id.optional(),
+  accountHandoff: z.boolean().optional(),
   // What the system prompt of the session's native runs says. It is kept word for word until a compaction,
   // which loses the prompt cache anyway: a move to another project or another computer is told to Claude
   // with the user's next message instead, and `told` is what it was last told that way.
@@ -426,6 +460,50 @@ export type ServiceUpdate = z.infer<typeof serviceUpdateSchema>;
 const request = { requestId: id };
 export const commandSchema = z.discriminatedUnion('type', [
   z
+    .object({ type: z.literal('pool.status'), ...request, refresh: z.boolean().optional() })
+    .strict(),
+  z
+    .object({ type: z.literal('pool.add'), ...request, name: z.string().trim().min(1).max(80) })
+    .strict(),
+  z
+    .object({
+      type: z.literal('pool.configure'),
+      ...request,
+      values: serverPoolSettingsSchema.partial().strict(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('pool.account.update'),
+      ...request,
+      accountId: poolAccountIdSchema,
+      name: z.string().trim().min(1).max(80).optional(),
+      enabled: z.boolean().optional(),
+    })
+    .strict(),
+  ...(['pool.account.login', 'pool.account.logout', 'pool.account.cancel'] as const).map((type) =>
+    z.object({ type: z.literal(type), ...request, accountId: poolAccountIdSchema }).strict(),
+  ),
+  z
+    .object({
+      type: z.literal('pool.account.code'),
+      ...request,
+      accountId: poolAccountIdSchema,
+      code: z
+        .string()
+        .trim()
+        .regex(/^[\x21-\x7e]{1,2048}$/),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('session.account'),
+      ...request,
+      sessionId: id,
+      accountId: poolAccountIdSchema,
+    })
+    .strict(),
+  z
     .object({
       type: z.literal('session.create'),
       ...request,
@@ -447,11 +525,18 @@ export const commandSchema = z.discriminatedUnion('type', [
     .strict(),
   z.object({ type: z.literal('account.cancel'), ...request }).strict(),
   z.object({ type: z.literal('account.logout'), ...request }).strict(),
-  z.object({ type: z.literal('settings.get'), ...request }).strict(),
+  z
+    .object({
+      type: z.literal('settings.get'),
+      ...request,
+      accountId: poolAccountIdSchema.optional(),
+    })
+    .strict(),
   z
     .object({
       type: z.literal('settings.update'),
       ...request,
+      accountId: poolAccountIdSchema.optional(),
       values: nativeSettingsSchema.partial().strict(),
     })
     .strict(),
@@ -641,8 +726,10 @@ const readyMessageSchema = z.object({
   // The newest Windows installer the service holds, for clients that want to upgrade themselves.
   client: installerSchema.optional(),
   sessions: z.array(sessionSchema),
+  features: z.array(z.string()).optional(),
 });
 export const serverMessageSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('pool.state'), ...serverPoolStateSchema.shape }),
   readyMessageSchema,
   z.object({
     type: z.literal('response'),

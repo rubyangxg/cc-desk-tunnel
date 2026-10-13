@@ -21,19 +21,26 @@ export function parseAccountStatus(output: string): Account {
     }),
   };
 }
-function run(executable: string, args: string[]) {
+function run(executable: string, args: string[], environment?: NodeJS.ProcessEnv) {
   return new Promise<{ code: number | null; stdout: string }>((resolve) => {
     // `auth status` exits 1 when signed out and still prints its JSON.
-    execFile(executable, args, { env: process.env, timeout: 20000 }, (error, stdout) =>
-      resolve({ code: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout }),
+    execFile(
+      executable,
+      args,
+      { env: { ...process.env, ...environment }, timeout: 20000 },
+      (error, stdout) =>
+        resolve({ code: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout }),
     );
   });
 }
-export async function accountStatus(executable: string) {
-  return parseAccountStatus((await run(executable, ['auth', 'status', '--json'])).stdout);
+export async function accountStatus(executable: string, environment?: NodeJS.ProcessEnv) {
+  return parseAccountStatus(
+    (await run(executable, ['auth', 'status', '--json'], environment)).stdout,
+  );
 }
-export async function accountLogout(executable: string) {
-  if ((await run(executable, ['auth', 'logout'])).code !== 0) throw new Error('Logout failed');
+export async function accountLogout(executable: string, environment?: NodeJS.ProcessEnv) {
+  if ((await run(executable, ['auth', 'logout'], environment)).code !== 0)
+    throw new Error('Logout failed');
 }
 
 // Drives `claude auth login`: it prints the authorization link, then reads the code the browser page shows.
@@ -51,6 +58,7 @@ export class NativeLogin {
     reply: (text: string) => void = () => {},
     spawn: TerminalSpawner = spawnPty,
     timeoutMs = 10 * 60 * 1000,
+    environment?: NodeJS.ProcessEnv,
   ) {
     let found!: (url: string) => void, failed!: (error: Error) => void;
     this.url = new Promise((resolve, reject) => {
@@ -63,7 +71,7 @@ export class NativeLogin {
       cwd: process.cwd(),
       cols: 4000,
       rows: 24,
-      env: { ...definedEnvironment(process.env), TERM: 'dumb' },
+      env: { ...definedEnvironment({ ...process.env, ...environment }), TERM: 'dumb' },
       name: 'dumb',
     });
     this.timer = setTimeout(() => {

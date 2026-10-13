@@ -26,7 +26,7 @@ export function terminalEnvironment(
       for (const [key, value] of Object.entries(settings.env))
         if (typeof value === 'string') env[key] = value;
   }
-  return { ...env, ...options.environment, TERM: 'xterm-256color' };
+  return definedEnvironment({ ...env, ...options.environment, TERM: 'xterm-256color' });
 }
 
 type TerminalProcess = Pick<

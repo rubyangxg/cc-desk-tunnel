@@ -1,4 +1,4 @@
-import { CalendarClock, Download, MessagesSquare, Settings } from 'lucide-react';
+import { CalendarClock, Download, MessagesSquare, Settings, UsersRound } from 'lucide-react';
 import type { MenuPosition } from './ui.tsx';
 
 export type Page = 'chat' | 'schedules' | 'settings';
@@ -11,12 +11,14 @@ export default function Rail({
   update,
   openUpdate,
   openSettings,
+  accountPool,
 }: {
   page: Page;
   go: (page: Page) => void;
   update: string | null;
   openUpdate: (position: MenuPosition) => void;
   openSettings: (position: MenuPosition) => void;
+  accountPool?: () => void;
 }) {
   const beside = (element: HTMLElement): MenuPosition => {
     const box = element.getBoundingClientRect();
@@ -43,6 +45,16 @@ export default function Rail({
         <CalendarClock />
       </button>
       <span className="rail-space" />
+      {accountPool && (
+        <button
+          type="button"
+          title="Claude 账号池"
+          aria-label="Claude 账号池"
+          onClick={accountPool}
+        >
+          <UsersRound />
+        </button>
+      )}
       {update && (
         <button
           type="button"
