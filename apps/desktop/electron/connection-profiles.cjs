@@ -2,7 +2,7 @@ const path = require('node:path');
 
 function profileId(id) {
   if (typeof id !== 'string' || !/^[a-zA-Z0-9-]{1,64}$/.test(id))
-    throw new Error('无效的账号配置 ID。');
+    throw new Error('无效的代理服务配置 ID。');
   return id;
 }
 
@@ -26,7 +26,7 @@ function decode(profile, storage) {
   }
   return {
     id: profileId(profile.id),
-    name: String(profile.name || '默认账号'),
+    name: String(profile.name || '默认代理服务'),
     url: String(profile.url ?? ''),
     fingerprint: String(profile.fingerprint ?? ''),
     mode: profile.mode === 'local' ? 'local' : 'remote',
@@ -49,7 +49,7 @@ function loadProfiles(settings, storage) {
   }
   if (!settings.login) return null;
   return {
-    profiles: [decode({ ...settings.login, id: 'default', name: '默认账号' }, storage)],
+    profiles: [decode({ ...settings.login, id: 'default', name: '默认代理服务' }, storage)],
     activeId: 'default',
   };
 }
@@ -60,14 +60,14 @@ function encodeProfiles(collection, storage) {
     !collection.profiles.length ||
     collection.profiles.length > 50
   )
-    throw new Error('请保留 1 到 50 个账号配置。');
+    throw new Error('请保留 1 到 50 个代理服务配置。');
   const ids = new Set();
   const profiles = collection.profiles.map((profile) => {
     const id = profileId(profile.id);
-    if (ids.has(id)) throw new Error('账号配置 ID 重复。');
+    if (ids.has(id)) throw new Error('代理服务配置 ID 重复。');
     ids.add(id);
     const name = String(profile.name ?? '').trim();
-    if (!name || name.length > 80) throw new Error('账号名称应为 1 到 80 个字符。');
+    if (!name || name.length > 80) throw new Error('服务名称应为 1 到 80 个字符。');
     const remember = profile.remember === true && !!profile.token;
     if (remember && !encryptionAvailable(storage))
       throw new Error('系统安全存储不可用，请取消“记住凭据”后保存。');
@@ -83,7 +83,7 @@ function encodeProfiles(collection, storage) {
       autoLogin: remember && profile.autoLogin === true,
     };
   });
-  if (!ids.has(collection.activeId)) throw new Error('请选择已有账号配置。');
+  if (!ids.has(collection.activeId)) throw new Error('请选择已有代理服务配置。');
   return { profiles, activeId: collection.activeId };
 }
 

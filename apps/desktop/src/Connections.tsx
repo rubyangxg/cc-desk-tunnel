@@ -49,7 +49,7 @@ export function App() {
           : JSON.parse(localStorage.getItem(storageKey) ?? 'null');
         const next = saved?.profiles.length
           ? saved
-          : { profiles: [blankProfile('default', '默认账号')], activeId: 'default' };
+          : { profiles: [blankProfile('default', '默认代理服务')], activeId: 'default' };
         if (window.desktop && !window.desktop.dev)
           next.profiles = next.profiles.map((profile) => ({ ...profile, mode: 'remote' }));
         const auto =
@@ -68,7 +68,7 @@ export function App() {
         setCollection(next);
         setAutoConnect(shouldConnect);
       } catch {
-        if (!cancelled) setError('账号配置读取失败，请重启客户端后重试。');
+        if (!cancelled) setError('代理服务配置读取失败，请重启客户端后重试。');
       }
     })();
     return () => {
@@ -79,7 +79,7 @@ export function App() {
   if (!collection)
     return (
       <main className="login-page">
-        <p role={error ? 'alert' : 'status'}>{error ?? '读取账号配置…'}</p>
+        <p role={error ? 'alert' : 'status'}>{error ?? '读取代理服务配置…'}</p>
       </main>
     );
   const initial =
@@ -118,7 +118,10 @@ export function App() {
       setHandoff(nextHandoff ?? null);
     },
     add: async () => {
-      const profile = blankProfile(crypto.randomUUID(), `账号 ${collection.profiles.length + 1}`);
+      const profile = blankProfile(
+        crypto.randomUUID(),
+        `代理服务 ${collection.profiles.length + 1}`,
+      );
       await persist({ profiles: [...collection.profiles, profile], activeId: profile.id });
       setAutoConnect(false);
       setHandoff(null);

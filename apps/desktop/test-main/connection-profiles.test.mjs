@@ -63,7 +63,7 @@ test('the old encrypted sign-in becomes the default profile without losing auto-
   const login = { ...original, token: vault.encryptString(original.token).toString('base64') };
   const loaded = loadProfiles({ login }, vault);
   assert.equal(loaded.activeId, 'default');
-  assert.equal(loaded.profiles[0].name, '默认账号');
+  assert.equal(loaded.profiles[0].name, '默认代理服务');
   assert.equal(loaded.profiles[0].token, original.token);
   assert.equal(loaded.profiles[0].autoLogin, true);
   const inaccessible = loadProfiles({ login }, storage());

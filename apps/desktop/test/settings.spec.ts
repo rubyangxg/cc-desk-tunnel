@@ -60,7 +60,7 @@ test('Claude Code settings load from the service and save each change at once', 
   await page
     .getByLabel('服务凭据', { exact: true })
     .fill('test-only-settings-token-with-enough-length');
-  await page.getByRole('button', { name: '连接', exact: true }).click();
+  await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
   await page.getByRole('button', { name: '设置与账号', exact: true }).click();
   await page.getByRole('menuitem', { name: '设置', exact: true }).click();
   const panel = page.getByRole('region', { name: 'Claude Code 设置' });

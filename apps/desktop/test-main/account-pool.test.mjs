@@ -45,6 +45,17 @@ test('pool prioritizes the nearest five-hour reset and honors a custom order', (
 });
 
 test('exhausted, unreachable, stale, unknown and unsaved accounts cannot be selected', () => {
+  assert.deepEqual(
+    poolCandidates(
+      profiles,
+      { a: quota(20, 1), b: quota(30, 2) },
+      { ...settings, disabled: ['a'] },
+      [],
+      now,
+    ).map((profile) => profile.id),
+    ['b'],
+    'a successful quota probe must not re-enable a service whose full connection failed',
+  );
   for (const snapshot of [
     quota(100, 2),
     quota(100, -1),

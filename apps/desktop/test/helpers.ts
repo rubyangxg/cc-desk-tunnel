@@ -18,7 +18,7 @@ export async function login(page: Page) {
   if (await localMode.isVisible()) await localMode.click();
   await page.getByLabel('服务地址').fill(config.serverUrl);
   await page.getByLabel('服务凭据').fill(config.token);
-  await page.getByRole('button', { name: '连接', exact: true }).click();
+  await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
   await expect(page.locator('.connection-status')).toContainText('已连接');
 }
 // Finished turns, runs of tool calls and each call are folded; open them all to inspect the details.

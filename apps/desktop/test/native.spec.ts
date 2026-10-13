@@ -97,7 +97,7 @@ test('official subscription: account metrics, Windows execution, running input, 
       await page.getByLabel('服务地址', { exact: true }).fill(connection.url);
       await page.getByLabel('服务证书指纹', { exact: true }).fill(connection.fingerprint ?? '');
       await page.getByLabel('服务凭据', { exact: true }).fill(connection.token);
-      await page.getByRole('button', { name: '连接', exact: true }).click();
+      await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
       await expect(page.locator('.connection-status')).toContainText('已连接', { timeout: 45000 });
     }
     await connect();

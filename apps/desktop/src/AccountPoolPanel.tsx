@@ -1,7 +1,7 @@
 import { ArrowDown, ArrowUp, RefreshCw } from 'lucide-react';
 import type { ConnectionProfile } from './connections.ts';
 import type { AccountPool } from './useAccountPool.ts';
-import { exhausted, fiveHour } from './accountPool.ts';
+import { exhausted, fiveHour, poolCandidates } from './accountPool.ts';
 import { IconButton, Switch } from './ui.tsx';
 
 export default function AccountPoolPanel({
@@ -9,11 +9,13 @@ export default function AccountPoolPanel({
   profiles,
   activeId,
   legacyService = false,
+  connected = false,
 }: {
   pool: AccountPool;
   profiles: ConnectionProfile[];
   activeId: string;
   legacyService?: boolean;
+  connected?: boolean;
 }) {
   const order = [
     ...new Set([...pool.config.order, ...profiles.map((profile) => profile.id)]),
@@ -24,6 +26,9 @@ export default function AccountPoolPanel({
     [next[at], next[at + by]] = [next[at + by]!, next[at]!];
     pool.configure({ order: next });
   };
+  const available = new Set(
+    poolCandidates(profiles, pool.quotas, pool.config).map((profile) => profile.id),
+  );
   return (
     <section className="account-pool" aria-label="账号池">
       <div className="pool-heading">
@@ -36,8 +41,8 @@ export default function AccountPoolPanel({
         />
       </div>
       <p className="profile-hint">
-        5
-        小时额度耗尽后，自动切换到可用账号，在同一项目新建会话并携带最近上下文继续。每个账号需保存服务凭据。所有账号都不可用时暂停。
+        5 小时额度耗尽后，自动连接下一个可用代理服务，使用该服务的 Claude
+        账号，在同一项目新建会话并携带最近上下文继续。每个服务需保存凭据。没有可调度服务时暂停。
       </p>
       {legacyService && (
         <p role="status" className="profile-hint">
@@ -64,7 +69,7 @@ export default function AccountPoolPanel({
         onClick={() => void pool.refresh()}
       >
         <RefreshCw />
-        {pool.refreshing ? '查询额度中…' : '刷新全部额度'}
+        {pool.refreshing ? '正在检测服务与额度…' : '检测全部服务与额度'}
       </button>
       <ol className="pool-accounts">
         {order.map((id, index) => {
@@ -72,23 +77,29 @@ export default function AccountPoolPanel({
           const quota = pool.quotas[id];
           const window = fiveHour(quota);
           const reset = window?.resetsAt && Date.parse(window.resetsAt);
+          const disabled = pool.config.disabled?.includes(id);
           return (
             <li key={id}>
               <div>
                 <strong>
                   {profile.name}
-                  {id === activeId ? ' · 当前' : ''}
+                  {id === activeId ? (connected ? ' · 已连接' : ' · 已选中') : ''}
                 </strong>
                 <small>
-                  {!profile.remember || !profile.token
-                    ? '需记住凭据才能自动切换'
-                    : (quota?.error ??
-                      (exhausted(quota)
-                        ? '额度已用完'
-                        : window?.utilization != null
-                          ? `5 小时剩余 ${Math.max(0, 100 - window.utilization)}%`
-                          : '额度未知，查询成功后可自动使用'))}
+                  {disabled
+                    ? '连接失败 · 已禁用调度'
+                    : quota?.error
+                      ? '检测失败 · 已暂停调度'
+                      : !profile.remember || !profile.token
+                        ? '需记住凭据才能自动切换'
+                        : exhausted(quota)
+                          ? '额度已用完'
+                          : available.has(id)
+                            ? `可调度 · 5 小时剩余 ${Math.max(0, 100 - window!.utilization!)}%`
+                            : '待检测 · 暂不参与调度'}
                 </small>
+                {disabled && <small>选中此服务并重新连接，成功后恢复调度。</small>}
+                {quota?.error && <small>{quota.error}</small>}
                 {reset ? <small>重置：{new Date(reset).toLocaleString('zh-CN')}</small> : null}
               </div>
               {pool.config.strategy === 'manual' && (
@@ -114,7 +125,7 @@ export default function AccountPoolPanel({
         })}
       </ol>
       <p className="profile-hint">
-        每分钟刷新额度。查询失败或额度未知的账号暂不自动使用；浏览器模拟模式只支持手动切换。
+        检测不会切换当前服务。启用账号池后每分钟后台检测，检测失败或额度未知的服务暂停调度，检测恢复后重新参与。实际连接失败的服务会保持禁用，须重新连接成功后恢复；浏览器模拟模式只支持手动切换。
       </p>
     </section>
   );

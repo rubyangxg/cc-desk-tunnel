@@ -462,7 +462,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
   async function login(form: ConnectionProfile) {
     setError(null);
     try {
-      if (!form.name.trim()) throw new Error('请输入账号名称。');
+      if (!form.name.trim()) throw new Error('请输入服务名称。');
       validateConnection(form);
       if (form.mode === 'remote') {
         setProxyConnecting(true);
@@ -519,7 +519,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
     return (
       (!terminalSessionId &&
         !state.sessions.some((session) => session.activeRun && isHere(session, state.device))) ||
-      window.confirm('切换账号会断开当前服务器并结束这台电脑上正在运行的任务和终端。继续？')
+      window.confirm('切换代理服务会断开当前服务器并结束这台电脑上正在运行的任务和终端。继续？')
     );
   }
   function manageProfiles() {
@@ -528,7 +528,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
   function saveProfile() {
     setProfileNotice(null);
     void act(async () => {
-      if (!form.name.trim()) throw new Error('请输入账号名称。');
+      if (!form.name.trim()) throw new Error('请输入服务名称。');
       validateConnection(form);
       await profiles.save({
         ...form,
@@ -536,7 +536,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
         url: form.url.trim(),
         fingerprint: form.fingerprint.trim(),
       });
-      setProfileNotice('账号配置已保存。');
+      setProfileNotice('代理服务配置已保存。');
     });
   }
   // Moves the window to a place and remembers it; going back or forward revisits without adding to the trail.
@@ -1024,7 +1024,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
     ...profiles.profiles
       .filter((profile) => profile.id !== profileId)
       .map((profile) => ({
-        label: `切换账号 · ${profile.name}`,
+        label: `切换代理服务 · ${profile.name}`,
         icon: <UserRound />,
         detail: profile.url,
         disabled: busy || refreshing || rotation.working,
@@ -1033,7 +1033,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
         },
       })),
     {
-      label: '管理账号与服务器',
+      label: '管理代理服务',
       icon: <Settings />,
       disabled: busy || refreshing || rotation.working,
       run: manageProfiles,
@@ -1211,7 +1211,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
         }}
         saveProfile={saveProfile}
         removeProfile={() => {
-          if (window.confirm(`删除账号配置“${form.name}”及其保存的服务凭据？`))
+          if (window.confirm(`删除代理服务配置“${form.name}”及其保存的服务凭据？`))
             void act(profiles.remove);
         }}
         notice={rotation.notice ?? profileNotice}
@@ -1220,6 +1220,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
             pool={profiles.pool}
             profiles={profiles.profiles}
             activeId={profileId}
+            connected={connected}
           />
         }
         openSettings={() => setLocalSettings('general')}
@@ -1348,6 +1349,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
                   pool={profiles.pool}
                   profiles={profiles.profiles}
                   activeId={profileId}
+                  connected={connected}
                   legacyService={state.serviceProtocol === 16}
                 />
               }
