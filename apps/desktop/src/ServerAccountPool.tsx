@@ -5,14 +5,12 @@ import {
   Check,
   Clock3,
   ExternalLink,
-  Layers3,
   LogIn,
   LogOut,
   Pencil,
   Plus,
   RefreshCw,
   Server,
-  ShieldCheck,
   ListOrdered,
 } from 'lucide-react';
 import type {
@@ -164,13 +162,9 @@ export default function ServerAccountPool({
         <div className="pool-service-tag">
           <Server />
           {serviceName}
-          <span>统一会话历史</span>
         </div>
         <div className="pool-title-row">
-          <div>
-            <h1>Claude 账号池</h1>
-            <p>一个服务连接，多个账号接力。项目和对话始终留在原处。</p>
-          </div>
+          <h1>Claude 账号池</h1>
           <button
             className="button primary"
             disabled={disabled || !pool || accounts.length >= 10}
@@ -182,7 +176,7 @@ export default function ServerAccountPool({
         </div>
         <div className="pool-summary-grid">
           <div>
-            <span>可调度账号</span>
+            <span>可调度</span>
             <strong>
               {ready}
               <small> / {accounts.length}</small>
@@ -190,16 +184,7 @@ export default function ServerAccountPool({
           </div>
           <div>
             <span>已登录</span>
-            <strong>
-              {accounts.filter((account) => account.loggedIn).length}
-              <small> 个账号</small>
-            </strong>
-          </div>
-          <div>
-            <span>调度模式</span>
-            <strong className="pool-summary-mode">
-              {pool?.settings.enabled ? '自动接力' : '固定账号'}
-            </strong>
+            <strong>{accounts.filter((account) => account.loggedIn).length}</strong>
           </div>
         </div>
       </header>
@@ -228,13 +213,7 @@ export default function ServerAccountPool({
         <>
           <div className="pool-policy-card">
             <div className="pool-policy-heading">
-              <div className="pool-policy-icon">
-                <Layers3 />
-              </div>
-              <div>
-                <h2>额度耗尽，自动接力</h2>
-                <p>原生任务结束且工具结果已确认后，使用下一账号继续当前会话。</p>
-              </div>
+              <h2 title="额度耗尽后接力；全部账号耗尽时等待重置">自动接力</h2>
               <Switch
                 label="启用服务端账号池"
                 checked={pool.settings.enabled}
@@ -244,7 +223,7 @@ export default function ServerAccountPool({
             </div>
             <div className="pool-policy-fields">
               <label>
-                账号优先顺序
+                优先顺序
                 <select
                   aria-label="服务端账号优先顺序"
                   value={pool.settings.strategy}
@@ -253,12 +232,12 @@ export default function ServerAccountPool({
                     configure({ strategy: event.target.value as 'reset' | 'order' })
                   }
                 >
-                  <option value="reset">5 小时额度最快重置优先</option>
-                  <option value="order">按下方自定义顺序</option>
+                  <option value="reset">5 小时额度最快重置</option>
+                  <option value="order">自定义顺序</option>
                 </select>
               </label>
               <label>
-                固定模式使用账号
+                固定账号
                 <select
                   aria-label="默认 Claude 账号"
                   value={pool.settings.preferredId}
@@ -273,13 +252,10 @@ export default function ServerAccountPool({
                 </select>
               </label>
             </div>
-            <p className="pool-policy-note">
-              进行中的会话优先继续使用当前可用账号。所有账号额度耗尽时暂停等待；关闭自动接力后，可以手动选择账号。
-            </p>
           </div>
           <div className="pool-list-heading">
             <h2>
-              我的 Claude 账号 <span>{accounts.length}</span>
+              账号 <span>{accounts.length}</span>
             </h2>
             <div className="pool-toolbar">
               <button className="button secondary" disabled={disabled} onClick={() => setLog(true)}>
@@ -311,12 +287,7 @@ export default function ServerAccountPool({
                     </span>
                     <div className="pool-account-identity">
                       <h3>{account.name}</h3>
-                      <p>
-                        {account.email ??
-                          (account.id === 'default'
-                            ? '自动接入服务器原有登录'
-                            : '等待登录 Claude 账号')}
-                      </p>
+                      {account.email && account.email !== account.name && <p>{account.email}</p>}
                     </div>
                     <span className={`pool-state ${state.kind}`}>{state.text}</span>
                   </div>
@@ -467,14 +438,6 @@ export default function ServerAccountPool({
               );
             })}
           </div>
-          <div className="pool-explanation">
-            <ShieldCheck />
-            <p>
-              <strong>账号独立登录，任务连续可见。</strong>
-              切换时保留完整的界面历史，将最近对话和任务进度交给下一账号。Claude
-              原生上下文按账号保存；未确认的操作不会自动重放。停用账号不会中断它正在进行的任务。
-            </p>
-          </div>
         </>
       )}
       {edit && (
@@ -495,7 +458,6 @@ export default function ServerAccountPool({
               });
             }}
           >
-            <p>为这个账号起一个容易辨认的名称。添加后通过官方授权页登录。</p>
             <label>
               账号名称
               <input
