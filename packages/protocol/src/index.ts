@@ -629,20 +629,21 @@ export const deviceIdentitySchema = z
 // The client is closing the connection on purpose. Without it a connection that ends is taken for a fault on
 // the way, and what the device was running is kept for it to come back to.
 export const leaveSchema = z.object({ type: z.literal('leave') }).strict();
+const readyMessageSchema = z.object({
+  type: z.literal('ready'),
+  protocolVersion: z.literal(PROTOCOL_VERSION),
+  connectionId: id,
+  adapter: z.enum(['simulation', 'claude-code']),
+  model: z.string().optional(),
+  // The service's own release version, and where it stands against the published releases if it follows them.
+  version: versionSchema,
+  update: serviceUpdateSchema.optional(),
+  // The newest Windows installer the service holds, for clients that want to upgrade themselves.
+  client: installerSchema.optional(),
+  sessions: z.array(sessionSchema),
+});
 export const serverMessageSchema = z.discriminatedUnion('type', [
-  z.object({
-    type: z.literal('ready'),
-    protocolVersion: z.literal(PROTOCOL_VERSION),
-    connectionId: id,
-    adapter: z.enum(['simulation', 'claude-code']),
-    model: z.string().optional(),
-    // The service's own release version, and where it stands against the published releases if it follows them.
-    version: versionSchema,
-    update: serviceUpdateSchema.optional(),
-    // The newest Windows installer the service holds, for clients that want to upgrade themselves.
-    client: installerSchema.optional(),
-    sessions: z.array(sessionSchema),
-  }),
+  readyMessageSchema,
   z.object({
     type: z.literal('response'),
     requestId: id,
@@ -705,6 +706,24 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('tunnel.ready'), connectionId: id }),
 ]);
 export type ServerMessage = z.infer<typeof serverMessageSchema>;
+
+// v0.3.1 uses protocol 16. Protocol 17 only added turn.stats to server messages;
+// client commands are unchanged. Only clients read the older ready frame: servers
+// still require their own protocol, since an old client cannot read turn.stats.
+export const clientServerMessageSchema = z.union([
+  serverMessageSchema,
+  readyMessageSchema.extend({ protocolVersion: z.literal(16) }),
+]);
+export type ClientServerMessage = z.infer<typeof clientServerMessageSchema>;
+
+export function fallbackServerProtocol(message: ClientServerMessage, attempted: number) {
+  return attempted === 17 &&
+    message.type === 'connection.error' &&
+    message.code === 'version_mismatch' &&
+    message.service === '0.3.1'
+    ? 16
+    : null;
+}
 
 // The first and only text frame of a channel connection. Once the service has accepted it, every frame in
 // either direction is the bytes of one SSH connection, and closing the connection ends that one.

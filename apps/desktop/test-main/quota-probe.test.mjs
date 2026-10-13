@@ -47,6 +47,9 @@ test(
     const wss = new WebSocketServer({ server });
     const token = randomBytes(32).toString('hex');
     const seen = [];
+    const protocols = [];
+    let serviceProtocol = PROTOCOL_VERSION;
+    let refuseAllVersions = false;
     const sessionId = randomUUID();
     const limits = {
       available: true,
@@ -65,10 +68,23 @@ test(
         seen.push(message.type);
         if (message.type === 'auth') {
           assert.equal(message.token, token);
+          protocols.push(message.protocolVersion);
+          if (refuseAllVersions || message.protocolVersion !== serviceProtocol) {
+            socket.send(
+              JSON.stringify({
+                type: 'connection.error',
+                code: 'version_mismatch',
+                service: '0.3.1',
+                message: 'Incompatible protocol',
+              }),
+            );
+            socket.close();
+            return;
+          }
           socket.send(
             JSON.stringify({
               type: 'ready',
-              protocolVersion: PROTOCOL_VERSION,
+              protocolVersion: serviceProtocol,
               version: '0.3.1',
               connectionId: randomUUID(),
               adapter: 'claude-code',
@@ -143,5 +159,15 @@ test(
     assert.deepEqual(seen, []);
     assert.deepEqual(await probeQuota(config), limits);
     assert.deepEqual(seen, ['auth', 'session.subscribe', 'session.status']);
+    serviceProtocol = 16;
+    seen.length = 0;
+    protocols.length = 0;
+    assert.deepEqual(await probeQuota(config), limits);
+    assert.deepEqual(protocols, [17, 16]);
+    assert.deepEqual(seen, ['auth', 'auth', 'session.subscribe', 'session.status']);
+    refuseAllVersions = true;
+    protocols.length = 0;
+    await assert.rejects(probeQuota(config), /Incompatible protocol/);
+    assert.deepEqual(protocols, [17, 16], 'a refusal after fallback must not loop');
   },
 );
