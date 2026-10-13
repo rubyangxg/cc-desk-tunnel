@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { App } from './App.tsx';
+import { App } from './Connections.tsx';
 import './style.css';
 
 // For what the stylesheet lays out differently by system: the window buttons' side of the title bar.

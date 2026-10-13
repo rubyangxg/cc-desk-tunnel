@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { effortSchema } from '@cc-desk-tunnel/protocol';
 import type { Effort } from '@cc-desk-tunnel/protocol';
+import { profileKey } from './connections.ts';
 
 // Scheduled tasks belong to this computer: a task is a message the client sends by itself when its time
 // comes. They live in one JSON file the user, this window and Claude (over SSH) may all edit; the file
@@ -168,17 +169,17 @@ export function taskMessage(task: Task, due: number) {
 
 const storageKey = 'proxy-schedules';
 const progressKey = 'proxy-schedule-progress';
-function readProgress(): Progress {
+function readProgress(profileId: string): Progress {
   try {
-    const value = JSON.parse(localStorage.getItem(progressKey) ?? '{}');
+    const value = JSON.parse(localStorage.getItem(profileKey(progressKey, profileId)) ?? '{}');
     return value && typeof value === 'object' ? value : {};
   } catch {
     return {};
   }
 }
-async function loadFile(): Promise<{ path: string; text: string }> {
-  if (window.desktop) return window.desktop.loadSchedules(formatTasks([]));
-  return { path: '', text: localStorage.getItem(storageKey) ?? '' };
+async function loadFile(profileId: string): Promise<{ path: string; text: string }> {
+  if (window.desktop) return window.desktop.loadSchedules(formatTasks([]), profileId);
+  return { path: '', text: localStorage.getItem(profileKey(storageKey, profileId)) ?? '' };
 }
 
 export type Schedules = {
@@ -198,21 +199,25 @@ export type Schedules = {
 export function useSchedules(
   send: (task: Task, due: number) => Promise<boolean>,
   report?: (task: Task, outcome: Outcome) => void,
+  profileId = 'default',
 ) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [problems, setProblems] = useState<string[]>([]);
   const [path, setPath] = useState('');
-  const [progress, setProgress] = useState<Progress>(readProgress);
+  const [progress, setProgress] = useState<Progress>(() => readProgress(profileId));
   const current = useRef({ tasks, progress, send, report });
   current.current = { tasks, progress, send, report };
   const busy = useRef(false);
 
-  const record = useCallback((update: (progress: Progress) => Progress) => {
-    const next = update(current.current.progress);
-    current.current.progress = next;
-    localStorage.setItem(progressKey, JSON.stringify(next));
-    setProgress(next);
-  }, []);
+  const record = useCallback(
+    (update: (progress: Progress) => Progress) => {
+      const next = update(current.current.progress);
+      current.current.progress = next;
+      localStorage.setItem(profileKey(progressKey, profileId), JSON.stringify(next));
+      setProgress(next);
+    },
+    [profileId],
+  );
   const accept = useCallback(
     (text: string) => {
       const parsed = parseTasks(text);
@@ -234,12 +239,12 @@ export function useSchedules(
     [record],
   );
   useEffect(() => {
-    void loadFile().then((file) => {
+    void loadFile(profileId).then((file) => {
       setPath(file.path);
       accept(file.text);
     });
-    return window.desktop?.onSchedulesChanged(accept);
-  }, [accept]);
+    return window.desktop?.onSchedulesChanged(accept, profileId);
+  }, [accept, profileId]);
 
   const settle = useCallback(
     (task: Task, status: Outcome['status'], text: string) => {
@@ -293,11 +298,11 @@ export function useSchedules(
   const save = useCallback(
     async (tasks: Task[]) => {
       const text = formatTasks(tasks);
-      if (window.desktop) await window.desktop.saveSchedules(text);
-      else localStorage.setItem(storageKey, text);
+      if (window.desktop) await window.desktop.saveSchedules(text, profileId);
+      else localStorage.setItem(profileKey(storageKey, profileId), text);
       accept(text);
     },
-    [accept],
+    [accept, profileId],
   );
   const result: Schedules = {
     tasks,

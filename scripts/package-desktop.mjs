@@ -74,7 +74,10 @@ export async function stageDesktop(root, app, { description, files = [], depende
       outDir: join(app, 'electron'),
       emptyOutDir: true,
       rolldownOptions: {
-        input: join(root, 'apps/desktop/electron/proxy-bridge.mjs'),
+        input: {
+          'proxy-bridge': join(root, 'apps/desktop/electron/proxy-bridge.mjs'),
+          'quota-probe': join(root, 'apps/desktop/electron/quota-probe.mjs'),
+        },
         external: [
           ...builtinModules,
           ...builtinModules.map((name) => `node:${name}`),
@@ -82,7 +85,7 @@ export async function stageDesktop(root, app, { description, files = [], depende
           'utf-8-validate',
           ...dependencies,
         ],
-        output: { format: 'es', entryFileNames: 'proxy-bridge.mjs', codeSplitting: false },
+        output: { format: 'es', entryFileNames: '[name].mjs' },
       },
     },
   });

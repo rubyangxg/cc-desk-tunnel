@@ -1,15 +1,8 @@
-import { Download, Settings, SquareTerminal, Unplug } from 'lucide-react';
+import { Download, Plus, Save, Settings, SquareTerminal, Trash2, Unplug } from 'lucide-react';
 import { GithubMark, openProject, project } from './project.tsx';
-
-export type ConnectionForm = {
-  url: string;
-  token: string;
-  fingerprint: string;
-  mode: 'local' | 'remote';
-  // Desktop only: keep the token (encrypted for this Windows account) and connect on the next launch.
-  remember: boolean;
-  autoLogin: boolean;
-};
+import type { ConnectionForm, ConnectionProfile } from './connections.ts';
+import type { ReactNode } from 'react';
+export type { ConnectionForm } from './connections.ts';
 
 export default function LoginPage({
   form,
@@ -22,6 +15,16 @@ export default function LoginPage({
   install,
   submit,
   openSettings,
+  profiles,
+  profileId,
+  name,
+  changeName,
+  selectProfile,
+  addProfile,
+  saveProfile,
+  removeProfile,
+  notice,
+  pool,
 }: {
   form: ConnectionForm;
   change: (values: Partial<ConnectionForm>) => void;
@@ -38,6 +41,16 @@ export default function LoginPage({
   submit: () => void;
   // This computer's own settings, which need no connection.
   openSettings: () => void;
+  profiles: ConnectionProfile[];
+  profileId: string;
+  name: string;
+  changeName: (name: string) => void;
+  selectProfile: (id: string) => void;
+  addProfile: () => void;
+  saveProfile: () => void;
+  removeProfile: () => void;
+  notice: string | null;
+  pool: ReactNode;
 }) {
   return (
     <main className="login-page">
@@ -51,6 +64,32 @@ export default function LoginPage({
           <h1>连接代理服务</h1>
           {form.mode === 'local' && <span className="badge simulation">离线模拟</span>}
         </div>
+        <div className="profile-picker">
+          <label>
+            账号配置
+            <select
+              aria-label="账号配置"
+              value={profileId}
+              disabled={connecting}
+              onChange={(event) => selectProfile(event.target.value)}
+            >
+              {profiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="button"
+            disabled={connecting || profiles.length >= 50}
+            onClick={addProfile}
+          >
+            <Plus />
+            新增账号
+          </button>
+        </div>
         <form
           onSubmit={(event) => {
             event.preventDefault();
@@ -58,86 +97,121 @@ export default function LoginPage({
           }}
           className="connection-form"
         >
-          {window.desktop?.dev && (
-            <div className="connection-modes" role="group" aria-label="连接方式">
-              <button
-                type="button"
-                aria-pressed={form.mode === 'local'}
-                onClick={() => change({ mode: 'local' })}
-              >
-                本地模拟
-              </button>
-              <button
-                type="button"
-                aria-pressed={form.mode === 'remote'}
-                onClick={() => change({ mode: 'remote' })}
-              >
-                远程代理
-              </button>
-            </div>
-          )}
-          <label>
-            服务地址
-            <input
-              autoFocus
-              type="url"
-              value={form.url}
-              onChange={(event) => change({ url: event.target.value })}
-              required
-              spellCheck={false}
-            />
-          </label>
-          {form.mode === 'remote' && (
+          <fieldset className="connection-fields" disabled={connecting}>
             <label>
-              服务证书指纹（可选）
+              账号名称
               <input
-                aria-label="服务证书指纹"
-                value={form.fingerprint}
-                onChange={(event) => change({ fingerprint: event.target.value })}
-                placeholder="留空使用 CA 验证"
+                value={name}
+                maxLength={80}
+                onChange={(event) => changeName(event.target.value)}
+                required
+                placeholder="例如：工作账号"
+              />
+            </label>
+            <p className="profile-hint">
+              每个配置绑定一台服务器；Claude 登录信息保存在对应服务器上。
+            </p>
+            {window.desktop?.dev && (
+              <div className="connection-modes" role="group" aria-label="连接方式">
+                <button
+                  type="button"
+                  aria-pressed={form.mode === 'local'}
+                  onClick={() => change({ mode: 'local' })}
+                >
+                  本地模拟
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={form.mode === 'remote'}
+                  onClick={() => change({ mode: 'remote' })}
+                >
+                  远程代理
+                </button>
+              </div>
+            )}
+            <label>
+              服务地址
+              <input
+                autoFocus
+                type="url"
+                value={form.url}
+                onChange={(event) => change({ url: event.target.value })}
+                required
                 spellCheck={false}
               />
             </label>
-          )}
-          <label>
-            服务凭据
-            <input
-              type="password"
-              value={form.token}
-              onChange={(event) => change({ token: event.target.value })}
-              required
-              autoComplete="off"
-            />
-          </label>
-          {window.desktop && (
-            <div className="login-options">
+            {form.mode === 'remote' && (
               <label>
+                服务证书指纹（可选）
                 <input
-                  type="checkbox"
-                  checked={form.remember}
-                  onChange={(event) =>
-                    change({
-                      remember: event.target.checked,
-                      autoLogin: event.target.checked && form.autoLogin,
-                    })
-                  }
+                  aria-label="服务证书指纹"
+                  value={form.fingerprint}
+                  onChange={(event) => change({ fingerprint: event.target.value })}
+                  placeholder="留空使用 CA 验证"
+                  spellCheck={false}
                 />
-                记住凭据
               </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={form.autoLogin}
-                  onChange={(event) =>
-                    change({
-                      autoLogin: event.target.checked,
-                      remember: event.target.checked || form.remember,
-                    })
-                  }
-                />
-                自动登录
-              </label>
+            )}
+            <label>
+              服务凭据
+              <input
+                type="password"
+                value={form.token}
+                onChange={(event) => change({ token: event.target.value })}
+                required
+                autoComplete="off"
+              />
+            </label>
+            {window.desktop && (
+              <div className="login-options">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={form.remember}
+                    onChange={(event) =>
+                      change({
+                        remember: event.target.checked,
+                        autoLogin: event.target.checked && form.autoLogin,
+                      })
+                    }
+                  />
+                  记住凭据
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={form.autoLogin}
+                    onChange={(event) =>
+                      change({
+                        autoLogin: event.target.checked,
+                        remember: event.target.checked || form.remember,
+                      })
+                    }
+                  />
+                  自动登录
+                </label>
+              </div>
+            )}
+            <div className="profile-actions">
+              <button type="button" className="button" onClick={saveProfile}>
+                <Save />
+                保存配置
+              </button>
+              <button
+                type="button"
+                className="button"
+                disabled={profiles.length < 2}
+                onClick={removeProfile}
+              >
+                <Trash2 />
+                删除账号
+              </button>
             </div>
+          </fieldset>
+          {notice && (
+            <p className="profile-hint" role="status">
+              {notice}
+            </p>
           )}
           {error && (
             <p className="error-text" role="alert">
@@ -175,6 +249,7 @@ export default function LoginPage({
             {connecting ? '连接中…' : '连接'}
           </button>
         </form>
+        {pool}
         <div className="login-links">
           <button className="project-link" type="button" onClick={openSettings}>
             <Settings />

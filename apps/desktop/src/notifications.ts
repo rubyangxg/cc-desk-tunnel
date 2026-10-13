@@ -28,31 +28,39 @@ const away = () => !document.hasFocus() || document.visibilityState === 'hidden'
 // tells them: in the bell's list, and through the system's own notification when the window is not in front.
 // The session being read in a focused window says it already and raises neither, and what the list holds
 // about it counts as read. Only what waits for the user's answer also asks for attention in the taskbar.
-export function useNotifications(client: ProxyClient, viewing: () => string | null): Notifications {
+export function useNotifications(
+  client: ProxyClient,
+  viewing: () => string | null,
+  profileId = 'default',
+): Notifications {
   const [notices, setNotices] = useState<Notice[]>([]);
   const view = useRef(viewing);
   view.current = viewing;
 
-  const push = useCallback<Notifications['push']>((notice) => {
-    const prefs = getPrefs().notify;
-    if (!prefs.enabled || !prefs[notice.kind]) return;
-    const elsewhere = away();
-    if (!elsewhere && notice.sessionId && notice.sessionId === view.current()) return;
-    setNotices((current) =>
-      [{ ...notice, id: crypto.randomUUID(), at: Date.now(), read: false }, ...current].slice(
-        0,
-        kept,
-      ),
-    );
-    if (elsewhere)
-      void window.desktop?.notify({
-        title: notice.title,
-        body: notice.body,
-        sessionId: notice.sessionId ?? null,
-        silent: !prefs.sound,
-        attention: notice.kind === 'approval' || notice.kind === 'question',
-      });
-  }, []);
+  const push = useCallback<Notifications['push']>(
+    (notice) => {
+      const prefs = getPrefs().notify;
+      if (!prefs.enabled || !prefs[notice.kind]) return;
+      const elsewhere = away();
+      if (!elsewhere && notice.sessionId && notice.sessionId === view.current()) return;
+      setNotices((current) =>
+        [{ ...notice, id: crypto.randomUUID(), at: Date.now(), read: false }, ...current].slice(
+          0,
+          kept,
+        ),
+      );
+      if (elsewhere)
+        void window.desktop?.notify({
+          profileId,
+          title: notice.title,
+          body: notice.body,
+          sessionId: notice.sessionId ?? null,
+          silent: !prefs.sound,
+          attention: notice.kind === 'approval' || notice.kind === 'question',
+        });
+    },
+    [profileId],
+  );
 
   const seen = viewing();
   useEffect(() => {

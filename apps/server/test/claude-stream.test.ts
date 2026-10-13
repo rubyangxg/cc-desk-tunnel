@@ -4,6 +4,30 @@ import { test } from 'node:test';
 import type { EventPayload } from '@cc-desk-tunnel/protocol';
 import { ClaudeStream } from '../src/claude-stream.ts';
 
+test('only a rejected five-hour quota with no allowed overage produces a pool exhaustion signal', () => {
+  const events: EventPayload[] = [];
+  const stream = new ClaudeStream((event) => events.push(event));
+  for (const rate_limit_info of [
+    { status: 'allowed_warning', rateLimitType: 'five_hour' },
+    { status: 'rejected', rateLimitType: 'seven_day' },
+    { status: 'rejected', rateLimitType: 'five_hour', overageStatus: 'allowed' },
+  ])
+    stream.accept({ type: 'rate_limit_event', rate_limit_info });
+  assert.equal(events.length, 0);
+  stream.accept({
+    type: 'rate_limit_event',
+    rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour', resetsAt: 2000000000 },
+  });
+  assert.deepEqual(events, [
+    {
+      type: 'run.error',
+      code: 'quota_five_hour',
+      message: 'Claude 5 小时额度已耗尽。',
+      resetsAt: new Date(2000000000000).toISOString(),
+    },
+  ]);
+});
+
 test('native partial text/thinking are not duplicated by complete assistant events', () => {
   const events: EventPayload[] = [];
   const stream = new ClaudeStream((event) => events.push(event));

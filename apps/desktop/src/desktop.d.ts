@@ -26,18 +26,25 @@ declare global {
       chooseWorkspace: (reset: boolean) => Promise<string[]>;
       createWorkspace: () => Promise<string>;
       removeWorkspace: (directory: string) => Promise<void>;
-      loadLogin: () => Promise<import('./LoginPage.tsx').ConnectionForm | null>;
-      saveLogin: (login: import('./LoginPage.tsx').ConnectionForm) => Promise<void>;
-      loadDrafts: () => Promise<Record<string, string>>;
-      saveDrafts: (drafts: Record<string, string>) => Promise<void>;
-      loadSchedules: (initial: string) => Promise<{ path: string; text: string }>;
-      saveSchedules: (text: string) => Promise<void>;
-      onSchedulesChanged: (callback: (text: string) => void) => () => void;
+      loadProfiles: () => Promise<import('./connections.ts').ConnectionProfiles | null>;
+      saveProfiles: (profiles: import('./connections.ts').ConnectionProfiles) => Promise<void>;
+      probeQuota: (
+        id: string,
+      ) => Promise<import('@cc-desk-tunnel/protocol').NativeMetrics['rateLimits']>;
+      loadDrafts: (profileId?: string) => Promise<Record<string, string>>;
+      saveDrafts: (drafts: Record<string, string>, profileId?: string) => Promise<void>;
+      loadSchedules: (
+        initial: string,
+        profileId?: string,
+      ) => Promise<{ path: string; text: string }>;
+      saveSchedules: (text: string, profileId?: string) => Promise<void>;
+      onSchedulesChanged: (callback: (text: string) => void, profileId?: string) => () => void;
       windowSettings: () => Promise<{ closeToTray: boolean }>;
       setWindowSettings: (values: { closeToTray: boolean }) => Promise<void>;
       // A system notification, shown unless the window is in front (`always` shows it regardless). `attention`
       // also flashes the taskbar button, or bounces the Dock icon, of a window left open behind others.
       notify: (notice: {
+        profileId?: string;
         title: string;
         body: string;
         sessionId: string | null;
@@ -45,7 +52,10 @@ declare global {
         always?: boolean;
         attention?: boolean;
       }) => Promise<void>;
-      onNotifyClicked: (callback: (sessionId: string | null) => void) => () => void;
+      onNotifyClicked: (
+        callback: (sessionId: string | null) => void,
+        profileId?: string,
+      ) => () => void;
       // 1 and -1 step the interface size, 0 restores it.
       zoom: (direction: number) => void;
       quit: () => Promise<void>;
@@ -59,6 +69,7 @@ declare global {
         callback: (progress: { received: number; size: number }) => void,
       ) => () => void;
       connectProxy: (config: {
+        profileId?: string;
         url: string;
         fingerprint: string;
         // Seconds allowed for reaching the service, for the local SSH service to start, and for the whole.

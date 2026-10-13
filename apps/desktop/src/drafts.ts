@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { profileKey } from './connections.ts';
 
 // Unsent text is the user's work: it is kept per session and written to disk shortly after every edit,
 // so switching sessions, closing the window or a crash does not lose it.
@@ -14,20 +15,20 @@ function clean(value: unknown): Drafts {
     }),
   );
 }
-async function load(): Promise<Drafts> {
+async function load(profileId: string): Promise<Drafts> {
   try {
-    if (window.desktop) return clean(await window.desktop.loadDrafts());
-    return clean(JSON.parse(localStorage.getItem(storageKey) ?? '{}'));
+    if (window.desktop) return clean(await window.desktop.loadDrafts(profileId));
+    return clean(JSON.parse(localStorage.getItem(profileKey(storageKey, profileId)) ?? '{}'));
   } catch {
     return {};
   }
 }
-function store(drafts: Drafts) {
-  if (window.desktop) void window.desktop.saveDrafts(drafts).catch(() => {});
-  else localStorage.setItem(storageKey, JSON.stringify(drafts));
+function store(drafts: Drafts, profileId: string) {
+  if (window.desktop) void window.desktop.saveDrafts(drafts, profileId).catch(() => {});
+  else localStorage.setItem(profileKey(storageKey, profileId), JSON.stringify(drafts));
 }
 
-export function useDrafts() {
+export function useDrafts(profileId = 'default') {
   const [drafts, setDrafts] = useState<Drafts>({});
   const latest = useRef(drafts);
   const loaded = useRef(false);
@@ -36,8 +37,8 @@ export function useDrafts() {
     if (pending.current === undefined) return;
     clearTimeout(pending.current);
     pending.current = undefined;
-    store(latest.current);
-  }, []);
+    store(latest.current, profileId);
+  }, [profileId]);
   const change = useCallback(
     (update: (drafts: Drafts) => Drafts) => {
       setDrafts((current) => {
@@ -53,7 +54,7 @@ export function useDrafts() {
     [flush],
   );
   useEffect(() => {
-    void load().then((saved) => {
+    void load(profileId).then((saved) => {
       loaded.current = true;
       // Text typed while the saved drafts were being read wins over what was saved.
       change((current) => ({ ...saved, ...current }));
@@ -63,7 +64,7 @@ export function useDrafts() {
       window.removeEventListener('pagehide', flush);
       flush();
     };
-  }, [change, flush]);
+  }, [change, flush, profileId]);
   const setDraft = useCallback(
     (sessionId: string, text: string) => change((current) => ({ ...current, [sessionId]: text })),
     [change],

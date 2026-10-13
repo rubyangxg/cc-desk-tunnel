@@ -22,7 +22,6 @@ const {
   openSync,
   readFileSync,
   renameSync,
-  statSync,
   writeFileSync,
   writeSync,
 } = require('node:fs');
@@ -30,6 +29,7 @@ const { mkdtemp, stat, writeFile } = require('node:fs/promises');
 const { gitBranch } = require('./git-branch.cjs');
 const { asOnDisk } = require('./disk-path.cjs');
 const { openLog } = require('./client-log.cjs');
+const { loadProfiles, encodeProfiles, profileFile } = require('./connection-profiles.cjs');
 const { hostname, tmpdir } = require('node:os');
 const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
@@ -270,7 +270,7 @@ handle('proxy:connect', async (event, config) => {
         ? path.join(process.resourcesPath, 'app.asar.unpacked/electron')
         : undefined,
       // Where Claude finds the scheduled tasks to edit; the service names the variable, not the path.
-      environment: { CC_DESK_TUNNEL_SCHEDULES: schedulesPath() },
+      environment: { CC_DESK_TUNNEL_SCHEDULES: schedulesPath(config.profileId) },
       log,
       // The system's proxy settings (manual, script or automatic detection) as Chromium reads them.
       resolveProxy: (url) => session.defaultSession.resolveProxy(url),
@@ -290,38 +290,18 @@ handle('proxy:connect', async (event, config) => {
   keepAwake(true);
   return { url: bridge.url };
 });
-// The service token is kept only when the user asks, encrypted for the current account of the system (DPAPI on
-// Windows, the login keychain on macOS).
-handle('login:load', () => {
-  const { login } = readSettings();
-  if (!login) return null;
-  let token = '';
-  try {
-    if (login.token && safeStorage.isEncryptionAvailable())
-      token = safeStorage.decryptString(Buffer.from(login.token, 'base64'));
-  } catch {}
-  return {
-    url: String(login.url ?? ''),
-    fingerprint: String(login.fingerprint ?? ''),
-    mode: login.mode === 'local' ? 'local' : 'remote',
-    token,
-    remember: !!token,
-    autoLogin: !!token && login.autoLogin === true,
-  };
+// Each token uses the current OS account's secure storage. The old single login becomes the default profile.
+handle('profiles:load', () => loadProfiles(readSettings(), safeStorage));
+handle('profiles:save', (_event, profiles) => {
+  writeSettings({ connectionProfiles: encodeProfiles(profiles, safeStorage), login: undefined });
 });
-handle('login:save', (_event, login) => {
-  const remember = login?.remember === true && safeStorage.isEncryptionAvailable();
-  writeSettings({
-    login: remember
-      ? {
-          url: String(login.url),
-          fingerprint: String(login.fingerprint),
-          mode: login.mode === 'local' ? 'local' : 'remote',
-          token: safeStorage.encryptString(String(login.token)).toString('base64'),
-          autoLogin: login.autoLogin === true,
-        }
-      : undefined,
-  });
+handle('profiles:quota', async (_event, id) => {
+  const profile = loadProfiles(readSettings(), safeStorage)?.profiles.find(
+    (item) => item.id === id,
+  );
+  if (!profile?.token) throw new Error('请先为此账号保存服务凭据。');
+  const { probeQuota } = await import(pathToFileURL(path.join(__dirname, 'quota-probe.mjs')).href);
+  return probeQuota(profile, (url) => session.defaultSession.resolveProxy(url));
 });
 // Replaces a file whole through a flushed temporary file, so a crash or power loss in the middle of a write
 // leaves the previous content in place.
@@ -337,47 +317,44 @@ function replaceFile(target, text) {
   renameSync(temporary, target);
 }
 // Unsent message text, per session.
-const draftsPath = () => path.join(app.getPath('userData'), 'drafts.json');
-handle('drafts:load', () => {
+const draftsPath = (id) => profileFile(app.getPath('userData'), 'drafts', id);
+handle('drafts:load', (_event, id) => {
   try {
-    return JSON.parse(readFileSync(draftsPath(), 'utf8'));
+    return JSON.parse(readFileSync(draftsPath(id), 'utf8'));
   } catch {
     return {};
   }
 });
-handle('drafts:save', (_event, drafts) => replaceFile(draftsPath(), JSON.stringify(drafts)));
+handle('drafts:save', (_event, drafts, id) => replaceFile(draftsPath(id), JSON.stringify(drafts)));
 // Scheduled tasks are one JSON file that the window, the user and Claude over SSH may all edit. The window
 // decides what the text means; here it is only read, written and watched. An editor's byte-order mark is
 // dropped.
-const schedulesPath = () => path.join(app.getPath('userData'), 'schedules.json');
-const readSchedules = () => readFileSync(schedulesPath(), 'utf8').replace(/^\uFEFF/, '');
-let schedules;
-handle('schedules:load', (_event, initial) => {
-  if (!existsSync(schedulesPath())) replaceFile(schedulesPath(), String(initial));
+const schedulesPath = (id) => profileFile(app.getPath('userData'), 'schedules', id);
+const readSchedules = (id) => readFileSync(schedulesPath(id), 'utf8').replace(/^\uFEFF/, '');
+const schedules = new Map();
+let scheduleWatcher;
+handle('schedules:load', (_event, initial, id = 'default') => {
+  if (!existsSync(schedulesPath(id))) replaceFile(schedulesPath(id), String(initial));
   // An edit made outside the window is noticed by looking at the file every two seconds.
-  if (schedules === undefined) {
-    let stamp = 0;
-    setInterval(() => {
-      let text;
-      try {
-        const modified = statSync(schedulesPath()).mtimeMs;
-        if (modified === stamp) return;
-        stamp = modified;
-        text = readSchedules();
-      } catch {
-        return;
+  if (!scheduleWatcher) {
+    scheduleWatcher = setInterval(() => {
+      for (const [scope, previous] of schedules) {
+        try {
+          const text = readSchedules(scope);
+          if (text === previous) continue;
+          schedules.set(scope, text);
+          BrowserWindow.getAllWindows()[0]?.webContents.send('schedules:changed', text, scope);
+        } catch {}
       }
-      if (text === schedules) return;
-      schedules = text;
-      BrowserWindow.getAllWindows()[0]?.webContents.send('schedules:changed', text);
     }, 2000);
   }
-  schedules = readSchedules();
-  return { path: schedulesPath(), text: schedules };
+  const text = readSchedules(id);
+  schedules.set(id, text);
+  return { path: schedulesPath(id), text };
 });
-handle('schedules:save', (_event, text) => {
-  schedules = String(text);
-  replaceFile(schedulesPath(), schedules);
+handle('schedules:save', (_event, text, id = 'default') => {
+  replaceFile(schedulesPath(id), String(text));
+  schedules.set(id, String(text));
 });
 handle('app:version', () => app.getVersion());
 // Which of the user's computers this is to the service: an ID made once and kept, under the computer's name.
@@ -412,7 +389,11 @@ handle('notify:show', (event, notice) => {
     toasts.delete(toast);
     showWindow();
     if (!event.sender.isDestroyed())
-      event.sender.send('notify:clicked', notice?.sessionId ? String(notice.sessionId) : null);
+      event.sender.send(
+        'notify:clicked',
+        notice?.sessionId ? String(notice.sessionId) : null,
+        notice?.profileId ?? 'default',
+      );
   });
   toast.show();
   // What waits for the user also asks for attention in the taskbar or the Dock, from a window left open

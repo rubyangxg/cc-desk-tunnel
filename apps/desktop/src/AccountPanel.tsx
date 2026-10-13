@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
 import {
   UserRound,
   RefreshCw,
@@ -31,6 +32,7 @@ export default function AccountPanel({
   disabled,
   error,
   refresh,
+  pool,
 }: {
   client: ProxyClient;
   account: AccountState | null;
@@ -40,6 +42,7 @@ export default function AccountPanel({
   disabled: boolean;
   error: string | null;
   refresh: () => void;
+  pool?: ReactNode;
 }) {
   const account = capabilities?.account;
   const [working, setWorking] = useState(false);
@@ -77,6 +80,7 @@ export default function AccountPanel({
   }
   return (
     <section className="account-page" aria-label="账号信息">
+      {pool}
       <header className="account-heading">
         <h1>
           <UserRound />

@@ -297,7 +297,12 @@ export const eventPayloadSchema = z.discriminatedUnion('type', [
     stream: z.enum(['stdout', 'stderr']),
     text: z.string(),
   }),
-  z.object({ type: z.literal('run.error'), code: z.string(), message: z.string() }),
+  z.object({
+    type: z.literal('run.error'),
+    code: z.string(),
+    message: z.string(),
+    resetsAt: timestamp.optional(),
+  }),
 ]);
 export type EventPayload = z.infer<typeof eventPayloadSchema>;
 type Payload<T extends EventPayload['type']> = Extract<EventPayload, { type: T }>;

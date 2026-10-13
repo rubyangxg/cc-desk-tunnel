@@ -176,6 +176,23 @@ export class ClaudeStream {
           );
       }
     }
+    if (message.type === 'rate_limit_event') {
+      const info = jsonObject.parse(message.rate_limit_info);
+      if (
+        info.status === 'rejected' &&
+        info.rateLimitType === 'five_hour' &&
+        info.overageStatus !== 'allowed' &&
+        info.overageStatus !== 'allowed_warning'
+      ) {
+        const reset = typeof info.resetsAt === 'number' ? new Date(info.resetsAt * 1000) : null;
+        this.emit({
+          type: 'run.error',
+          code: 'quota_five_hour',
+          message: 'Claude 5 小时额度已耗尽。',
+          ...(reset && Number.isFinite(reset.getTime()) ? { resetsAt: reset.toISOString() } : {}),
+        });
+      }
+    }
     if (message.type === 'user') {
       const user = jsonObject.parse(message.message);
       if (!Array.isArray(user.content)) return;

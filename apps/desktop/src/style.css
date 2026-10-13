@@ -394,6 +394,98 @@ button.chip.danger:hover:not(:disabled) {
   flex-direction: column;
   gap: 20px;
 }
+.connection-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.profile-picker,
+.profile-actions {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+}
+.profile-picker {
+  margin-bottom: 20px;
+}
+.profile-picker label {
+  flex: 1;
+  min-width: 0;
+}
+.profile-picker select {
+  width: 100%;
+}
+.profile-picker .button {
+  flex-shrink: 0;
+}
+.profile-hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 0;
+}
+.account-pool {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 28px 0;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  min-width: 0;
+}
+.pool-heading,
+.pool-accounts li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.pool-heading h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.pool-accounts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.pool-accounts li {
+  padding: 10px 0;
+}
+.pool-accounts li > div {
+  min-width: 0;
+}
+.pool-accounts strong,
+.pool-accounts small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.pool-accounts small {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 5px;
+}
+.pool-order {
+  display: flex;
+  flex-shrink: 0;
+}
+.pool-notice {
+  position: fixed;
+  top: 48px;
+  right: 16px;
+  z-index: 50;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--chrome);
+  font-size: 13px;
+}
 .login-options {
   display: flex;
   gap: 20px;

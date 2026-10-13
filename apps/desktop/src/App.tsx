@@ -50,6 +50,11 @@ import type { Scenario } from './Composer.tsx';
 import Conversation from './Conversation.tsx';
 import LoginPage from './LoginPage.tsx';
 import type { ConnectionForm } from './LoginPage.tsx';
+import type { ProfileControls } from './Connections.tsx';
+import { profileKey, validateConnection } from './connections.ts';
+import type { ConnectionProfile } from './connections.ts';
+import AccountPoolPanel from './AccountPoolPanel.tsx';
+import { usePoolRotation } from './usePoolRotation.ts';
 import { exportSession } from './exportSession.ts';
 import { useNotifications } from './notifications.ts';
 import { folderName, isInside, isNewer, pathKey, withProject } from './paths.ts';
@@ -94,9 +99,9 @@ type OpenMenu = MenuPosition &
     | { kind: 'bar'; label: string }
   );
 const narrow = () => matchMedia('(max-width: 700px)').matches;
-function savedProjects(): string[] {
+function savedProjects(profileId: string): string[] {
   try {
-    const value = JSON.parse(localStorage.getItem('proxy-projects') ?? '[]');
+    const value = JSON.parse(localStorage.getItem(profileKey('proxy-projects', profileId)) ?? '[]');
     return Array.isArray(value)
       ? value.filter((item): item is string => typeof item === 'string')
       : [];
@@ -106,17 +111,12 @@ function savedProjects(): string[] {
 }
 
 // Owns the connection, the selection and every request; the components below render and report user intent.
-export function App() {
+export function App({ profiles }: { profiles: ProfileControls }) {
+  const profileId = profiles.initial.id;
   const [client] = useState(() => new ProxyClient());
   const state = useSyncExternalStore(client.subscribe, client.getSnapshot);
-  const [form, setForm] = useState<ConnectionForm>(() => ({
-    url: localStorage.getItem('proxy-url') ?? 'ws://127.0.0.1:8787/ws',
-    token: '',
-    fingerprint: '',
-    mode: window.desktop ? 'remote' : 'local',
-    remember: false,
-    autoLogin: false,
-  }));
+  const [form, setForm] = useState<ConnectionProfile>(profiles.initial);
+  const [profileNotice, setProfileNotice] = useState<string | null>(null);
   const changeForm = useCallback(
     (values: Partial<ConnectionForm>) => setForm((current) => ({ ...current, ...values })),
     [],
@@ -133,10 +133,10 @@ export function App() {
     if (state.status !== 'disconnected' && state.status !== 'connecting') setLocalSettings(null);
   }, [state.status]);
   const refreshed = useRef(new Set<string>());
-  const [projects, setProjects] = useState(savedProjects);
+  const [projects, setProjects] = useState(() => savedProjects(profileId));
   // The folders that hold sessions without a project; new ones are made in the first.
   const [workspaceRoots, setWorkspaceRoots] = useState<string[]>([]);
-  const [drafts, setDraft] = useDrafts();
+  const [drafts, setDraft] = useDrafts(profileId);
   const [scenario, setScenario] = useState<Scenario>('chat');
   const [slashOpen, setSlashOpen] = useState(false);
   // The side column is shown beside the page on a wide window and laid over it on a narrow one.
@@ -200,12 +200,27 @@ export function App() {
     (metrics ?? state.metrics) && quota
       ? { ...(metrics ?? state.metrics)!, rateLimits: quota.rateLimits }
       : (metrics ?? state.metrics);
+  const rotation = usePoolRotation({
+    client,
+    profiles,
+    busy: busy || refreshing,
+    terminalOpen: !!terminalSessionId,
+    close: async () => {
+      signedIn.current = false;
+      client.disconnect();
+      await window.desktop?.disconnectProxy();
+    },
+    show: (id) => show(id),
+    draft: setDraft,
+    error: setError,
+  });
   const canCompact = !!latest(events, 'native.context')?.persisted;
   // A native terminal anywhere keeps what the CLI holds for all sessions, the account and its status, from
   // being read or changed; this window's own terminal, `terminalSessionId`, also takes the window.
   const anyTerminal = state.sessions.some((session) => session.activeRun?.surface === 'terminal');
   const controlsDisabled =
     !connected ||
+    rotation.working ||
     busy ||
     refreshing ||
     !!selected?.activeRun ||
@@ -216,6 +231,7 @@ export function App() {
   // A native run accepts follow-up messages from the computer it runs for.
   const inputDisabled =
     !connected ||
+    rotation.working ||
     busy ||
     !!history?.loading ||
     (!!selected?.activeRun && (!nativeMode || !ownsRun)) ||
@@ -323,21 +339,15 @@ export function App() {
               },
             };
 
-  // A saved sign-in fills the form once per launch and, when asked, connects without a click.
+  // A selected saved account connects once; a missing token leaves its form ready to fill.
   const loaded = useRef(false);
   useEffect(() => {
     if (loaded.current) return;
     loaded.current = true;
-    void window.desktop?.loadLogin().then((saved) => {
-      if (!saved) return;
-      // The installed client has no simulation mode, whatever an earlier version saved.
-      const restored = window.desktop!.dev ? saved : { ...saved, mode: 'remote' as const };
-      setForm(restored);
-      if (restored.autoLogin) void login(restored);
-    });
+    if (profiles.autoConnect && form.token) void login(form);
   }, []);
   useEffect(() => {
-    if (connected) void window.desktop?.saveLogin(form);
+    if (connected) void profiles.save(form).catch((error: Error) => setError(error.message));
   }, [connected, form.remember, form.autoLogin]);
   useEffect(() => {
     const close = () => client.disconnect();
@@ -380,7 +390,7 @@ export function App() {
     if (connected) void window.desktop?.workspaceRoots().then(setWorkspaceRoots);
   }, [connected]);
   useEffect(() => {
-    localStorage.setItem('proxy-projects', JSON.stringify(projects));
+    localStorage.setItem(profileKey('proxy-projects', profileId), JSON.stringify(projects));
   }, [projects]);
   // Each session's native state is read once when it is first shown idle.
   useEffect(() => {
@@ -391,12 +401,21 @@ export function App() {
       history?.loading ||
       selected.activeRun ||
       anyTerminal ||
+      rotation.working ||
       refreshed.current.has(selected.id)
     )
       return;
     refreshed.current.add(selected.id);
     void refreshStatus(selected.id);
-  }, [nativeMode, selected?.id, connected, history?.loading, selected?.activeRun, anyTerminal]);
+  }, [
+    nativeMode,
+    selected?.id,
+    connected,
+    history?.loading,
+    selected?.activeRun,
+    anyTerminal,
+    rotation.working,
+  ]);
   useEffect(() => {
     if (nativeMode && connected) void client.request({ type: 'account.status' }).catch(() => {});
   }, [nativeMode, connected, accountOpen]);
@@ -408,11 +427,19 @@ export function App() {
       state.capabilities ||
       state.account?.loggedIn !== true ||
       refreshing ||
+      rotation.working ||
       state.sessions.some((session) => session.activeRun)
     )
       return;
     void refreshStatus();
-  }, [accountOpen, nativeMode, connected, state.capabilities, state.account?.loggedIn]);
+  }, [
+    accountOpen,
+    nativeMode,
+    connected,
+    state.capabilities,
+    state.account?.loggedIn,
+    rotation.working,
+  ]);
 
   async function act(action: () => Promise<void>) {
     setError(null);
@@ -432,9 +459,11 @@ export function App() {
     }
   }
   // Remote mode connects through the main process, which opens the tunnel and returns a loopback address.
-  async function login(form: ConnectionForm) {
+  async function login(form: ConnectionProfile) {
     setError(null);
     try {
+      if (!form.name.trim()) throw new Error('请输入账号名称。');
+      validateConnection(form);
       if (form.mode === 'remote') {
         setProxyConnecting(true);
         // The address here only has to be a loopback one; each attempt gets its own from the bridge it opens.
@@ -446,6 +475,7 @@ export function App() {
           async () =>
             (
               await window.desktop!.connectProxy({
+                profileId,
                 url: form.url,
                 fingerprint: form.fingerprint,
                 waits: getPrefs().connection,
@@ -474,6 +504,40 @@ export function App() {
     client.disconnect();
     setForm((current) => (current.remember ? current : { ...current, token: '' }));
     void window.desktop?.disconnectProxy();
+  }
+  async function switchProfile(id: string, connect: boolean) {
+    if (id === profileId) return;
+    if (!confirmSwitch()) return;
+    await act(async () => {
+      signedIn.current = false;
+      client.disconnect();
+      await window.desktop?.disconnectProxy();
+      await profiles.select(id, connect);
+    });
+  }
+  function confirmSwitch() {
+    return (
+      (!terminalSessionId &&
+        !state.sessions.some((session) => session.activeRun && isHere(session, state.device))) ||
+      window.confirm('切换账号会断开当前服务器并结束这台电脑上正在运行的任务和终端。继续？')
+    );
+  }
+  function manageProfiles() {
+    if (confirmSwitch()) disconnect();
+  }
+  function saveProfile() {
+    setProfileNotice(null);
+    void act(async () => {
+      if (!form.name.trim()) throw new Error('请输入账号名称。');
+      validateConnection(form);
+      await profiles.save({
+        ...form,
+        name: form.name.trim(),
+        url: form.url.trim(),
+        fingerprint: form.fingerprint.trim(),
+      });
+      setProfileNotice('账号配置已保存。');
+    });
   }
   // Moves the window to a place and remembers it; going back or forward revisits without adding to the trail.
   function visit(next: Place, record = true) {
@@ -571,15 +635,20 @@ export function App() {
   }
   // A due task is an ordinary message: to its session once that is idle, or to a session made for it. It is
   // never queued into a run, and waits while this window's native terminal is open.
-  const notifications = useNotifications(client, () =>
-    place.page === 'chat' ? client.state.selectedId : null,
+  const notifications = useNotifications(
+    client,
+    () => (place.page === 'chat' ? client.state.selectedId : null),
+    profileId,
   );
-  useEffect(() => window.desktop?.onNotifyClicked((sessionId) => sessionId && show(sessionId)));
+  useEffect(() =>
+    window.desktop?.onNotifyClicked((sessionId) => sessionId && show(sessionId), profileId),
+  );
   const schedules = useSchedules(
     async (task, due) => {
       const { status, sessions, selectedId, device } = client.state;
       if (
         status !== 'connected' ||
+        rotation.working ||
         sessions.some(
           (session) => session.activeRun?.surface === 'terminal' && isHere(session, device),
         )
@@ -627,6 +696,7 @@ export function App() {
         title: '定时任务未发出',
         body: `${task.name}：${outcome.text}`,
       }),
+    profileId,
   );
   // Where a session of another computer is to be on this one; null when the user gives none.
   async function placeHere(session: Session) {
@@ -913,7 +983,7 @@ export function App() {
       };
     });
   }
-  const adapterName = nativeMode ? 'Claude Code' : 'Simulation';
+  const adapterName = `${form.name} · ${nativeMode ? 'Claude Code' : 'Simulation'}`;
   const accountName = signedOut
     ? '未登录'
     : (state.account?.email ?? capabilities?.account.email ?? (nativeMode ? '账号' : '离线模拟'));
@@ -951,6 +1021,23 @@ export function App() {
           '账号与额度'),
       run: () => open('settings', 'account'),
     },
+    ...profiles.profiles
+      .filter((profile) => profile.id !== profileId)
+      .map((profile) => ({
+        label: `切换账号 · ${profile.name}`,
+        icon: <UserRound />,
+        detail: profile.url,
+        disabled: busy || refreshing || rotation.working,
+        run: () => {
+          void switchProfile(profile.id, true);
+        },
+      })),
+    {
+      label: '管理账号与服务器',
+      icon: <Settings />,
+      disabled: busy || refreshing || rotation.working,
+      run: manageProfiles,
+    },
     {
       label: '设置',
       icon: <Settings />,
@@ -962,7 +1049,7 @@ export function App() {
     { label: '断开连接', icon: <LogOut />, separated: true, run: disconnect },
   ];
   const toggleSide = () => setSideOpen((value) => !value);
-  const canCreate = connected && !busy && !refreshing && !terminalSessionId;
+  const canCreate = connected && !busy && !refreshing && !terminalSessionId && !rotation.working;
   const barMenus: BarMenu[] = [
     {
       label: '文件',
@@ -1112,6 +1199,29 @@ export function App() {
       </div>
     ) : (
       <LoginPage
+        profiles={profiles.profiles}
+        profileId={profileId}
+        name={form.name}
+        changeName={(name) => setForm((current) => ({ ...current, name }))}
+        selectProfile={(id) => {
+          void switchProfile(id, false);
+        }}
+        addProfile={() => {
+          void act(profiles.add);
+        }}
+        saveProfile={saveProfile}
+        removeProfile={() => {
+          if (window.confirm(`删除账号配置“${form.name}”及其保存的服务凭据？`))
+            void act(profiles.remove);
+        }}
+        notice={rotation.notice ?? profileNotice}
+        pool={
+          <AccountPoolPanel
+            pool={profiles.pool}
+            profiles={profiles.profiles}
+            activeId={profileId}
+          />
+        }
         openSettings={() => setLocalSettings('general')}
         form={form}
         change={changeForm}
@@ -1201,6 +1311,11 @@ export function App() {
         openUpdate={(position) => setMenu({ kind: 'update', ...position })}
         openSettings={(position) => setMenu({ kind: 'settings', ...position })}
       />
+      {rotation.notice && (
+        <div className="pool-notice" role="status">
+          {rotation.notice}
+        </div>
+      )}
       {sideOpen && (
         <button
           className="sidebar-shade"
@@ -1228,12 +1343,25 @@ export function App() {
           updates={updates}
           account={
             <AccountPanel
+              pool={
+                <AccountPoolPanel
+                  pool={profiles.pool}
+                  profiles={profiles.profiles}
+                  activeId={profileId}
+                />
+              }
               client={client}
               account={nativeMode ? state.account : null}
               capabilities={signedOut ? null : capabilities}
               metrics={signedOut ? null : accountMetrics}
               refreshing={refreshing}
-              disabled={!state.sessions.length || !connected || refreshing || anyTerminal}
+              disabled={
+                !state.sessions.length ||
+                !connected ||
+                refreshing ||
+                anyTerminal ||
+                rotation.working
+              }
               error={currentError}
               refresh={() => {
                 void refreshStatus();

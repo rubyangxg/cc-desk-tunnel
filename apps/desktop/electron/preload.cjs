@@ -18,22 +18,27 @@ contextBridge.exposeInMainWorld('desktop', {
   chooseWorkspace: (reset) => ipcRenderer.invoke('workspace:choose', reset),
   createWorkspace: () => ipcRenderer.invoke('workspace:create'),
   removeWorkspace: (directory) => ipcRenderer.invoke('workspace:remove', directory),
-  loadLogin: () => ipcRenderer.invoke('login:load'),
-  saveLogin: (login) => ipcRenderer.invoke('login:save', login),
-  loadDrafts: () => ipcRenderer.invoke('drafts:load'),
-  saveDrafts: (drafts) => ipcRenderer.invoke('drafts:save', drafts),
-  loadSchedules: (initial) => ipcRenderer.invoke('schedules:load', initial),
-  saveSchedules: (text) => ipcRenderer.invoke('schedules:save', text),
-  onSchedulesChanged: (callback) => {
-    const listener = (_event, text) => callback(text);
+  loadProfiles: () => ipcRenderer.invoke('profiles:load'),
+  saveProfiles: (profiles) => ipcRenderer.invoke('profiles:save', profiles),
+  probeQuota: (id) => ipcRenderer.invoke('profiles:quota', id),
+  loadDrafts: (id) => ipcRenderer.invoke('drafts:load', id),
+  saveDrafts: (drafts, id) => ipcRenderer.invoke('drafts:save', drafts, id),
+  loadSchedules: (initial, id) => ipcRenderer.invoke('schedules:load', initial, id),
+  saveSchedules: (text, id) => ipcRenderer.invoke('schedules:save', text, id),
+  onSchedulesChanged: (callback, id = 'default') => {
+    const listener = (_event, text, scope) => {
+      if (scope === id) callback(text);
+    };
     ipcRenderer.on('schedules:changed', listener);
     return () => ipcRenderer.removeListener('schedules:changed', listener);
   },
   windowSettings: () => ipcRenderer.invoke('window:settings'),
   setWindowSettings: (values) => ipcRenderer.invoke('window:settings:set', values),
   notify: (notice) => ipcRenderer.invoke('notify:show', notice),
-  onNotifyClicked: (callback) => {
-    const listener = (_event, sessionId) => callback(sessionId);
+  onNotifyClicked: (callback, id = 'default') => {
+    const listener = (_event, sessionId, scope) => {
+      if (scope === id) callback(sessionId);
+    };
     ipcRenderer.on('notify:clicked', listener);
     return () => ipcRenderer.removeListener('notify:clicked', listener);
   },
