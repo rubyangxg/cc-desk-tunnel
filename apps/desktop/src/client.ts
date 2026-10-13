@@ -15,6 +15,7 @@ import type {
   ServiceUpdate,
   Session,
   SessionEvent,
+  ServerPoolState,
   TerminalControl,
 } from '@cc-desk-tunnel/protocol';
 
@@ -49,6 +50,7 @@ export class RequestInterruptedError extends Error {
       'session.history',
       'session.status',
       'account.status',
+      'pool.status',
       'usage.summary',
       'usage.query',
       'settings.get',
@@ -96,6 +98,8 @@ export type ClientState = {
   // The service's version and where it stands against the published releases, if it follows them.
   service: string | null;
   serviceProtocol: number | null;
+  features: string[];
+  pool: ServerPoolState | null;
   update: ServiceUpdate | null;
   // The service refused this client for its version; it may still hand out an installer.
   mismatch: boolean;
@@ -127,6 +131,8 @@ export class ProxyClient {
     release: null,
     service: null,
     serviceProtocol: null,
+    features: [],
+    pool: null,
     update: null,
     mismatch: false,
     preparing: null,
@@ -214,6 +220,8 @@ export class ProxyClient {
       release: null,
       service: null,
       serviceProtocol: null,
+      features: [],
+      pool: null,
       update: null,
       mismatch: false,
       preparing: null,
@@ -304,6 +312,8 @@ export class ProxyClient {
           release: message.client?.version ?? null,
           service: message.version,
           serviceProtocol: message.protocolVersion,
+          features: message.features ?? [],
+          pool: null,
           mismatch: false,
           update: message.update ?? null,
           model: message.model ?? null,
@@ -367,6 +377,9 @@ export class ProxyClient {
             ? { update, error: `服务端已升级到 ${update.latest}，正在重启；请稍候重新连接。` }
             : { update },
         );
+      } else if (message.type === 'pool.state') {
+        const { type: _type, ...pool } = message;
+        this.update({ pool });
       } else if (message.type === 'account.state') {
         const { type: _type, ...account } = message;
         // A signed-out account must not keep showing the previous one's identity and quota.

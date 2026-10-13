@@ -217,6 +217,8 @@ const groups = (values: NativeSettings): { name: string; fields: Field[] }[] => 
 // Edits the official CLI's user settings on the cloud host. Each change is saved at once; "默认" removes the
 // key so the CLI's own default applies.
 export default function SettingsPanel({ client }: { client: ProxyClient }) {
+  const accounts = client.state.pool?.accounts;
+  const [accountId, setAccountId] = useState(client.state.pool?.settings.preferredId ?? 'default');
   const [values, setValues] = useState<NativeSettings | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -224,19 +226,26 @@ export default function SettingsPanel({ client }: { client: ProxyClient }) {
   const [typed, setTyped] = useState<Partial<Record<Key, string>>>({});
   useEffect(() => {
     let current = true;
-    client.fetch({ type: 'settings.get' }).then(
+    setValues(null);
+    setTyped({});
+    setFailure(null);
+    client.fetch({ type: 'settings.get', ...(accounts ? { accountId } : {}) }).then(
       (reply) => current && setValues(reply.values),
       (error: Error) => current && setFailure(error.message),
     );
     return () => {
       current = false;
     };
-  }, [client]);
+  }, [client, accountId, !!accounts]);
   async function save(change: Partial<NativeSettings>) {
     setFailure(null);
     setSaving(true);
     try {
-      const reply = await client.fetch({ type: 'settings.update', values: change });
+      const reply = await client.fetch({
+        type: 'settings.update',
+        values: change,
+        ...(accounts ? { accountId } : {}),
+      });
       setValues(reply.values);
       setTyped({});
     } catch (error) {
@@ -304,6 +313,23 @@ export default function SettingsPanel({ client }: { client: ProxyClient }) {
     <section className="page" aria-label="Claude Code 设置">
       <div className="page-body">
         <h1 className="page-title">Claude Code</h1>
+        {accounts && (
+          <label className="pool-policy-fields">
+            设置所属账号
+            <select
+              aria-label="设置所属 Claude 账号"
+              value={accountId}
+              disabled={saving}
+              onChange={(event) => setAccountId(event.target.value)}
+            >
+              {accounts.map((account) => (
+                <option value={account.id} key={account.id}>
+                  {account.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <p className="muted">
           这里修改的是云端官方 CLI 的用户设置文件，从下一次运行起生效；“默认”表示不写入该项，由 CLI
           自行决定。

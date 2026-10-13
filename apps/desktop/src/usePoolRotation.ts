@@ -163,6 +163,7 @@ export function usePoolRotation(options: {
   // The CLI can wait for hours after a rejection. Stop that wait only after its tools have settled.
   useEffect(() => {
     if (
+      state.features.includes('account-pool') ||
       !pool.config.enabled ||
       state.status !== 'connected' ||
       options.busy ||
@@ -200,6 +201,7 @@ export function usePoolRotation(options: {
 
   useEffect(() => {
     if (
+      state.features.includes('account-pool') ||
       !pool.config.enabled ||
       state.status !== 'connected' ||
       options.busy ||

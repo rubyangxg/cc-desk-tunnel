@@ -1,6 +1,7 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { query, getSessionInfo } from '@anthropic-ai/claude-agent-sdk';
+import { query } from '@anthropic-ai/claude-agent-sdk';
+import { nativeStore } from './native-store.ts';
 import type { Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type {
   DevicePlatform,
@@ -14,12 +15,15 @@ import { ClaudeStream } from './claude-stream.ts';
 import type { SshConnection } from './tunnel.ts';
 import { nativeCapabilities, nativeContextRefresh, nativeMetrics } from './native-controls.ts';
 import type { NativeInput } from './native-input.ts';
-import { readNativeSettings } from './native-settings.ts';
+import { readNativeSettings, settingsPath } from './native-settings.ts';
 
 // Whether reasoning summaries are asked for. A settings file that cannot be read leaves them on.
-function thinkingShown() {
+function thinkingShown(options: ClaudeOptions) {
   try {
-    return readNativeSettings().showThinkingSummaries !== false;
+    return (
+      readNativeSettings(settingsPath(options.environment?.CLAUDE_CONFIG_DIR))
+        .showThinkingSummaries !== false
+    );
   } catch {
     return true;
   }
@@ -32,10 +36,12 @@ export type ClaudeOptions = {
   maxTurns?: number;
   contextRetentionDays?: number;
   // Added to the CLI's inherited environment; set by the service for its usage collector.
-  environment?: Record<string, string>;
+  environment?: Record<string, string | undefined>;
 };
 export type ClaudeRun = {
   sessionId: string;
+  nativeSessionId?: string;
+  stopAtQuota?: boolean;
   // The session whose Linux directory holds this session's native history; itself unless it is a fork.
   nativeRoot: string;
   projectPath: string;
@@ -116,9 +122,18 @@ export async function runClaude(
   run: ClaudeRun,
 ): Promise<'completed' | 'failed' | 'cancelled'> {
   if (process.platform === 'win32') throw new Error('Native adapter must run on Linux.');
-  const mapper = new ClaudeStream(run.emit, run.permissionMode, run.effort);
+  let quotaRejected = false;
+  const mapper = new ClaudeStream(
+    (event) => {
+      if (event.type === 'run.error' && event.code === 'quota_five_hour') quotaRejected = true;
+      run.emit(event);
+    },
+    run.permissionMode,
+    run.effort,
+  );
   const cwd = prepareNativeDirectory(options, run.dataDir, run.nativeRoot);
-  if (run.resume && !(await getSessionInfo(run.sessionId, { dir: cwd }))) {
+  const nativeId = run.nativeSessionId ?? run.sessionId;
+  if (run.resume && !(await nativeStore(options, 'info', nativeId, { dir: cwd }))) {
     run.emit({
       type: 'run.error',
       code: 'native_context_missing',
@@ -159,12 +174,12 @@ export async function runClaude(
           append: remotePrompt(run.projectPath, run.ssh, run.sessionId, run.platform),
           snapshot: false,
         },
-        ...(run.resume ? { resume: run.sessionId } : { sessionId: run.sessionId }),
+        ...(run.resume ? { resume: nativeId } : { sessionId: nativeId }),
         model: run.model ?? options.model,
         effort: run.effort ?? undefined,
         // Newer models return no reasoning text unless a summary is asked for; headless runs ignore the
         // showThinkingSummaries setting, so this is the only switch. It follows that setting.
-        extraArgs: thinkingShown() ? { 'thinking-display': 'summarized' } : {},
+        extraArgs: thinkingShown(options) ? { 'thinking-display': 'summarized' } : {},
         settings: options.settingsPath,
         settingSources: ['user', 'project', 'local'],
         hooks: {
@@ -271,6 +286,15 @@ export async function runClaude(
         run.input.observe(message);
         mapper.accept(message);
       }
+      if (
+        run.stopAtQuota &&
+        quotaRejected &&
+        !background &&
+        [...mapper.tools.values()].every((tool) => tool.finished)
+      ) {
+        mapper.result = { failed: true, text: 'Claude 5 小时额度已耗尽。' };
+        break;
+      }
       // Context grows with every model call; show it during a long turn, not only once the turn ends.
       if (
         message.type === 'assistant' &&
@@ -352,10 +376,10 @@ export async function runClaude(
     session?.close();
     run.signal.removeEventListener('abort', stop);
   }
-  const context = await getSessionInfo(run.sessionId, { dir: cwd });
+  const context = await nativeStore(options, 'info', nativeId, { dir: cwd });
   run.emit({
     type: 'native.context',
-    nativeSessionId: run.sessionId,
+    nativeSessionId: nativeId,
     persisted: !!context,
     updatedAt: context ? new Date(context.lastModified).toISOString() : undefined,
   });
@@ -392,7 +416,7 @@ export async function readNativeStatus(
   signal: AbortSignal,
 ) {
   const cwd = prepareNativeDirectory(options, dataDir, nativeRoot);
-  const saved = await getSessionInfo(sessionId, { dir: cwd });
+  const saved = await nativeStore(options, 'info', sessionId, { dir: cwd });
   let release!: () => void;
   const waiting = new Promise<void>((resolve) => {
     release = resolve;
@@ -414,6 +438,7 @@ export async function readNativeStatus(
         cwd,
         pathToClaudeCodeExecutable: options.executable,
         ...(saved ? { resume: sessionId } : {}),
+        ...(!saved ? { persistSession: false } : {}),
         abortController: controller,
         settings: options.settingsPath,
         settingSources: ['user', 'project', 'local'],

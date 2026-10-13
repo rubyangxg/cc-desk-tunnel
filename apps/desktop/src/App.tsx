@@ -39,6 +39,7 @@ import type {
   SessionEvent,
 } from '@cc-desk-tunnel/protocol';
 import AccountPanel from './AccountPanel.tsx';
+import ServerAccountPool from './ServerAccountPool.tsx';
 import { ProxyClient, RequestInterruptedError } from './client.ts';
 import Composer from './Composer.tsx';
 import { isHere, thisDevice } from './device.ts';
@@ -105,6 +106,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
   const profileId = profiles.initial.id;
   const [client] = useState(() => new ProxyClient());
   const state = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const serverPool = state.features.includes('account-pool');
   const [form, setForm] = useState<ConnectionProfile>(profiles.initial);
   const [profileNotice, setProfileNotice] = useState<string | null>(null);
   const changeForm = useCallback(
@@ -238,7 +240,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
     lastStatus?.type === 'run.status' &&
     lastStatus.surface !== 'terminal' &&
     (lastStatus.status === 'cancelled' || lastStatus.status === 'failed');
-  const signedOut = state.account?.loggedIn === false;
+  const signedOut = !serverPool && state.account?.loggedIn === false;
   const actionError = error instanceof RequestInterruptedError ? error.describe(connected) : error;
   const currentError = actionError ?? state.error;
   // Offered when the service holds a newer installer than the running client.
@@ -407,8 +409,9 @@ export function App({ profiles }: { profiles: ProfileControls }) {
     rotation.working,
   ]);
   useEffect(() => {
-    if (nativeMode && connected) void client.request({ type: 'account.status' }).catch(() => {});
-  }, [nativeMode, connected, accountOpen]);
+    if (nativeMode && connected)
+      void client.request({ type: serverPool ? 'pool.status' : 'account.status' }).catch(() => {});
+  }, [nativeMode, connected, accountOpen, serverPool]);
   useEffect(() => {
     if (
       !accountOpen ||
@@ -764,7 +767,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
     });
   }
   function sessionMenu(session: Session): MenuItem[] {
-    const idle = connected && !busy && !terminalSessionId;
+    const idle = connected && !busy && !refreshing && !terminalSessionId;
     const anyRun = state.sessions.some((item) => !!item.activeRun);
     const pinned = prefs.pinnedSessions.includes(session.id);
     return [
@@ -1206,12 +1209,14 @@ export function App({ profiles }: { profiles: ProfileControls }) {
         }}
         notice={rotation.notice ?? profileNotice}
         pool={
-          <AccountPoolPanel
-            pool={profiles.pool}
-            profiles={profiles.profiles}
-            activeId={profileId}
-            connected={connected}
-          />
+          profiles.profiles.length > 1 ? (
+            <AccountPoolPanel
+              pool={profiles.pool}
+              profiles={profiles.profiles}
+              activeId={profileId}
+              connected={connected}
+            />
+          ) : null
         }
         openSettings={() => setLocalSettings('general')}
         form={form}
@@ -1296,6 +1301,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
         adapterName={adapterName}
       />
       <Rail
+        accountPool={serverPool ? () => open('settings', 'account') : undefined}
         page={place.page}
         go={(page) => open(page)}
         update={pendingUpdate}
@@ -1333,33 +1339,42 @@ export function App({ profiles }: { profiles: ProfileControls }) {
           adapterName={adapterName}
           updates={updates}
           account={
-            <AccountPanel
-              pool={
-                <AccountPoolPanel
-                  pool={profiles.pool}
-                  profiles={profiles.profiles}
-                  activeId={profileId}
-                  connected={connected}
-                  legacyService={state.serviceProtocol === 16}
-                />
-              }
-              client={client}
-              account={nativeMode ? state.account : null}
-              capabilities={signedOut ? null : capabilities}
-              metrics={signedOut ? null : accountMetrics}
-              refreshing={refreshing}
-              disabled={
-                !state.sessions.length ||
-                !connected ||
-                refreshing ||
-                anyTerminal ||
-                rotation.working
-              }
-              error={currentError}
-              refresh={() => {
-                void refreshStatus();
-              }}
-            />
+            serverPool ? (
+              <ServerAccountPool
+                client={client}
+                pool={state.pool}
+                connected={connected}
+                serviceName={form.name}
+              />
+            ) : (
+              <AccountPanel
+                pool={
+                  <AccountPoolPanel
+                    pool={profiles.pool}
+                    profiles={profiles.profiles}
+                    activeId={profileId}
+                    connected={connected}
+                    legacyService={state.serviceProtocol === 16}
+                  />
+                }
+                client={client}
+                account={nativeMode ? state.account : null}
+                capabilities={signedOut ? null : capabilities}
+                metrics={signedOut ? null : accountMetrics}
+                refreshing={refreshing}
+                disabled={
+                  !state.sessions.length ||
+                  !connected ||
+                  refreshing ||
+                  anyTerminal ||
+                  rotation.working
+                }
+                error={currentError}
+                refresh={() => {
+                  void refreshStatus();
+                }}
+              />
+            )
           }
         />
       ) : place.page === 'schedules' ? (
@@ -1372,7 +1387,8 @@ export function App({ profiles }: { profiles: ProfileControls }) {
       ) : (
         <>
           <Sidebar
-            serviceName={profiles.profiles.length > 1 ? form.name : undefined}
+            serviceName={serverPool || profiles.profiles.length > 1 ? form.name : undefined}
+            unifiedHistory={serverPool}
             sessions={sessions}
             elsewhere={elsewhere}
             selectedId={selected?.id}
@@ -1399,6 +1415,53 @@ export function App({ profiles }: { profiles: ProfileControls }) {
             projectMenu={(path, position) => setMenu({ kind: 'project', path, ...position })}
           />
           <main className="workspace">
+            {serverPool && !terminalSessionId && (
+              <div className="session-account-strip">
+                <div>
+                  <span className="pool-live-dot" />
+                  <strong>
+                    {state.pool?.settings.enabled ? '账号池自动接力' : '固定账号模式'}
+                  </strong>
+                  <span className="session-account-note">同一项目 · 历史连续</span>
+                </div>
+                <div>
+                  {selected && (
+                    <select
+                      aria-label="当前会话 Claude 账号"
+                      value={selected.accountId ?? ''}
+                      disabled={
+                        !connected || busy || refreshing || !!selected.activeRun || !state.pool
+                      }
+                      onChange={(event) =>
+                        void act(async () => {
+                          await client.request({
+                            type: 'session.account',
+                            sessionId: selected.id,
+                            accountId: event.target.value,
+                          });
+                        })
+                      }
+                    >
+                      <option value="" disabled>
+                        发送时选择账号
+                      </option>
+                      {state.pool?.accounts.map((account) => (
+                        <option
+                          key={account.id}
+                          value={account.id}
+                          disabled={!account.enabled || account.loggedIn !== true}
+                        >
+                          {account.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <button className="button secondary" onClick={() => open('settings', 'account')}>
+                    管理账号池
+                  </button>
+                </div>
+              </div>
+            )}
             {terminalSessionId && connected && (
               <Suspense
                 fallback={
@@ -1663,7 +1726,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
       {renameSession && (
         <RenameSessionDialog
           session={renameSession}
-          busy={busy}
+          busy={busy || refreshing}
           connected={connected}
           error={actionError}
           close={() => setRenameSession(null)}

@@ -86,6 +86,10 @@ export class SessionStore {
       );
       CREATE INDEX IF NOT EXISTS events_run ON events(session_id, run_id, sequence);
       CREATE TABLE IF NOT EXISTS migrations (name TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS native_segments (
+        native_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        account_id TEXT NOT NULL, root TEXT NOT NULL
+      );
     `);
     try {
       this.importJson();
@@ -338,7 +342,7 @@ export class SessionStore {
       .all(sessionId, after, before)
       .map((row) => JSON.parse(String(row.data)) as SessionEvent);
   }
-  private runEvents(sessionId: string, runId: string) {
+  runEvents(sessionId: string, runId: string) {
     return this.database
       .prepare('SELECT data FROM events WHERE session_id = ? AND run_id = ? ORDER BY sequence')
       .all(sessionId, runId)
@@ -352,11 +356,72 @@ export class SessionStore {
     );
   }
   hasNativeContext(sessionId: string) {
+    const nativeId = this.get(sessionId).session.nativeSessionId ?? sessionId;
     return !!this.database
       .prepare(
-        "SELECT 1 FROM events WHERE session_id = ? AND json_extract(data, '$.payload.type') = 'native.session' LIMIT 1",
+        "SELECT 1 FROM events WHERE session_id = ? AND json_extract(data, '$.payload.type') = 'native.session' AND json_extract(data, '$.payload.nativeSessionId') = ? LIMIT 1",
       )
-      .get(sessionId);
+      .get(sessionId, nativeId);
+  }
+  selectAccount(sessionId: string, accountId: string) {
+    const { session } = this.get(sessionId);
+    const previous = session.accountId ?? 'default';
+    const remember = this.database.prepare(
+      'INSERT OR IGNORE INTO native_segments VALUES (?, ?, ?, ?)',
+    );
+    this.database.exec('BEGIN');
+    try {
+      remember.run(
+        session.nativeSessionId ?? sessionId,
+        sessionId,
+        previous,
+        session.nativeRoot ?? sessionId,
+      );
+      if (previous !== accountId) {
+        session.nativeSessionId = randomUUID();
+        session.nativeRoot = session.nativeSessionId;
+        session.accountHandoff = this.lastSequence(sessionId) > 0;
+        session.prompt = undefined;
+      }
+      session.accountId = accountId;
+      remember.run(
+        session.nativeSessionId ?? sessionId,
+        sessionId,
+        accountId,
+        session.nativeRoot ?? sessionId,
+      );
+      this.save(session);
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      this.known.delete(sessionId);
+      throw error;
+    }
+    return session;
+  }
+  nativeSegments(sessionId: string) {
+    const { session } = this.get(sessionId);
+    const rows = this.database
+      .prepare('SELECT native_id, account_id, root FROM native_segments WHERE session_id = ?')
+      .all(sessionId);
+    return rows.length
+      ? rows.map((row) => ({
+          id: String(row.native_id),
+          accountId: String(row.account_id),
+          root: String(row.root),
+        }))
+      : [
+          {
+            id: session.nativeSessionId ?? sessionId,
+            accountId: session.accountId ?? 'default',
+            root: session.nativeRoot ?? sessionId,
+          },
+        ];
+  }
+  handoffSubmitted(sessionId: string) {
+    const { session } = this.get(sessionId);
+    session.accountHandoff = false;
+    this.save(session);
   }
   userMessage(sessionId: string, messageId: string) {
     const row = this.database
@@ -437,6 +502,8 @@ export class SessionStore {
       projectPath: place.projectPath ?? source.projectPath,
       autoTitle: false,
       nativeRoot: native ? (source.nativeRoot ?? source.id) : undefined,
+      nativeSessionId: native ? id : undefined,
+      accountHandoff: !native && !!source.accountId,
       createdAt: now,
       updatedAt: now,
       activeRun: null,

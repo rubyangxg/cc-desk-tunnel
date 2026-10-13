@@ -64,6 +64,20 @@ export default function LoginPage({
           <h1>连接代理服务</h1>
           {form.mode === 'local' && <span className="badge simulation">离线模拟</span>}
         </div>
+        <p className="login-intro">
+          连接你的云端 Claude 工作台。新版服务支持在一个连接中管理多个 Claude 账号。
+        </p>
+        <div className="login-steps">
+          <span>
+            <b>1</b>连接服务
+          </span>
+          <span>
+            <b>2</b>登录 Claude 账号
+          </span>
+          <span>
+            <b>3</b>选择本机项目
+          </span>
+        </div>
         <div className="profile-picker">
           <label>
             代理服务
@@ -109,8 +123,7 @@ export default function LoginPage({
               />
             </label>
             <p className="profile-hint">
-              每个代理服务对应一个 Claude 账号；账号登录信息保存在该服务器上。
-              本机项目目录共用；历史会话保存在各服务器上，切回原服务可查看。
+              这里保存服务器连接。Claude 账号在连接后的“账号池”页面添加；原有登录和会话会保留。
             </p>
             {window.desktop?.dev && (
               <div className="connection-modes" role="group" aria-label="连接方式">
@@ -250,10 +263,15 @@ export default function LoginPage({
             {connecting ? '正在连接选中的服务…' : '连接选中的服务'}
           </button>
           <p className="profile-hint">
-            此按钮只连接上方选中的代理服务。一次使用一个服务，无需逐个连接；开启账号池后会后台检测其他服务，并按顺序自动切换。
+            只连接选中的服务。使用新版服务端时，账号切换由服务端完成，不需要另填服务器地址。
           </p>
         </form>
-        {pool}
+        {pool && (
+          <details className="legacy-service-pool">
+            <summary>多代理服务切换（兼容模式）</summary>
+            {pool}
+          </details>
+        )}
         <div className="login-links">
           <button className="project-link" type="button" onClick={openSettings}>
             <Settings />

@@ -22,7 +22,7 @@
 
 每次模型调用的统计来自 CLI 自带的 OpenTelemetry 日志导出（`claude_code.api_request`）：服务在环回地址起接收端，只给自己启动的 CLI 进程设置 `CLAUDE_CODE_ENABLE_TELEMETRY` 与 `OTEL_*LOGS*` 变量，只保存模型、token、费用估算、耗时与会话 ID，不保存账号标识和内容；未开启提示词 / 回复导出。费用是 CLI 按 API 价格的估算，不是订阅账单。
 
-运行中补充复用 SDK async user input，保持同一原生进程与 session ID；human origin 不把用户补充伪装成工具输出或系统提醒。原生可在工具间采纳或合并输入，回执通过消息 UUID 同步；代理不开发独立调度 / 记忆。输入收尾、断连 / 取消及重启按实际确认程度记录，无自动重放。
+运行中补充复用 SDK async user input，保持同一原生进程与 session ID；human origin 不把用户补充伪装成工具输出或系统提醒。原生可在工具间采纳或合并输入，回执通过消息 UUID 同步。输入收尾、断连 / 取消及重启按实际确认程度记录，无自动重放；账号池只在明确的额度耗尽且交接条件满足时进行跨账号续接。
 
 ## 更换项目与换电脑
 
@@ -38,9 +38,15 @@
 
 ## 上下文的权威
 
+### 单账号内的恢复与跨账号交接
+
+下述原生恢复规则适用于同一账号内。启用[服务端账号池](account-pool.md)后，一个图形会话可以关联多个账号的原生片段，每个片段有独立 native session ID、cwd 和 `CLAUDE_CONFIG_DIR`。切换账号时保留代理的项目绑定与可见历史，并明确以最近任务 / 对话 / 工具结果的有界文本交接创建新原生片段；不将另一账号的原生 ID 直接用于恢复。再次切回旧账号也创建新片段，避免恢复过时进度。原账号等待额度恢复且未切换时仍按原 native ID 恢复。
+
+官方 SDK 的历史文件操作在独立 Worker 环境中指定账号目录，不改动服务进程全局环境。默认账号继续使用已有登录目录；新增账号目录位于 `PROXY_DATA_DIR/accounts/<id>/config/`。
+
 Claude Code 原生存储是模型会话上下文的唯一权威，包含原生消息链、工具结果、压缩记录与原生长期记忆。Linux 普通用户的原生配置目录由 CLI 决定（默认 `~/.claude/`）；本项目不解析和重写 JSONL，不在 Windows 自建上下文管理器，也不用 UI transcript 重新拼历史提示词。
 
-- 每个代理会话绑定同一个 native session ID，Linux cwd 固定为 `PROXY_DATA_DIR/native/<id>/`。
+- 每个原生片段绑定同一个 native session ID，Linux cwd 固定为 `PROXY_DATA_DIR/native/<id>/`；未切换账号的代理会话只有一个片段。
 - 首轮 `sessionId`，后续 `resume`；显式 `persistSession: true`。即使每轮启动新 CLI 进程，原生上下文仍由同一 session 恢复。
 - 恢复前通过官方 `getSessionInfo` 检查原生记录存在；缺失则明确失败，不静默另开会话，不用代理事件假装恢复。
 - 运行结束通过官方接口确认记录已保存，并同步保存状态到 GUI。压缩由 CLI 执行，客户端只展示实际公开的压缩 / 状态事件。
