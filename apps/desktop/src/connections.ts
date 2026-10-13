@@ -10,7 +10,7 @@ export type ConnectionForm = {
 export type ConnectionProfile = ConnectionForm & { id: string; name: string };
 export type ConnectionProfiles = { profiles: ConnectionProfile[]; activeId: string };
 
-// The original account keeps the existing drafts, projects and scheduled tasks.
+// The original service keeps the existing drafts and scheduled tasks.
 export function profileKey(key: string, id: string) {
   return id === 'default' ? key : `${key}:${id}`;
 }

@@ -27,6 +27,7 @@ function activity(session: Session) {
 }
 
 export default function Sidebar({
+  serviceName,
   sessions,
   elsewhere,
   selectedId,
@@ -44,6 +45,7 @@ export default function Sidebar({
   sessionMenu,
   projectMenu,
 }: {
+  serviceName?: string;
   sessions: Session[];
   // Sessions on the user's other computers: listed apart, by computer, and not part of any project here.
   elsewhere: Session[];
@@ -240,6 +242,12 @@ export default function Sidebar({
         新建会话
       </button>
       <nav className="session-list" aria-label="会话列表">
+        {serviceName && (
+          <p className="session-source">
+            <strong>当前会话来源：{serviceName}</strong>
+            <span>本机项目共用；其他服务的历史请切换后查看。</span>
+          </p>
+        )}
         {pinned.length > 0 && <div className="list-heading">置顶</div>}
         {pinned.map(renderSession)}
         <div className="list-heading">
@@ -305,7 +313,9 @@ export default function Sidebar({
                 </IconButton>
               </h2>
               {!collapsed && members.map(renderSession)}
-              {!collapsed && !members.length && <p className="project-empty">暂无会话</p>}
+              {!collapsed && !members.length && (
+                <p className="project-empty">{serviceName ? '此服务暂无会话' : '暂无会话'}</p>
+              )}
             </section>
           );
         })}

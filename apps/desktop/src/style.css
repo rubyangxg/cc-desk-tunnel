@@ -732,6 +732,18 @@ html[data-platform='darwin'] .titlebar {
   width: 100%;
   margin: 0 0 2px;
 }
+.session-source {
+  margin: 8px;
+  color: var(--faint);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.session-source strong {
+  display: block;
+  color: var(--muted);
+  font-weight: 500;
+}
 .list-heading {
   display: flex;
   justify-content: space-between;

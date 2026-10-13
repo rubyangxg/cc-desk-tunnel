@@ -110,6 +110,7 @@ export default function LoginPage({
             </label>
             <p className="profile-hint">
               每个代理服务对应一个 Claude 账号；账号登录信息保存在该服务器上。
+              本机项目目录共用；历史会话保存在各服务器上，切回原服务可查看。
             </p>
             {window.desktop?.dev && (
               <div className="connection-modes" role="group" aria-label="连接方式">
