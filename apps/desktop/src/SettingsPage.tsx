@@ -420,7 +420,7 @@ function About({
         <h2 className="page-heading">更新</h2>
         <div className="card">
           <Row
-            title="客户端与服务端需要同一版本"
+            title="建议客户端与服务端一起更新"
             detail="服务端跟随发布页；客户端的安装包由所连接的服务端提供，也可以在登录页改从 GitHub 发布页下载，校验后覆盖升级"
           >
             <span className="setting-actions">

@@ -2,7 +2,8 @@ import {
   continues,
   isFragment,
   PROTOCOL_VERSION,
-  serverMessageSchema,
+  clientServerMessageSchema,
+  fallbackServerProtocol,
 } from '@cc-desk-tunnel/protocol';
 import type {
   AccountState,
@@ -10,7 +11,7 @@ import type {
   Device,
   NativeCapabilities,
   NativeMetrics,
-  ServerMessage,
+  ClientServerMessage as ServerMessage,
   ServiceUpdate,
   Session,
   SessionEvent,
@@ -94,6 +95,7 @@ export type ClientState = {
   release: string | null;
   // The service's version and where it stands against the published releases, if it follows them.
   service: string | null;
+  serviceProtocol: number | null;
   update: ServiceUpdate | null;
   // The service refused this client for its version; it may still hand out an installer.
   mismatch: boolean;
@@ -124,6 +126,7 @@ export class ProxyClient {
     adapter: 'simulation',
     release: null,
     service: null,
+    serviceProtocol: null,
     update: null,
     mismatch: false,
     preparing: null,
@@ -210,6 +213,7 @@ export class ProxyClient {
       error: null,
       release: null,
       service: null,
+      serviceProtocol: null,
       update: null,
       mismatch: false,
       preparing: null,
@@ -224,11 +228,11 @@ export class ProxyClient {
     });
     this.open();
   }
-  private open() {
+  private open(protocolVersion: number = PROTOCOL_VERSION) {
     const credentials = this.credentials;
     if (!credentials) return;
     if (!credentials.bridge) {
-      this.attach(credentials);
+      this.attach(credentials, protocolVersion);
       return;
     }
     const turn = ++this.turn;
@@ -237,7 +241,7 @@ export class ProxyClient {
       (url) => {
         if (!current()) return;
         credentials.url = url;
-        this.attach(credentials);
+        this.attach(credentials, protocolVersion);
       },
       // The bridge could not even be set up on this computer: nothing a later attempt would change.
       (error) => {
@@ -251,15 +255,17 @@ export class ProxyClient {
       },
     );
   }
-  private attach(credentials: NonNullable<ProxyClient['credentials']>) {
+  private attach(credentials: NonNullable<ProxyClient['credentials']>, protocolVersion: number) {
     const socket = new WebSocket(credentials.url);
     this.socket = socket;
+    let ready = false;
+    let fallback: number | null = null;
     const timeout = setTimeout(() => socket.close(), 50000);
     socket.onopen = () => {
       socket.send(
         JSON.stringify({
           type: 'auth',
-          protocolVersion: PROTOCOL_VERSION,
+          protocolVersion,
           token: credentials.token,
           deviceName: credentials.device.name,
         }),
@@ -270,7 +276,9 @@ export class ProxyClient {
       if (this.socket !== socket) return;
       let message: ServerMessage;
       try {
-        message = serverMessageSchema.parse(JSON.parse(data));
+        message = clientServerMessageSchema.parse(JSON.parse(data));
+        if (message.type === 'ready' && message.protocolVersion !== protocolVersion)
+          throw new Error('Unexpected service protocol');
       } catch {
         this.update({ error: '服务消息格式不兼容，已断开连接。' });
         this.credentials = null;
@@ -278,6 +286,7 @@ export class ProxyClient {
         return;
       }
       if (message.type === 'ready') {
+        ready = true;
         if (message.adapter === 'claude-code' && !credentials.bridge) credentials.reconnect = false;
         this.established = true;
         clearTimeout(timeout);
@@ -294,6 +303,8 @@ export class ProxyClient {
           adapter: message.adapter,
           release: message.client?.version ?? null,
           service: message.version,
+          serviceProtocol: message.protocolVersion,
+          mismatch: false,
           update: message.update ?? null,
           model: message.model ?? null,
         });
@@ -306,6 +317,13 @@ export class ProxyClient {
         if (message.ok) request.resolve(message);
         else request.reject(new Error(message.message ?? '请求失败。'));
       } else if (message.type === 'connection.error') {
+        // Retry authentication once, before any session command can be sent. A new
+        // bridge rechecks TLS and recreates the execution channel for this attempt.
+        fallback = !ready ? fallbackServerProtocol(message, protocolVersion) : null;
+        if (fallback !== null) {
+          socket.close();
+          return;
+        }
         this.update({ error: message.message });
         if (message.code === 'version_mismatch')
           this.update({
@@ -428,6 +446,10 @@ export class ProxyClient {
       this.socket = null;
       this.flushStream();
       this.rejectPending();
+      if (fallback !== null && this.credentials === credentials) {
+        this.open(fallback);
+        return;
+      }
       if (
         !this.credentials ||
         !this.credentials.reconnect ||

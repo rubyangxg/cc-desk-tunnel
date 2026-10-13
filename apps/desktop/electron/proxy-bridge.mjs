@@ -6,7 +6,7 @@ import { connect } from 'node:tls';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { WebSocket, WebSocketServer } from 'ws';
-import { serverMessageSchema, MAX_FRAME_BYTES } from '@cc-desk-tunnel/protocol';
+import { clientServerMessageSchema, MAX_FRAME_BYTES } from '@cc-desk-tunnel/protocol';
 import { startWindowsSsh } from './windows-ssh.mjs';
 import { startPosixSsh } from './posix-ssh.mjs';
 import { openChannels } from './tunnel-channels.mjs';
@@ -285,7 +285,7 @@ export async function openProxyBridge(
       alive();
       let message;
       try {
-        message = serverMessageSchema.parse(JSON.parse(raw.toString('utf8')));
+        message = clientServerMessageSchema.parse(JSON.parse(raw.toString('utf8')));
       } catch {
         fail('服务端的消息无法识别。\n客户端与服务端的版本可能不一致，请把两者升级到同一版本。');
         return;

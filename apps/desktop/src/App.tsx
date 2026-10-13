@@ -1348,6 +1348,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
                   pool={profiles.pool}
                   profiles={profiles.profiles}
                   activeId={profileId}
+                  legacyService={state.serviceProtocol === 16}
                 />
               }
               client={client}

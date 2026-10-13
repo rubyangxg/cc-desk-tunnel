@@ -8,10 +8,12 @@ export default function AccountPoolPanel({
   pool,
   profiles,
   activeId,
+  legacyService = false,
 }: {
   pool: AccountPool;
   profiles: ConnectionProfile[];
   activeId: string;
+  legacyService?: boolean;
 }) {
   const order = [
     ...new Set([...pool.config.order, ...profiles.map((profile) => profile.id)]),
@@ -37,6 +39,11 @@ export default function AccountPoolPanel({
         5
         小时额度耗尽后，自动切换到可用账号，在同一项目新建会话并携带最近上下文继续。每个账号需保存服务凭据。所有账号都不可用时暂停。
       </p>
+      {legacyService && (
+        <p role="status" className="profile-hint">
+          当前连接的是旧版服务端，可查询额度和手动切换。旧版缺少明确的额度耗尽通知，自动续接可能无法触发；请升级服务端以完整使用账号池。
+        </p>
+      )}
       <label>
         账号池使用顺序
         <select

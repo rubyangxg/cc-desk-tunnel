@@ -3,11 +3,39 @@ import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import {
   PROTOCOL_VERSION,
+  clientServerMessageSchema,
+  serverMessageSchema,
+  fallbackServerProtocol,
   authSchema,
   commandSchema,
   eventSchema,
   terminalControlSchema,
 } from '../src/index.ts';
+
+test('only clients accept the audited v0.3.1 protocol and retry its version refusal once', () => {
+  const ready = {
+    type: 'ready',
+    protocolVersion: 16,
+    version: '0.3.1',
+    connectionId: randomUUID(),
+    adapter: 'claude-code',
+    sessions: [],
+  };
+  assert.equal(clientServerMessageSchema.safeParse(ready).success, true);
+  assert.equal(serverMessageSchema.safeParse(ready).success, false);
+  for (const protocolVersion of [15, 18, 9999])
+    assert.equal(clientServerMessageSchema.safeParse({ ...ready, protocolVersion }).success, false);
+  const refusal = {
+    type: 'connection.error' as const,
+    code: 'version_mismatch',
+    service: '0.3.1',
+    message: 'Incompatible protocol',
+  };
+  assert.equal(fallbackServerProtocol(refusal, 17), 16);
+  assert.equal(fallbackServerProtocol(refusal, 16), null);
+  assert.equal(fallbackServerProtocol({ ...refusal, service: '0.2.13' }, 17), null);
+  assert.equal(fallbackServerProtocol({ ...refusal, code: 'unauthorized' }, 17), null);
+});
 
 test('protocol validates UTF-8 text, IDs and bounded input', () => {
   const command = {

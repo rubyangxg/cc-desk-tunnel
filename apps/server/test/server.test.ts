@@ -105,6 +105,7 @@ test('requires authentication, rejects wrong token/version/origin and accepts he
   for (const [badToken, version, code] of [
     ['wrong-token-with-enough-length', 1, 'unauthorized'],
     [token, 9999, 'version_mismatch'],
+    [token, 16, 'version_mismatch'],
   ] as const) {
     const client = new Client(f.url);
     f.clients.push(client);
