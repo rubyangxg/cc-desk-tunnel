@@ -128,7 +128,14 @@ export const serverPoolAccountSchema = z.object({
   login: z.object({ url: z.url() }).nullable(),
   busy: z.boolean(),
 });
+// Shared by project menus and the service's persisted project settings.
+export const projectPathKey = (path: string) =>
+  /^[a-z]:[\\/]|^\\\\/i.test(path)
+    ? path.replaceAll('/', '\\').replace(/\\+$/, '').toLowerCase()
+    : path.replace(/\/+$/, '') || '/';
+
 export const serverPoolStateSchema = z.object({
+  quotaResumeProjects: z.array(z.object({ deviceId: id, projectPath: z.string() })).optional(),
   settings: serverPoolSettingsSchema,
   accounts: z.array(serverPoolAccountSchema).max(10),
   refreshing: z.boolean(),
@@ -559,6 +566,14 @@ export const commandSchema = z.discriminatedUnion('type', [
       bucketMinutes: z.number().int().min(5).max(1440).default(60),
       // Minutes east of UTC, so day buckets follow the viewer's calendar.
       offsetMinutes: z.number().int().min(-840).max(840).default(0),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('project.quotaResume'),
+      ...request,
+      projectPath: z.string().trim().min(1).max(2048),
+      enabled: z.boolean(),
     })
     .strict(),
   z.object({ type: z.literal('session.delete'), ...request, sessionId: id }).strict(),

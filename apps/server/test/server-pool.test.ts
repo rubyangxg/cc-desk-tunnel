@@ -330,3 +330,193 @@ nativeTest(
     assert.equal(f.server.store.get(sessionId!).session.accountId, 'default');
   },
 );
+
+nativeTest(
+  'project quota reset resumes the same native session once and supports enabling during a run',
+  { timeout: 60000 },
+  async (t) => {
+    for (const late of [false, true])
+      await t.test(late ? 'enable after rejection' : 'enable before run', async (t) => {
+        const f = await fixture(t);
+        await f.request({ type: 'pool.configure', values: { enabled: false } });
+        const configFile = join(f.config, 'fixture.json');
+        writeFileSync(
+          configFile,
+          JSON.stringify({ ...JSON.parse(readFileSync(configFile, 'utf8')), resetSeconds: 2 }),
+        );
+        const projectPath = '/local/resume-project';
+        if (!late) await f.request({ type: 'project.quotaResume', projectPath, enabled: true });
+        const { sessionId } = await f.request({
+          type: 'session.create',
+          title: 'resume later',
+          projectPath,
+        });
+        await f.request({ type: 'message.send', sessionId, text: 'finish the task' });
+        await f.wait(
+          (message) =>
+            message.type === 'session.event' &&
+            message.event.payload.type === 'run.error' &&
+            message.event.payload.code === 'quota_five_hour',
+        );
+        if (late) await f.request({ type: 'project.quotaResume', projectPath, enabled: true });
+        const waiting = await f.wait(
+          (message) =>
+            message.type === 'session.event' &&
+            message.event.payload.type === 'native.notice' &&
+            message.event.payload.text.includes('随后自动发送 continue'),
+        );
+        assert.ok(waiting);
+        const rejection = f.server.store
+          .snapshot(sessionId!)
+          .events.find(
+            (event) =>
+              event.payload.type === 'run.error' && event.payload.code === 'quota_five_hour',
+          )!;
+        const reset =
+          rejection.payload.type === 'run.error' ? Date.parse(rejection.payload.resetsAt!) : 0;
+        assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 1);
+        writeFileSync(configFile, JSON.stringify({ loggedIn: true, email: 'a@example.test' }));
+        await f.wait(
+          (message) =>
+            message.type === 'session.event' &&
+            message.event.sessionId === sessionId &&
+            message.event.payload.type === 'run.status' &&
+            message.event.payload.status === 'completed',
+        );
+        assert.ok(Date.now() >= reset);
+        const calls = readFileSync(f.log, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line));
+        assert.equal(calls.length, 2);
+        assert.equal(calls[1].prompt, 'continue');
+        assert.ok(calls[1].at >= reset + 1000);
+        assert.equal(calls[1].sessionId, calls[0].sessionId);
+        assert.equal(calls[1].directory, calls[0].directory);
+        assert.ok(
+          calls[1].args.includes('--resume=' + calls[0].sessionId) ||
+            calls[1].args.includes('--resume'),
+        );
+        assert.equal(f.server.store.get(sessionId!).session.accountId, 'default');
+        const continued = f.server.store
+          .snapshot(sessionId!)
+          .events.filter(
+            (event) => event.payload.type === 'message.user' && event.payload.text === 'continue',
+          );
+        assert.equal(continued.length, 1);
+      });
+  },
+);
+
+nativeTest(
+  'project quota waiting can be cancelled by its switch or stop without sending continue',
+  { timeout: 60000 },
+  async (t) => {
+    for (const action of ['disable', 'stop'])
+      await t.test(action, async (t) => {
+        const f = await fixture(t);
+        await f.request({ type: 'pool.configure', values: { enabled: false } });
+        const projectPath = '/local/cancel-project';
+        await f.request({ type: 'project.quotaResume', projectPath, enabled: true });
+        const { sessionId } = await f.request({
+          type: 'session.create',
+          title: 'cancel wait',
+          projectPath,
+        });
+        await f.request({ type: 'message.send', sessionId, text: 'finish later' });
+        await f.wait(
+          (message) =>
+            message.type === 'session.event' &&
+            message.event.payload.type === 'native.notice' &&
+            message.event.payload.text.includes('随后自动发送 continue'),
+        );
+        if (action === 'disable')
+          await f.request({ type: 'project.quotaResume', projectPath, enabled: false });
+        else
+          await f.request({
+            type: 'run.cancel',
+            sessionId,
+            runId: f.server.store.get(sessionId!).session.activeRun!.id,
+          });
+        await f.wait(
+          (message) =>
+            message.type === 'session.event' &&
+            message.event.payload.type === 'run.status' &&
+            message.event.payload.status === 'cancelled',
+          2000,
+        );
+        assert.equal(f.server.store.get(sessionId!).session.activeRun, null);
+        assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 1);
+      });
+  },
+);
+
+nativeTest(
+  'project auto continue does not resume unrelated projects or unknown tool results',
+  { timeout: 60000 },
+  async (t) => {
+    for (const unsafe of [false, true])
+      await t.test(unsafe ? 'unknown tool result' : 'different project', async (t) => {
+        const f = await fixture(t, unsafe ? 'unknown' : 'quota-result');
+        await f.request({ type: 'pool.configure', values: { enabled: false } });
+        await f.request({
+          type: 'project.quotaResume',
+          projectPath: '/local/enabled',
+          enabled: true,
+        });
+        const { sessionId } = await f.request({
+          type: 'session.create',
+          title: 'do not retry',
+          projectPath: unsafe ? '/local/enabled' : '/local/disabled',
+        });
+        await f.request({ type: 'message.send', sessionId, text: 'do work once' });
+        await f.wait(
+          (message) =>
+            message.type === 'session.event' &&
+            message.event.payload.type === 'run.status' &&
+            message.event.payload.status === 'failed',
+        );
+        assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 1);
+        assert.equal(f.server.store.get(sessionId!).session.activeRun, null);
+      });
+  },
+);
+
+nativeTest(
+  'a project switch wakes an existing account-pool quota wait',
+  { timeout: 30000 },
+  async (t) => {
+    const f = await fixture(t);
+    await f.request({ type: 'pool.account.update', accountId: f.id, enabled: false });
+    const projectPath = '/local/enable-while-waiting';
+    const { sessionId } = await f.request({
+      type: 'session.create',
+      title: 'waiting pool',
+      projectPath,
+    });
+    await f.request({ type: 'message.send', sessionId, text: 'continue after quota' });
+    await f.wait(
+      (message) =>
+        message.type === 'session.event' &&
+        message.event.payload.type === 'native.notice' &&
+        message.event.payload.text.includes('任务已暂停'),
+    );
+    await f.request({ type: 'project.quotaResume', projectPath, enabled: true });
+    await f.wait(
+      (message) =>
+        message.type === 'session.event' &&
+        message.event.payload.type === 'native.notice' &&
+        message.event.payload.text.includes('随后自动发送 continue'),
+      2000,
+    );
+    await f.request({ type: 'project.quotaResume', projectPath, enabled: false });
+    await f.wait(
+      (message) =>
+        message.type === 'session.event' &&
+        message.event.payload.type === 'run.status' &&
+        message.event.payload.status === 'cancelled',
+      2000,
+    );
+    assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 1);
+  },
+);

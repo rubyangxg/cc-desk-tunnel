@@ -84,6 +84,26 @@ test('one-service account dashboard logs in independent accounts, saves policy a
   await page.getByRole('button', { name: '会话', exact: true }).click();
   const title = await createSession(page, '统一历史');
   await expect(page.locator('.connection-status')).toContainText('待选择账号');
+  const projectHeading = page.locator('.project-group > h2').first();
+  const resumeOption = page.getByRole('menuitemradio', { name: '额度重置后自动继续', exact: true });
+  await projectHeading.click({ button: 'right' });
+  await expect(resumeOption).toHaveAttribute('aria-checked', 'false');
+  await resumeOption.click();
+  await projectHeading.click({ button: 'right' });
+  await expect(resumeOption).toHaveAttribute('aria-checked', 'true');
+  await page.keyboard.press('Escape');
+  await page.reload();
+  await page.getByLabel('服务凭据', { exact: true }).fill(token);
+  await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
+  await expect(page.locator('.connection-status')).toContainText('已连接');
+  await projectHeading.click({ button: 'right' });
+  await expect(resumeOption).toHaveAttribute('aria-checked', 'true');
+  await resumeOption.click();
+  await projectHeading.click({ button: 'right' });
+  await expect(resumeOption).toHaveAttribute('aria-checked', 'false');
+  await page.keyboard.press('Escape');
+  await page.locator('.session-row').filter({ hasText: title }).click();
+
   const accountId = await page
     .getByLabel('当前会话 Claude 账号', { exact: true })
     .locator('option')

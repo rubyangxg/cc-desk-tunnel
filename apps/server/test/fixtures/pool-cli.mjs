@@ -81,6 +81,7 @@ if (process.argv.includes('auth')) {
           process.env.POOL_TEST_LOG,
           JSON.stringify({
             directory,
+            at: Date.now(),
             sessionId,
             args: process.argv.slice(2),
             prompt: message.message.content,
@@ -111,7 +112,7 @@ if (process.argv.includes('auth')) {
         permissionMode: 'auto',
       });
       while (state().pauseBeforeQuota) await delay(10);
-      if (config.fail === 'quota' || config.fail === 'unknown') {
+      if (['quota', 'quota-result', 'unknown'].includes(config.fail)) {
         save({ ...config, blocked: true });
         if (config.fail === 'unknown')
           emit({

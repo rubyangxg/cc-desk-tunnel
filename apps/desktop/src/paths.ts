@@ -3,10 +3,8 @@
 const isWindowsPath = (path: string) => /^[a-z]:[\\/]|^\\\\/i.test(path);
 // Windows paths compare case-insensitively and may arrive with either separator; a POSIX path is taken as
 // written, where a backslash is a character of a name like any other.
-export const pathKey = (path: string) =>
-  isWindowsPath(path)
-    ? path.replaceAll('/', '\\').replace(/\\+$/, '').toLowerCase()
-    : path.replace(/\/+$/, '') || '/';
+export { projectPathKey as pathKey } from '@cc-desk-tunnel/protocol';
+import { projectPathKey as pathKey } from '@cc-desk-tunnel/protocol';
 export const folderName = (path: string) =>
   path
     .split(isWindowsPath(path) ? /[\\/]/ : '/')

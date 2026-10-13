@@ -1,3 +1,4 @@
+import { ProjectQuotaSettings } from './project-quota.ts';
 import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { createReadStream, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -93,6 +94,8 @@ export type Run = {
     stopTask?: (taskId: string) => Promise<void>;
     quotaPolicyChanged?: () => void;
   };
+  quotaWaiting?: boolean;
+  wakeQuota?: () => void;
   attempted?: Set<string>;
   nativeId?: string;
 };
@@ -147,6 +150,7 @@ export function createProxyServer(options: ServerOptions) {
       'Native mode requires TLS or explicit reverse proxy mode, and the execution channel.',
     );
   const store = new SessionStore(options.dataDir);
+  const projectQuota = new ProjectQuotaSettings(store.database);
   const usage = new UsageLog(store.database);
   const usageReceiver = options.claude ? createUsageReceiver(usage) : undefined;
   const peers = new Set<Peer>();
@@ -313,7 +317,11 @@ export function createProxyServer(options: ServerOptions) {
     if (!pool || closing) return;
     const state = pool.snapshot();
     for (const account of state.accounts) account.busy = accountBusy(account.id);
-    const message = { type: 'pool.state' as const, ...state };
+    const message = {
+      type: 'pool.state' as const,
+      ...state,
+      quotaResumeProjects: projectQuota.list(),
+    };
     if (target) send(target, message);
     else for (const peer of peers) if (peer.authenticated && peer.poolClient) send(peer, message);
   }
@@ -441,7 +449,10 @@ export function createProxyServer(options: ServerOptions) {
     }
     if (command.type === 'pool.configure') {
       pool.configure(command.values);
-      for (const run of runs.values()) run.controls.quotaPolicyChanged?.();
+      for (const run of runs.values()) {
+        run.controls.quotaPolicyChanged?.();
+        run.wakeQuota?.();
+      }
       publishPool();
       return;
     }
@@ -630,6 +641,43 @@ export function createProxyServer(options: ServerOptions) {
   function nativeRoot(sessionId: string) {
     return store.get(sessionId).session.nativeRoot ?? sessionId;
   }
+  function resumesAfterQuota(run: Run) {
+    return projectQuota.enabled(run.device, store.get(run.sessionId).session.projectPath);
+  }
+  // The CLI has exited before this timer is armed; no process or tool is replayed while waiting.
+  async function waitForQuotaReset(run: Run, resetsAt: string | undefined) {
+    const reset = Date.parse(resetsAt ?? '');
+    if (!Number.isFinite(reset)) {
+      emit(run, { type: 'native.notice', text: '未取得额度重置时间，请检测账号额度后手动继续。' });
+      return false;
+    }
+    // A stale rejection must not create a tight loop of billable requests.
+    const deadline = reset > Date.now() ? reset + 1000 : Date.now() + 30_000;
+    run.quotaWaiting = true;
+    emit(run, {
+      type: 'native.notice',
+      text: `等待额度重置（${new Date(deadline).toISOString()}），随后自动发送 continue。`,
+    });
+    try {
+      while (Date.now() < deadline && resumesAfterQuota(run) && !run.controller.signal.aborted) {
+        await new Promise<void>((resolve) => {
+          const done = () => {
+            clearTimeout(timer);
+            run.controller.signal.removeEventListener('abort', done);
+            run.wakeQuota = undefined;
+            resolve();
+          };
+          const timer = setTimeout(done, Math.min(deadline - Date.now(), 30_000));
+          run.wakeQuota = done;
+          run.controller.signal.addEventListener('abort', done, { once: true });
+          if (run.controller.signal.aborted) done();
+        });
+      }
+      return resumesAfterQuota(run) && !run.controller.signal.aborted;
+    } finally {
+      run.quotaWaiting = false;
+    }
+  }
   async function native(run: Run) {
     try {
       while (!run.controller.signal.aborted) {
@@ -643,7 +691,7 @@ export function createProxyServer(options: ServerOptions) {
         const status = await runClaude(claude, {
           sessionId: run.sessionId,
           nativeSessionId: run.nativeId,
-          stopAtQuota: () => pool!.settings.enabled,
+          stopAtQuota: () => pool!.settings.enabled || resumesAfterQuota(run),
           nativeRoot: session.nativeRoot ?? session.id,
           projectPath: said.projectPath,
           platform: said.platform,
@@ -690,7 +738,7 @@ export function createProxyServer(options: ServerOptions) {
         if (
           status !== 'failed' ||
           run.controller.signal.aborted ||
-          !pool!.settings.enabled ||
+          (!pool!.settings.enabled && !resumesAfterQuota(run)) ||
           !quota ||
           !canHandoff(events, run.id)
         ) {
@@ -703,33 +751,64 @@ export function createProxyServer(options: ServerOptions) {
         run.attempted ??= new Set();
         run.attempted.add(accountId);
         publishPool();
-        await refreshFor(run);
-        let next = orderedAccounts(pool!.snapshot(), [...run.attempted, ...pool!.locked])[0];
-        if (!next)
+        if (pool!.settings.enabled) await refreshFor(run);
+        let next = pool!.settings.enabled
+          ? orderedAccounts(pool!.snapshot(), [...run.attempted, ...pool!.locked])[0]
+          : undefined;
+        let resumedAfterReset = false;
+        if (!next && !resumesAfterQuota(run))
           emit(run, {
             type: 'native.notice',
             text: '账号池暂时没有可用额度，任务已暂停；服务端会检测额度恢复后继续。可以随时停止。',
           });
-        while (!next && !run.controller.signal.aborted && pool!.settings.enabled) {
+        while (
+          !next &&
+          !run.controller.signal.aborted &&
+          (pool!.settings.enabled || resumesAfterQuota(run))
+        ) {
+          if (resumesAfterQuota(run)) {
+            const resetsAt =
+              quota.resetsAt ??
+              pool!.get(accountId).limits?.windows.find((window) => window.name === 'five_hour')
+                ?.resetsAt ??
+              undefined;
+            if (!(await waitForQuotaReset(run, resetsAt))) {
+              finish(run, 'cancelled', run.cancelReason ?? '已取消额度重置后自动继续。');
+              return;
+            }
+            const account = pool!.get(accountId);
+            if (!account.enabled || account.loggedIn !== true || pool!.locked.has(accountId)) {
+              finish(run, 'failed', '账号已停用或未登录，请手动继续。');
+              return;
+            }
+            next = account;
+            resumedAfterReset = true;
+            break;
+          }
           await new Promise<void>((resolve) => {
             const done = () => {
               clearTimeout(timer);
               run.controller.signal.removeEventListener('abort', done);
+              run.wakeQuota = undefined;
               resolve();
             };
             const timer = setTimeout(done, 30_000);
+            run.wakeQuota = done;
             run.controller.signal.addEventListener('abort', done, { once: true });
             if (run.controller.signal.aborted) done();
           });
           if (run.controller.signal.aborted) break;
-          await refreshFor(run);
-          next = orderedAccounts(pool!.snapshot(), [...pool!.locked])[0];
+          if (resumesAfterQuota(run)) continue;
+          if (pool!.settings.enabled) {
+            await refreshFor(run);
+            next = orderedAccounts(pool!.snapshot(), [...pool!.locked])[0];
+          }
         }
         if (
           !next ||
           run.controller.signal.aborted ||
           !seats.get(run.device)?.door?.ssh ||
-          !pool!.settings.enabled
+          (!pool!.settings.enabled && !resumedAfterReset)
         ) {
           finish(
             run,
@@ -744,18 +823,29 @@ export function createProxyServer(options: ServerOptions) {
           type: 'native.notice',
           text:
             next.id === accountId
-              ? `账号 ${next.name} 的额度已恢复，继续原生会话。`
+              ? resumedAfterReset
+                ? `已到额度重置时间，向 ${next.name} 的原会话发送 continue。`
+                : `账号 ${next.name} 的额度已恢复，继续原生会话。`
               : `账号池续接：${source} → ${next.name}。本机项目和当前会话保留，使用最近对话与任务进度继续。`,
         });
         updated(run.sessionId);
         const messageId = randomUUID();
-        const prompt =
-          next.id === accountId
+        const prompt = resumedAfterReset
+          ? 'continue'
+          : next.id === accountId
             ? CONTINUE
             : poolHandoff(store.history(run.sessionId, randomUUID(), 0).events);
         run.input = new NativeInput(selected.nativeSessionId ?? selected.id, (event) =>
           emit(run, event),
         );
+        if (resumedAfterReset)
+          emit(run, {
+            type: 'message.user',
+            messageId,
+            text: 'continue',
+            scenario: 'chat',
+            continued: true,
+          });
         run.input.submit(messageId, prompt);
       }
       finish(run, 'cancelled', run.cancelReason);
@@ -1127,6 +1217,11 @@ export function createProxyServer(options: ServerOptions) {
         throw new DomainError('not_owner', '该运行属于另一台设备。');
       if (active.controller.signal.aborted)
         throw new DomainError('run_finishing', '原生运行正在停止，请稍后发送。');
+      if (active.quotaWaiting)
+        throw new DomainError(
+          'quota_waiting',
+          '正在等待额度重置；如需发送其他消息，请先停止等待。',
+        );
       active.input.assertWritable();
       peer.subscriptions.add(command.sessionId);
       emit(active, { type: 'message.user', messageId: command.requestId, text, scenario });
@@ -1248,6 +1343,18 @@ export function createProxyServer(options: ServerOptions) {
   // Resolves to the session ID carried in the response frame; account and usage commands have none.
   async function execute(peer: Peer, command: Command): Promise<string | undefined> {
     switch (command.type) {
+      case 'project.quotaResume': {
+        if (!pool) throw new DomainError('native_unavailable', '此服务不支持自动继续。');
+        peer.poolClient = true;
+        const device = deviceOf(peer);
+        projectQuota.set(device.id, command.projectPath, command.enabled);
+        for (const run of runs.values()) {
+          run.controls.quotaPolicyChanged?.();
+          run.wakeQuota?.();
+        }
+        publishPool();
+        return undefined;
+      }
       case 'pool.status':
       case 'pool.add':
       case 'pool.configure':
@@ -1502,7 +1609,7 @@ export function createProxyServer(options: ServerOptions) {
       update: updates?.state,
       client: installer(),
       sessions: store.list(),
-      ...(pool ? { features: ['account-pool'] } : {}),
+      ...(pool ? { features: ['account-pool', 'project-quota-resume'] } : {}),
     });
     // Every connection that asks has an execution channel of its own, to the computer it comes from.
     if (auth.data.tunnel && options.tunnel) {

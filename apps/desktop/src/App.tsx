@@ -875,6 +875,34 @@ export function App({ profiles }: { profiles: ProfileControls }) {
         run: () =>
           setPrefs((value) => ({ ...value, pinnedProjects: toggled(value.pinnedProjects, key) })),
       },
+      ...(nativeMode
+        ? [
+            {
+              label: '额度重置后自动继续',
+              icon: <RefreshCw />,
+              checked: !!state.pool?.quotaResumeProjects?.some(
+                (item) => item.deviceId === state.device?.id && pathKey(item.projectPath) === key,
+              ),
+              disabled:
+                !connected ||
+                busy ||
+                !state.features.includes('project-quota-resume') ||
+                !state.pool,
+              detail: state.features.includes('project-quota-resume') ? undefined : '请升级服务端',
+              run: () =>
+                void act(async () => {
+                  await client.request({
+                    type: 'project.quotaResume',
+                    projectPath: path,
+                    enabled: !state.pool?.quotaResumeProjects?.some(
+                      (item) =>
+                        item.deviceId === state.device?.id && pathKey(item.projectPath) === key,
+                    ),
+                  });
+                }),
+            },
+          ]
+        : []),
       { label: '修改显示名称', icon: <Pencil />, run: () => setRenameProject(path) },
       {
         label: '更改文件夹…',
