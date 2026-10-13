@@ -211,43 +211,48 @@ test('handoff omits reasoning, is bounded, and refuses unknown tools and unconfi
   assert.equal(canHandoff(events, runId), false);
 });
 
-test('native SDK history reads run in isolated environments even for concurrent accounts', async (t) => {
-  const { pool, dir } = fixture(t);
-  const second = randomUUID();
-  pool.add(second, 'B');
-  const cwd = join(dir, 'project');
-  mkdirSync(cwd);
-  const id = randomUUID();
-  for (const [account, text] of [
-    ['default', 'account A private history'],
-    [second, 'account B private history'],
-  ]) {
-    const project = join(
-      pool.configDirectory(account),
-      'projects',
-      cwd.replace(/[^a-zA-Z0-9]/g, '-'),
-    );
-    mkdirSync(project, { recursive: true });
-    writeFileSync(
-      join(project, `${id}.jsonl`),
-      JSON.stringify({
-        type: 'user',
-        uuid: randomUUID(),
-        parentUuid: null,
-        sessionId: id,
-        cwd,
-        timestamp: new Date().toISOString(),
-        message: { role: 'user', content: text },
-        isSidechain: false,
-      }) + '\n',
-    );
-  }
-  const [a, b] = await Promise.all([
-    nativeStore(pool.options('default'), 'messages', id, { dir: cwd }),
-    nativeStore(pool.options(second), 'messages', id, { dir: cwd }),
-  ]);
-  assert.ok(JSON.stringify(a).includes('account A private history'));
-  assert.ok(!JSON.stringify(a).includes('account B private history'));
-  assert.ok(JSON.stringify(b).includes('account B private history'));
-  assert.ok(!JSON.stringify(b).includes('account A private history'));
-});
+// This fixture writes the Unix CLI's native history layout. The CLI adapter is not hosted on Windows.
+test(
+  'native SDK history reads run in isolated environments even for concurrent accounts',
+  { skip: process.platform === 'win32' },
+  async (t) => {
+    const { pool, dir } = fixture(t);
+    const second = randomUUID();
+    pool.add(second, 'B');
+    const cwd = join(dir, 'project');
+    mkdirSync(cwd);
+    const id = randomUUID();
+    for (const [account, text] of [
+      ['default', 'account A private history'],
+      [second, 'account B private history'],
+    ]) {
+      const project = join(
+        pool.configDirectory(account),
+        'projects',
+        cwd.replace(/[^a-zA-Z0-9]/g, '-'),
+      );
+      mkdirSync(project, { recursive: true });
+      writeFileSync(
+        join(project, `${id}.jsonl`),
+        JSON.stringify({
+          type: 'user',
+          uuid: randomUUID(),
+          parentUuid: null,
+          sessionId: id,
+          cwd,
+          timestamp: new Date().toISOString(),
+          message: { role: 'user', content: text },
+          isSidechain: false,
+        }) + '\n',
+      );
+    }
+    const [a, b] = await Promise.all([
+      nativeStore(pool.options('default'), 'messages', id, { dir: cwd }),
+      nativeStore(pool.options(second), 'messages', id, { dir: cwd }),
+    ]);
+    assert.ok(JSON.stringify(a).includes('account A private history'));
+    assert.ok(!JSON.stringify(a).includes('account B private history'));
+    assert.ok(JSON.stringify(b).includes('account B private history'));
+    assert.ok(!JSON.stringify(b).includes('account A private history'));
+  },
+);
