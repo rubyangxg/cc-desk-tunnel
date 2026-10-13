@@ -33,7 +33,9 @@ npm run sync:upstream
 
 `personal` 的客户端直接下载地址、服务器默认更新源和安装脚本默认仓库均为 `rubyangxg/cc-desk-tunnel`。已有部署如果在 `config/service.env` 显式设置了 `PROXY_RELEASE_REPO`，需将其改为 `rubyangxg/cc-desk-tunnel` 并按部署说明重启服务；环境变量会覆盖代码默认值。
 
-发布前更新 `apps/desktop/package.json` 和 `package-lock.json` 中的桌面版本号，以及 `CHANGELOG.md` 的对应小节。现有协议只支持 `x.y.z` 三段数字版本，两端版本应一致。不要重复使用本 fork 已发布的版本标签。
+发布前更新 `apps/desktop/package.json` 和 `package-lock.json` 中的桌面版本号，以及 `CHANGELOG.md` 的对应小节。现有协议只支持 `x.y.z` 三段数字发布版本；建议两端取同一次构建。不要重复使用本 fork 已发布的版本标签。
+
+显示版本与通信协议是两个独立字段：正式 `v0.3.1` 标签使用协议 16，之后的上游 `main` 曾在显示版本仍为 0.3.1 时改用协议 17。个人 v0.3.3 客户端支持两者，遇到正式 v0.3.1 的协议拒绝时自动重连一次；因此不需要把个人发布版本改回 0.3.1。旧服务端可连接、查询额度和手动切换，但缺少每轮统计及明确的额度拒绝通知，自动续接可能无法触发；完整账号池功能仍建议配套升级服务端。
 
 将提交推送到 `personal`，确认 GitHub CLI 已登录并有本 fork 的 Actions 和 Releases 权限，然后执行：
 
