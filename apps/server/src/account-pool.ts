@@ -50,6 +50,38 @@ export function orderedAccounts(state: ServerPoolState, excluded: string[] = [],
     );
 }
 
+// Recover only when every exhausted quota window permits it. Unknown deadlines stay unknown.
+export function nextAccountReset(accounts: ServerPoolAccount[], excluded: string[] = []) {
+  return (
+    accounts
+      .flatMap((account) => {
+        if (
+          !account.enabled ||
+          account.loggedIn !== true ||
+          account.error ||
+          account.login ||
+          excluded.includes(account.id)
+        )
+          return [];
+        const blocked =
+          account.limits?.windows.filter(
+            (window) =>
+              ['five_hour', 'seven_day'].includes(window.name) && (window.utilization ?? 0) >= 100,
+          ) ?? [];
+        const times = blocked.map((window) =>
+          window.name === 'five_hour' && account.quotaResetAt
+            ? account.quotaResetAt
+            : Date.parse(window.resetsAt ?? ''),
+        );
+        if (account.blockedUntil && !blocked.some((window) => window.name === 'five_hour'))
+          times.push(account.quotaResetAt ?? NaN);
+        if (!times.length || times.some((at) => !Number.isFinite(at))) return [];
+        return [{ accountId: account.id, at: Math.max(...times) }];
+      })
+      .sort((a, b) => a.at - b.at)[0] ?? null
+  );
+}
+
 // This table contains labels and quota observations only. Official CLI login owns the credential files.
 export class AccountPool {
   settings: ServerPoolSettings;
@@ -167,11 +199,15 @@ export class AccountPool {
       checkedAt: measuredAt,
       error: error ?? (limits?.available ? undefined : '额度暂不可用，请重新检测'),
       blockedUntil,
+      quotaResetAt: blockedUntil ? account.quotaResetAt : null,
     });
   }
   block(id: string, resetsAt?: string) {
     const reset = Date.parse(resetsAt ?? '');
-    this.update(id, { blockedUntil: reset > Date.now() ? reset : Date.now() + 300_000 });
+    this.update(id, {
+      blockedUntil: reset > Date.now() ? reset : Date.now() + 300_000,
+      quotaResetAt: Number.isFinite(reset) ? reset : null,
+    });
   }
   choose(current?: string, excluded: string[] = []) {
     excluded = [...excluded, ...this.locked];

@@ -600,3 +600,75 @@ nativeTest(
     assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 1);
   },
 );
+
+nativeTest(
+  'pool countdown targets earliest recovery even with project resume enabled and resumes once',
+  { timeout: 30000 },
+  async (t) => {
+    const f = await fixture(t);
+    const backup = join(f.dir, 'accounts', f.id, 'config', 'fixture.json');
+    const at = Date.now() + 5000;
+    writeFileSync(
+      backup,
+      JSON.stringify({
+        loggedIn: true,
+        email: 'b@example.test',
+        blocked: true,
+        resetsAt: new Date(at).toISOString(),
+      }),
+    );
+    const projectPath = '/local/earliest';
+    await f.request({ type: 'project.quotaResume', projectPath, enabled: true });
+    const { sessionId } = await f.request({
+      type: 'session.create',
+      title: 'earliest recovery',
+      projectPath,
+    });
+    await f.request({ type: 'message.send', sessionId, text: 'finish earliest' });
+    const waiting = await f.wait(
+      (m) =>
+        m.type === 'pool.state' &&
+        m.quotaWaits?.some((w) => w.sessionId === sessionId && w.accountId === f.id) === true,
+    );
+    assert.ok(waiting.type === 'pool.state');
+    assert.equal(waiting.quotaWaits![0].at, at);
+    assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 1);
+    // A successful quota observation is available when the scheduled check fires.
+    writeFileSync(
+      backup,
+      JSON.stringify({
+        loggedIn: true,
+        email: 'b@example.test',
+        resetsAt: new Date(at).toISOString(),
+      }),
+    );
+    await f.wait(
+      (m) =>
+        m.type === 'session.event' &&
+        m.event.sessionId === sessionId &&
+        m.event.payload.type === 'run.status' &&
+        m.event.payload.status === 'completed',
+    );
+    const calls = readFileSync(f.log, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    assert.equal(calls.length, 2);
+    assert.ok(calls[1].at >= at + 1000);
+    assert.equal(calls[1].directory, join(f.dir, 'accounts', f.id, 'config'));
+    assert.match(calls[1].prompt, /finish earliest/);
+    assert.notEqual(calls[1].sessionId, calls[0].sessionId);
+    assert.equal(
+      f.server.store
+        .snapshot(sessionId!)
+        .events.filter((e) => e.payload.type === 'message.user' && e.payload.text === 'continue')
+        .length,
+      1,
+    );
+    f.messages.splice(0);
+    await f.request({ type: 'pool.status' });
+    const done = await f.wait((m) => m.type === 'pool.state');
+    assert.ok(done.type === 'pool.state');
+    assert.deepEqual(done.quotaWaits, []);
+  },
+);

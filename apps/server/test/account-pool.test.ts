@@ -256,3 +256,32 @@ test(
     assert.ok(!JSON.stringify(b).includes('account A private history'));
   },
 );
+
+test('reset forecast waits for all exhausted windows and excludes unavailable or unknown accounts', async (t) => {
+  const { nextAccountReset } = await import('../src/account-pool.ts');
+  const { pool } = fixture(t);
+  const id = randomUUID();
+  pool.add(id, 'B');
+  quota(pool, 'default', 1, 100);
+  quota(pool, id, 2, 100);
+  assert.equal(nextAccountReset(pool.accounts)?.accountId, 'default');
+  pool
+    .get('default')
+    .limits!.windows.push({
+      name: 'seven_day',
+      utilization: 100,
+      resetsAt: new Date(Date.now() + 10 * 3600000).toISOString(),
+    });
+  assert.equal(nextAccountReset(pool.accounts)?.accountId, id);
+  pool.get(id).limits!.windows[0].resetsAt = null;
+  assert.equal(nextAccountReset(pool.accounts)?.accountId, 'default');
+  pool.update('default', { enabled: false });
+  assert.equal(nextAccountReset(pool.accounts), null);
+  quota(pool, id, 2, 100);
+  pool.block(id, new Date(Date.now() + 60000).toISOString());
+  assert.ok(
+    nextAccountReset(pool.accounts)!.at < Date.now() + 61000,
+    'official rejection overrides an older five-hour reading',
+  );
+  assert.equal(nextAccountReset(pool.accounts, [id]), null);
+});

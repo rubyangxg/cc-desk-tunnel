@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -19,7 +19,7 @@ import type {
   ServerPoolState,
   UsageSummary,
 } from '@cc-desk-tunnel/protocol';
-import UsagePanel from './UsagePanel.tsx';
+import UsagePanel, { dollars } from './UsagePanel.tsx';
 import type { ProxyClient } from './client.ts';
 import { IconButton, Modal, Switch } from './ui.tsx';
 import { copyText } from './copy.tsx';
@@ -67,6 +67,7 @@ function Quota({
   now: number;
 }) {
   const window = account.limits?.windows.find((item) => item.name === name);
+  const usage = account.usage?.find((item) => item.name === name);
   const remaining =
     typeof window?.utilization === 'number'
       ? Math.max(0, Math.min(100, 100 - window.utilization))
@@ -94,6 +95,12 @@ function Quota({
       <small>
         <Clock3 />
         {resetTime(window?.resetsAt, now)}
+        <span
+          className="pool-quota-cost"
+          title="本服务记录的本周期调用，按 API 价格估算，非订阅账单"
+        >
+          等价 {usage ? dollars(usage.costUsd) : '—'}
+        </span>
       </small>
     </div>
   );
@@ -115,11 +122,16 @@ export default function ServerAccountPool({
   const [edit, setEdit] = useState<{ id?: string; name: string } | null>(null);
   const [logout, setLogout] = useState<ServerPoolAccount | null>(null);
   const [codes, setCodes] = useState<Record<string, string>>({});
-  const [now, setNow] = useState(Date.now());
+  const [tick, setNow] = useState(Date.now());
+  const offset = useMemo(
+    () => (pool?.serverTime ? pool.serverTime - Date.now() : 0),
+    [pool?.serverTime],
+  );
+  const now = tick + offset;
   const [log, setLog] = useState(false);
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 15000);
+    const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
   useEffect(() => {
@@ -147,6 +159,19 @@ export default function ServerAccountPool({
     : [];
   const accounts = order.flatMap((id) => pool?.accounts.find((account) => account.id === id) ?? []);
   const ready = accounts.filter((account) => status(account, now).kind === 'ready').length;
+  const waits = pool?.quotaWaits ?? [];
+  const scheduled = waits.filter((wait) => wait.at !== null).sort((a, b) => a.at! - b.at!)[0];
+  const reset = waits.length ? scheduled : ready === 0 ? pool?.nextReset : null;
+  const seconds = reset?.at != null ? Math.max(0, Math.ceil((reset.at - now) / 1000)) : null;
+  const countdown =
+    seconds === null
+      ? '等待重置时间'
+      : seconds === 0
+        ? '正在确认额度恢复…'
+        : [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60]
+            .map((value) => String(value).padStart(2, '0'))
+            .join(':');
+  const resetAccount = accounts.find((account) => account.id === reset?.accountId);
   const move = (at: number, by: number) => {
     const next = [...order];
     [next[at], next[at + by]] = [next[at + by]!, next[at]!];
@@ -187,6 +212,25 @@ export default function ServerAccountPool({
             <strong>{accounts.filter((account) => account.loggedIn).length}</strong>
           </div>
         </div>
+        {(waits.length > 0 || reset) && (
+          <div className="pool-reset-banner" aria-label="额度重置倒计时">
+            <Clock3 />
+            <span>{waits.length ? '自动继续' : '最早重置'}</span>
+            <strong role="timer" aria-label="距额度重置">
+              {connected ? countdown : '等待重新连接'}
+            </strong>
+            {resetAccount && <span className="pool-reset-account">{resetAccount.name}</span>}
+            <small>
+              {!connected
+                ? '重新连接后确认等待状态'
+                : waits.length
+                  ? `恢复后自动发送 continue · ${waits.length} 个任务等待`
+                  : pool?.quotaWaits === undefined
+                    ? '更新服务端以查看待续任务'
+                    : '暂无待续任务'}
+            </small>
+          </div>
+        )}
       </header>
       {error && (
         <p className="error-text" role="alert">

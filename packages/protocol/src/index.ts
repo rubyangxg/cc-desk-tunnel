@@ -124,6 +124,10 @@ export const serverPoolAccountSchema = z.object({
   limits: rateLimitsSchema.nullable(),
   checkedAt: z.number().nonnegative().nullable(),
   blockedUntil: z.number().nonnegative().nullable(),
+  quotaResetAt: z.number().nonnegative().nullable().optional(),
+  usage: z
+    .array(z.object({ name: z.string(), requests: z.number(), costUsd: z.number() }))
+    .optional(),
   error: z.string().optional(),
   login: z.object({ url: z.url() }).nullable(),
   busy: z.boolean(),
@@ -135,6 +139,17 @@ export const projectPathKey = (path: string) =>
     : path.replace(/\/+$/, '') || '/';
 
 export const serverPoolStateSchema = z.object({
+  nextReset: z.object({ accountId: poolAccountIdSchema, at: z.number() }).nullable().optional(),
+  quotaWaits: z
+    .array(
+      z.object({
+        sessionId: id,
+        accountId: poolAccountIdSchema.nullable(),
+        at: z.number().nullable(),
+      }),
+    )
+    .optional(),
+  serverTime: z.number().optional(),
   quotaResumeProjects: z.array(z.object({ deviceId: id, projectPath: z.string() })).optional(),
   settings: serverPoolSettingsSchema,
   accounts: z.array(serverPoolAccountSchema).max(10),

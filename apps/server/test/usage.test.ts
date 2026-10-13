@@ -410,3 +410,53 @@ test('a turn is summed over the requests of its prompts, whatever the time', () 
   assert.equal(log.turnStats(session, turn(['p1', 'p2'])).requests, 3);
   assert.equal(log.turnStats(session, turn([])).requests, 3);
 });
+
+test('account quota costs recover historical attribution and remain isolated through switches and deletion', () => {
+  const db = new DatabaseSync(':memory:');
+  const log = new UsageLog(db);
+  db.exec(`CREATE TABLE native_segments(native_id TEXT, account_id TEXT);
+    CREATE TABLE sessions(id TEXT, metadata TEXT);
+    INSERT INTO native_segments VALUES ('segment-a', 'default'), ('segment-b', 'backup');
+    INSERT INTO sessions VALUES ('legacy', '{}');`);
+  log.ingest(
+    batch(
+      request(base + hour, 'a', { 'session.id': 'segment-a', cost_usd: 1.25 }),
+      request(base + hour, 'b', { 'session.id': 'segment-b', cost_usd: 8.5 }),
+      request(base + hour, 'old', { 'session.id': 'legacy', cost_usd: 2 }),
+      request(base - 2 * hour, 'past', { 'session.id': 'segment-a', cost_usd: 99 }),
+    ),
+  );
+  log.rememberAccounts();
+  const limits = {
+    windows: [
+      { name: 'five_hour', utilization: 100, resetsAt: new Date(base + 5 * hour).toISOString() },
+      {
+        name: 'seven_day',
+        utilization: 70,
+        resetsAt: new Date(base + 7 * 24 * hour).toISOString(),
+      },
+    ],
+  };
+  log.observe(limits, base + 2 * hour, 'default');
+  log.observe(limits, base + 2 * hour, 'backup');
+  for (const name of ['five_hour', 'seven_day']) {
+    assert.equal(
+      log.summary(base + 2 * hour, 'default').windows.find((w) => w.name === name)?.costUsd,
+      3.25,
+    );
+    assert.equal(
+      log.summary(base + 2 * hour, 'backup').windows.find((w) => w.name === name)?.costUsd,
+      8.5,
+    );
+  }
+  db.exec('DELETE FROM sessions; DELETE FROM native_segments');
+  log.rememberAccounts();
+  assert.equal(log.summary(base + 2 * hour, 'default').windows[0].costUsd, 3.25);
+  assert.equal(log.summary(base + 6 * hour, 'default').windows[0].costUsd, 0);
+  assert.equal(
+    log.summary(base + 2 * hour).windows.length,
+    0,
+    'account periods do not leak into legacy summary',
+  );
+  db.close();
+});

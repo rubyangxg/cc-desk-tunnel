@@ -64,6 +64,8 @@ export class UsageLog {
         cost_usd REAL NOT NULL, duration_ms INTEGER NOT NULL, ttft_ms INTEGER, source TEXT, request_id TEXT UNIQUE
       );
       CREATE INDEX IF NOT EXISTS api_requests_at ON api_requests(at);
+      CREATE INDEX IF NOT EXISTS api_requests_session_at ON api_requests(session_id, at);
+      CREATE TABLE IF NOT EXISTS usage_session_accounts (session_id TEXT PRIMARY KEY, account_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS usage_windows (
         name TEXT PRIMARY KEY, started_at INTEGER NOT NULL, resets_at INTEGER, utilization REAL, observed_at INTEGER NOT NULL
       );
@@ -216,14 +218,15 @@ export class UsageLog {
   }
   // Statistics follow the official quota periods. A period ends when the reported reset time moves or the utilization
   // falls by more than the jitter between readings, which also covers resets granted outside the normal schedule.
-  observe(rateLimits: RateLimits, now = Date.now()) {
+  observe(rateLimits: RateLimits, now = Date.now(), accountId?: string) {
     const measuredAt = (rateLimits.measuredAt && Date.parse(rateLimits.measuredAt)) || now;
     for (const window of rateLimits.windows) {
+      const key = accountId ? `${accountId}:${window.name}` : window.name;
       const previous = this.database
         .prepare(
           'SELECT started_at, resets_at, utilization, observed_at FROM usage_windows WHERE name = ?',
         )
-        .get(window.name) as
+        .get(key) as
         | {
             started_at: number;
             resets_at: number | null;
@@ -258,7 +261,7 @@ export class UsageLog {
           utilization = excluded.utilization, observed_at = excluded.observed_at`,
         )
         .run(
-          window.name,
+          key,
           startedAt,
           resetsAt ?? previous?.resets_at ?? null,
           window.utilization,
@@ -266,10 +269,23 @@ export class UsageLog {
         );
     }
   }
-  summary(now = Date.now()): Summary {
+  // Preserve attribution after session deletion and across account switches, including old records.
+  rememberAccounts() {
+    this.database.exec(`
+      INSERT OR IGNORE INTO usage_session_accounts SELECT native_id, account_id FROM native_segments;
+      INSERT OR IGNORE INTO usage_session_accounts
+        SELECT COALESCE(json_extract(metadata, '$.nativeSessionId'), id),
+          COALESCE(json_extract(metadata, '$.accountId'), 'default') FROM sessions;
+    `);
+  }
+  summary(now = Date.now(), accountId?: string): Summary {
     const windows = this.database
-      .prepare('SELECT name, started_at, resets_at, utilization FROM usage_windows ORDER BY rowid')
-      .all() as {
+      .prepare(
+        'SELECT name, started_at, resets_at, utilization FROM usage_windows WHERE ' +
+          (accountId ? 'name LIKE ?' : "instr(name, ':') = 0") +
+          ' ORDER BY rowid',
+      )
+      .all(...(accountId ? [`${accountId}:%`] : [])) as {
       name: string;
       started_at: number;
       resets_at: number | null;
@@ -286,13 +302,15 @@ export class UsageLog {
         const expired = window.resets_at !== null && window.resets_at <= now;
         const startedAt = expired ? window.resets_at! : window.started_at;
         return {
-          name: window.name,
+          name: accountId ? window.name.slice(accountId.length + 1) : window.name,
           startedAt: new Date(startedAt).toISOString(),
           resetsAt: window.resets_at && !expired ? new Date(window.resets_at).toISOString() : null,
           utilization: expired ? null : window.utilization,
           ...(this.database
-            .prepare(`SELECT ${totals} FROM api_requests WHERE at >= ?`)
-            .get(startedAt) as Omit<
+            .prepare(
+              `SELECT ${totals} FROM api_requests WHERE at >= ? ${accountId ? 'AND session_id IN (SELECT session_id FROM usage_session_accounts WHERE account_id = ?)' : ''}`,
+            )
+            .get(startedAt, ...(accountId ? [accountId] : [])) as Omit<
             Summary['windows'][number],
             'name' | 'startedAt' | 'resetsAt' | 'utilization'
           >),

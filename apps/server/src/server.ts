@@ -8,7 +8,7 @@ import type { IncomingMessage, RequestListener } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { WebSocket, WebSocketServer } from 'ws';
 import { nativeStore } from './native-store.ts';
-import { AccountPool, orderedAccounts } from './account-pool.ts';
+import { AccountPool, orderedAccounts, nextAccountReset } from './account-pool.ts';
 import { poolHandoff, canHandoff } from './pool-handoff.ts';
 import { accountStatus, accountLogout, NativeLogin } from './native-account.ts';
 import {
@@ -95,6 +95,7 @@ export type Run = {
     quotaPolicyChanged?: () => void;
   };
   quotaWaiting?: boolean;
+  quotaDeadline?: { accountId: string; at: number };
   wakeQuota?: () => void;
   attempted?: Set<string>;
   nativeId?: string;
@@ -316,11 +317,33 @@ export function createProxyServer(options: ServerOptions) {
   function publishPool(target?: Peer) {
     if (!pool || closing) return;
     const state = pool.snapshot();
-    for (const account of state.accounts) account.busy = accountBusy(account.id);
+    usage.rememberAccounts();
+    for (const account of state.accounts) {
+      account.busy = accountBusy(account.id);
+      if (account.limits?.available && account.checkedAt !== null)
+        usage.observe(account.limits, account.checkedAt, account.id);
+      account.usage = usage
+        .summary(Date.now(), account.id)
+        .windows.map(({ name, requests, costUsd }) => ({ name, requests, costUsd }));
+    }
     const message = {
       type: 'pool.state' as const,
       ...state,
       quotaResumeProjects: projectQuota.list(),
+      nextReset: nextAccountReset(state.accounts, [...pool.locked]),
+      serverTime: Date.now(),
+      quotaWaits: [...runs.values()]
+        .filter((run) => run.quotaWaiting)
+        .map((run) => {
+          const reset =
+            run.quotaDeadline ??
+            (pool!.settings.enabled ? nextAccountReset(state.accounts, [...pool!.locked]) : null);
+          return {
+            sessionId: run.sessionId,
+            accountId: reset?.accountId ?? null,
+            at: reset?.at ?? null,
+          };
+        }),
     };
     if (target) send(target, message);
     else for (const peer of peers) if (peer.authenticated && peer.poolClient) send(peer, message);
@@ -654,6 +677,11 @@ export function createProxyServer(options: ServerOptions) {
     // A stale rejection must not create a tight loop of billable requests.
     const deadline = reset > Date.now() ? reset + 1000 : Date.now() + 30_000;
     run.quotaWaiting = true;
+    run.quotaDeadline = {
+      accountId: store.get(run.sessionId).session.accountId ?? 'default',
+      at: deadline,
+    };
+    publishPool();
     emit(run, {
       type: 'native.notice',
       text: `等待额度重置（${new Date(deadline).toISOString()}），随后自动发送 continue。`,
@@ -676,6 +704,8 @@ export function createProxyServer(options: ServerOptions) {
       return resumesAfterQuota(run) && !run.controller.signal.aborted;
     } finally {
       run.quotaWaiting = false;
+      run.quotaDeadline = undefined;
+      publishPool();
     }
   }
   async function native(run: Run) {
@@ -756,6 +786,7 @@ export function createProxyServer(options: ServerOptions) {
           ? orderedAccounts(pool!.snapshot(), [...run.attempted, ...pool!.locked])[0]
           : undefined;
         let resumedAfterReset = false;
+        let announcedProjectWait = false;
         if (!next && !resumesAfterQuota(run))
           emit(run, {
             type: 'native.notice',
@@ -766,7 +797,7 @@ export function createProxyServer(options: ServerOptions) {
           !run.controller.signal.aborted &&
           (pool!.settings.enabled || resumesAfterQuota(run))
         ) {
-          if (resumesAfterQuota(run)) {
+          if (resumesAfterQuota(run) && !pool!.settings.enabled) {
             const resetsAt =
               quota.resetsAt ??
               pool!.get(accountId).limits?.windows.find((window) => window.name === 'five_hour')
@@ -785,6 +816,17 @@ export function createProxyServer(options: ServerOptions) {
             resumedAfterReset = true;
             break;
           }
+          run.quotaWaiting = true;
+          const reset = nextAccountReset(pool!.accounts, [...pool!.locked]);
+          publishPool();
+          const projectWait = resumesAfterQuota(run);
+          if (projectWait && !announcedProjectWait) {
+            announcedProjectWait = true;
+            emit(run, {
+              type: 'native.notice',
+              text: '等待最早可用账号重置，随后自动发送 continue。',
+            });
+          }
           await new Promise<void>((resolve) => {
             const done = () => {
               clearTimeout(timer);
@@ -792,18 +834,26 @@ export function createProxyServer(options: ServerOptions) {
               run.wakeQuota = undefined;
               resolve();
             };
-            const timer = setTimeout(done, 30_000);
+            const remaining = reset ? reset.at + 1000 - Date.now() : 30_000;
+            const timer = setTimeout(done, remaining > 0 ? Math.min(remaining, 30_000) : 30_000);
             run.wakeQuota = done;
             run.controller.signal.addEventListener('abort', done, { once: true });
             if (run.controller.signal.aborted) done();
           });
           if (run.controller.signal.aborted) break;
-          if (resumesAfterQuota(run)) continue;
+          if (projectWait && !resumesAfterQuota(run)) {
+            finish(run, 'cancelled', '已取消额度重置后自动继续。');
+            return;
+          }
+          if (resumesAfterQuota(run) && !pool!.settings.enabled) continue;
           if (pool!.settings.enabled) {
             await refreshFor(run);
             next = orderedAccounts(pool!.snapshot(), [...pool!.locked])[0];
+            resumedAfterReset = !!next;
           }
         }
+        run.quotaWaiting = false;
+        publishPool();
         if (
           !next ||
           run.controller.signal.aborted ||
@@ -830,11 +880,12 @@ export function createProxyServer(options: ServerOptions) {
         });
         updated(run.sessionId);
         const messageId = randomUUID();
-        const prompt = resumedAfterReset
-          ? 'continue'
-          : next.id === accountId
-            ? CONTINUE
-            : poolHandoff(store.history(run.sessionId, randomUUID(), 0).events);
+        const prompt =
+          next.id !== accountId
+            ? poolHandoff(store.history(run.sessionId, randomUUID(), 0).events)
+            : resumedAfterReset
+              ? 'continue'
+              : CONTINUE;
         run.input = new NativeInput(selected.nativeSessionId ?? selected.id, (event) =>
           emit(run, event),
         );

@@ -61,7 +61,9 @@ if (process.argv.includes('auth')) {
           rate_limits: {
             five_hour: {
               utilization: config.blocked ? 100 : 10,
-              resets_at: new Date(Date.now() + (config.hours ?? 1) * 3600_000).toISOString(),
+              resets_at:
+                config.resetsAt ??
+                new Date(Date.now() + (config.hours ?? 1) * 3600_000).toISOString(),
             },
             seven_day: {
               utilization: 20,
