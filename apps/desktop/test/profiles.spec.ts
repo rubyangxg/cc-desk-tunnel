@@ -24,7 +24,7 @@ test.afterAll(async () => {
   if (directory) rmSync(directory, { recursive: true, force: true });
 });
 
-test('saved account profiles switch servers, isolate drafts and schedules, and never store browser tokens', async ({
+test('saved profiles share local projects, restore server history, isolate drafts and schedules, and never store browser tokens', async ({
   page,
 }) => {
   const first = connection();
@@ -37,6 +37,8 @@ test('saved account profiles switch servers, isolate drafts and schedules, and n
   await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
   await expect(page.locator('.connection-status')).toContainText('工作账号');
   const title = await createSession(page, '账号A会话');
+  await send(page, '切换服务前保留的历史消息');
+  await settled(page);
   await page.getByRole('textbox', { name: '消息', exact: true }).fill('账号 A 的未发送草稿');
   await expect
     .poll(() => page.evaluate(() => localStorage.getItem('proxy-drafts')))
@@ -68,7 +70,15 @@ test('saved account profiles switch servers, isolate drafts and schedules, and n
   await page.getByLabel('服务凭据', { exact: true }).fill(secondToken);
   await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
   await expect(page.locator('.connection-status')).toContainText('个人账号');
+  await expect(page.locator('.session-source')).toContainText('当前会话来源：个人账号');
+  await expect(
+    page.getByRole('button', { name: '新建会话 · D:\\工作\\中文项目', exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText('此服务暂无会话', { exact: true })).toBeVisible();
   await expect(page.locator('.session-row').filter({ hasText: title })).toHaveCount(0);
+  await page.getByRole('button', { name: '添加项目', exact: true }).click();
+  await page.getByLabel('本机项目目录').fill('D:\\个人项目');
+  await page.getByRole('button', { name: '添加', exact: true }).click();
   await page.getByRole('button', { name: '定时任务', exact: true }).click();
   await expect(page.getByText('A 的定时任务', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '设置与账号', exact: true }).click();
@@ -77,7 +87,12 @@ test('saved account profiles switch servers, isolate drafts and schedules, and n
   await expect(page.getByLabel('服务凭据', { exact: true })).toHaveValue('');
   await page.getByLabel('服务凭据', { exact: true }).fill(first.token);
   await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
+  await expect(page.locator('.session-source')).toContainText('当前会话来源：工作账号');
+  await expect(
+    page.getByRole('button', { name: '新建会话 · D:\\个人项目', exact: true }),
+  ).toBeVisible();
   await page.locator('.session-row').filter({ hasText: title }).click();
+  await expect(page.locator('.message.user')).toContainText('切换服务前保留的历史消息');
   await expect(page.getByRole('textbox', { name: '消息', exact: true })).toHaveValue(
     '账号 A 的未发送草稿',
   );
@@ -95,6 +110,9 @@ test('saved account profiles switch servers, isolate drafts and schedules, and n
   await expect(page.getByLabel('代理服务', { exact: true }).locator('option')).toHaveCount(1);
   await page.reload();
   await expect(page.getByLabel('服务名称', { exact: true })).toHaveValue('工作账号');
+  expect(
+    await page.evaluate(() => JSON.parse(localStorage.getItem('proxy-local-projects')!)),
+  ).toEqual(['D:\\工作\\中文项目', 'D:\\个人项目']);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 

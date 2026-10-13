@@ -51,7 +51,8 @@ import Conversation from './Conversation.tsx';
 import LoginPage from './LoginPage.tsx';
 import type { ConnectionForm } from './LoginPage.tsx';
 import type { ProfileControls } from './Connections.tsx';
-import { profileKey, validateConnection } from './connections.ts';
+import { validateConnection } from './connections.ts';
+import { loadProjects, saveProjects } from './projects.ts';
 import type { ConnectionProfile } from './connections.ts';
 import AccountPoolPanel from './AccountPoolPanel.tsx';
 import { usePoolRotation } from './usePoolRotation.ts';
@@ -99,17 +100,6 @@ type OpenMenu = MenuPosition &
     | { kind: 'bar'; label: string }
   );
 const narrow = () => matchMedia('(max-width: 700px)').matches;
-function savedProjects(profileId: string): string[] {
-  try {
-    const value = JSON.parse(localStorage.getItem(profileKey('proxy-projects', profileId)) ?? '[]');
-    return Array.isArray(value)
-      ? value.filter((item): item is string => typeof item === 'string')
-      : [];
-  } catch {
-    return [];
-  }
-}
-
 // Owns the connection, the selection and every request; the components below render and report user intent.
 export function App({ profiles }: { profiles: ProfileControls }) {
   const profileId = profiles.initial.id;
@@ -133,7 +123,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
     if (state.status !== 'disconnected' && state.status !== 'connecting') setLocalSettings(null);
   }, [state.status]);
   const refreshed = useRef(new Set<string>());
-  const [projects, setProjects] = useState(() => savedProjects(profileId));
+  const [projects, setProjects] = useState(() => loadProjects(localStorage));
   // The folders that hold sessions without a project; new ones are made in the first.
   const [workspaceRoots, setWorkspaceRoots] = useState<string[]>([]);
   const [drafts, setDraft] = useDrafts(profileId);
@@ -390,7 +380,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
     if (connected) void window.desktop?.workspaceRoots().then(setWorkspaceRoots);
   }, [connected]);
   useEffect(() => {
-    localStorage.setItem(profileKey('proxy-projects', profileId), JSON.stringify(projects));
+    saveProjects(localStorage, projects);
   }, [projects]);
   // Each session's native state is read once when it is first shown idle.
   useEffect(() => {
@@ -1382,6 +1372,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
       ) : (
         <>
           <Sidebar
+            serviceName={profiles.profiles.length > 1 ? form.name : undefined}
             sessions={sessions}
             elsewhere={elsewhere}
             selectedId={selected?.id}
