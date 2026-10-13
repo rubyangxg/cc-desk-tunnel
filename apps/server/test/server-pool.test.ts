@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -12,8 +12,11 @@ import { PROTOCOL_VERSION, serverMessageSchema } from '@cc-desk-tunnel/protocol'
 import type { ServerMessage } from '@cc-desk-tunnel/protocol';
 import { createProxyServer } from '../src/server.ts';
 
+// The deployed CLI adapter runs on Unix; Windows is a desktop client in this architecture.
+const nativeTest = process.platform === 'win32' ? test.skip : test;
+
 async function fixture(t: TestContext, fail = 'quota') {
-  const dir = mkdtempSync(join(tmpdir(), 'cc-pool-integration-'));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cc-pool-integration-')));
   const config = join(dir, 'original');
   mkdirSync(config);
   writeFileSync(
@@ -110,7 +113,7 @@ async function fixture(t: TestContext, fail = 'quota') {
   return { dir, config, server, socket, messages, request, wait, id, log };
 }
 
-test(
+nativeTest(
   'one connection rotates isolated CLI accounts inside the same session and resumes the new native history',
   { timeout: 60000 },
   async (t) => {
@@ -177,7 +180,7 @@ test(
   },
 );
 
-test(
+nativeTest(
   'an unknown tool result blocks automatic cross-account replay',
   { timeout: 60000 },
   async (t) => {
@@ -199,7 +202,7 @@ test(
   },
 );
 
-test(
+nativeTest(
   'all exhausted accounts pause and stopping the task cancels the wait',
   { timeout: 60000 },
   async (t) => {
@@ -233,7 +236,7 @@ test(
   },
 );
 
-test(
+nativeTest(
   'an exhausted account resumes its existing native context after quota recovery',
   { timeout: 60000 },
   async (t) => {

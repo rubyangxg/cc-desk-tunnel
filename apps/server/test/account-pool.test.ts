@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
@@ -12,7 +12,8 @@ import { nativeStore } from '../src/native-store.ts';
 import type { ServerPoolAccount, SessionEvent } from '@cc-desk-tunnel/protocol';
 
 function fixture(t: TestContext) {
-  const dir = mkdtempSync(join(tmpdir(), 'cc-server-pool-'));
+  // macOS temporary directories can be symlinks; SDK project paths use the physical directory.
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cc-server-pool-')));
   const store = new SessionStore(dir);
   const options = {
     executable: 'claude',
