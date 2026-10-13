@@ -977,9 +977,17 @@ export function App({ profiles }: { profiles: ProfileControls }) {
     });
   }
   const adapterName = `${form.name} · ${nativeMode ? 'Claude Code' : 'Simulation'}`;
-  const accountName = signedOut
-    ? '未登录'
-    : (state.account?.email ?? capabilities?.account.email ?? (nativeMode ? '账号' : '离线模拟'));
+  const sessionAccount = serverPool
+    ? state.pool?.accounts.find((account) => account.id === selected?.accountId)
+    : undefined;
+  const accountName = serverPool
+    ? (sessionAccount?.email ??
+      sessionAccount?.name ??
+      (selected?.accountId ? '正在读取账号' : selected ? '待选择账号' : '账号池'))
+    : signedOut
+      ? '未登录'
+      : (state.account?.email ?? capabilities?.account.email ?? (nativeMode ? '账号' : '离线模拟'));
+  const connectionName = serverPool ? `${accountName} · Claude Code` : adapterName;
   const upgradeItem: MenuItem | null = upgrade
     ? {
         label: `升级客户端到 ${upgrade}`,
@@ -1007,11 +1015,13 @@ export function App({ profiles }: { profiles: ProfileControls }) {
     {
       label: `账号 · ${accountName}`,
       icon: <UserRound />,
-      detail: signedOut
-        ? '点击登录 Claude 账号'
-        : (state.account?.subscriptionType ??
-          capabilities?.account.subscriptionType ??
-          '账号与额度'),
+      detail: serverPool
+        ? (sessionAccount?.subscriptionType ?? '账号与额度')
+        : signedOut
+          ? '点击登录 Claude 账号'
+          : (state.account?.subscriptionType ??
+            capabilities?.account.subscriptionType ??
+            '账号与额度'),
       run: () => open('settings', 'account'),
     },
     ...profiles.profiles
@@ -1298,7 +1308,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
         menus={barMenus}
         openMenu={(item, position) => setMenu({ kind: 'bar', label: item.label, ...position })}
         connected={connected}
-        adapterName={adapterName}
+        adapterName={connectionName}
       />
       <Rail
         accountPool={serverPool ? () => open('settings', 'account') : undefined}

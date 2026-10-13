@@ -83,6 +83,7 @@ test('one-service account dashboard logs in independent accounts, saves policy a
   await page.screenshot({ path: join(screenshots, 'server-account-pool-desktop.png') });
   await page.getByRole('button', { name: '会话', exact: true }).click();
   const title = await createSession(page, '统一历史');
+  await expect(page.locator('.connection-status')).toContainText('待选择账号');
   const accountId = await page
     .getByLabel('当前会话 Claude 账号', { exact: true })
     .locator('option')
@@ -90,11 +91,24 @@ test('one-service account dashboard logs in independent accounts, saves policy a
     .getAttribute('value');
   await page.getByLabel('当前会话 Claude 账号', { exact: true }).selectOption(accountId!);
   await expect(page.getByLabel('当前会话 Claude 账号', { exact: true })).toHaveValue(accountId!);
+  await expect(page.locator('.connection-status')).toContainText('new-account@example.test');
+  await expect(page.locator('.connection-status')).not.toContainText('primary@example.test');
   await expect(page.locator('.session-row').filter({ hasText: title })).toHaveCount(1);
   await page.getByLabel('当前会话 Claude 账号', { exact: true }).selectOption('default');
   await expect(page.getByLabel('当前会话 Claude 账号', { exact: true })).toHaveValue('default');
+  await expect(page.locator('.connection-status')).toContainText('primary@example.test');
+  await expect(page.locator('.connection-status')).not.toContainText('new-account@example.test');
   await expect(page.locator('.session-row').filter({ hasText: title })).toHaveCount(1);
+  const otherTitle = await createSession(page, '另一个账号');
+  await expect(page.locator('.connection-status')).toContainText('待选择账号');
+  await page.getByLabel('当前会话 Claude 账号', { exact: true }).selectOption(accountId!);
+  await expect(page.locator('.connection-status')).toContainText('new-account@example.test');
+  await page.locator('.session-row').filter({ hasText: title }).click();
+  await expect(page.locator('.connection-status')).toContainText('primary@example.test');
+  await page.locator('.session-row').filter({ hasText: otherTitle }).click();
+  await expect(page.locator('.connection-status')).toContainText('new-account@example.test');
   await page.getByRole('button', { name: '管理账号池', exact: true }).click();
+  await expect(page.locator('.connection-status')).toContainText('new-account@example.test');
   await expect(page.getByLabel('服务端账号优先顺序', { exact: true })).toHaveValue('order');
   await page.setViewportSize({ width: 390, height: 844 });
   await main.evaluate((element) => {
