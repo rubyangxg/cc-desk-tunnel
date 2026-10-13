@@ -122,16 +122,16 @@ export default function ServerAccountPool({
   const [edit, setEdit] = useState<{ id?: string; name: string } | null>(null);
   const [logout, setLogout] = useState<ServerPoolAccount | null>(null);
   const [codes, setCodes] = useState<Record<string, string>>({});
-  const [tick, setNow] = useState(Date.now());
+  const [, setTick] = useState(0);
   const offset = useMemo(
     () => (pool?.serverTime ? pool.serverTime - Date.now() : 0),
     [pool?.serverTime],
   );
-  const now = tick + offset;
+  const now = Date.now() + offset;
   const [log, setLog] = useState(false);
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
+    const timer = setInterval(() => setTick((value) => value + 1), 1000);
     return () => clearInterval(timer);
   }, []);
   useEffect(() => {

@@ -52,6 +52,7 @@ test('quota countdown follows server waits, ticks every second and shows account
   let close = () => {};
   const sent: string[] = [];
   await page.clock.install({ time: now });
+  await page.clock.pauseAt(now);
   await page.routeWebSocket('ws://127.0.0.1:18893/ws', (route) => {
     const send = (value: unknown) => route.send(JSON.stringify(value));
     push = () => send({ type: 'pool.state', ...pool });

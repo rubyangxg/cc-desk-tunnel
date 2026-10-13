@@ -63,6 +63,7 @@ export default function Composer({
   capabilities,
   nativeSession,
   metrics,
+  openAccount,
   send,
   resume,
   compact,
@@ -93,6 +94,7 @@ export default function Composer({
   capabilities: NativeCapabilities | null;
   nativeSession: NativeSession | null;
   metrics: NativeMetrics | null;
+  openAccount: () => void;
   send: () => void;
   // Present when the session's last turn was stopped or cut off: takes it up again without a message.
   resume?: () => void;
@@ -381,6 +383,7 @@ export default function Composer({
               capabilities={capabilities}
               nativeSession={nativeSession}
               metrics={metrics}
+              openAccount={openAccount}
               disabled={controlsDisabled}
               configure={configure}
               refresh={refresh}

@@ -265,13 +265,11 @@ test('reset forecast waits for all exhausted windows and excludes unavailable or
   quota(pool, 'default', 1, 100);
   quota(pool, id, 2, 100);
   assert.equal(nextAccountReset(pool.accounts)?.accountId, 'default');
-  pool
-    .get('default')
-    .limits!.windows.push({
-      name: 'seven_day',
-      utilization: 100,
-      resetsAt: new Date(Date.now() + 10 * 3600000).toISOString(),
-    });
+  pool.get('default').limits!.windows.push({
+    name: 'seven_day',
+    utilization: 100,
+    resetsAt: new Date(Date.now() + 10 * 3600000).toISOString(),
+  });
   assert.equal(nextAccountReset(pool.accounts)?.accountId, id);
   pool.get(id).limits!.windows[0].resetsAt = null;
   assert.equal(nextAccountReset(pool.accounts)?.accountId, 'default');

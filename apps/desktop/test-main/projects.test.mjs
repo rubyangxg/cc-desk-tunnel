@@ -47,3 +47,14 @@ test('a malformed shared list can recover from the retained legacy records', () 
   });
   assert.deepEqual(loadProjects(store), ['D:\\Existing']);
 });
+
+test('window-shared projects take precedence without resurrecting migrated service folders', () => {
+  const store = storage({
+    'proxy-local-projects': JSON.stringify(['D:\\Old']),
+    'proxy-projects:second': JSON.stringify(['E:\\Legacy']),
+  });
+  assert.deepEqual(loadProjects(store, ['D:\\Shared', 'd:/shared/', '', null]), ['D:\\Shared']);
+  assert.deepEqual(loadProjects(store, []), []);
+  assert.deepEqual(loadProjects(store, undefined), ['D:\\Old']);
+  assert.deepEqual(loadProjects(store, {}), ['D:\\Old']);
+});

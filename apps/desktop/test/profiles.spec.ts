@@ -193,6 +193,10 @@ for (const { recovery, failedService } of [
             profileLog: log,
             desktop: {
               dev: true,
+              onSharedChanged: () => () => {},
+              saveShared: async () => {},
+              setBusy: async () => {},
+              foldersExist: async (paths: string[]) => paths.map(() => true),
               platform: 'linux',
               version: async () => '0.3.1',
               loadProfiles: async () => structuredClone(saved),

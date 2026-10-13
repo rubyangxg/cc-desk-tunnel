@@ -16,7 +16,11 @@ function read(storage: Storage, key: string): string[] | null {
 
 // Local folders belong to this computer. Merge all old profile lists on the first load, including
 // lists left behind by removed profiles. Keep those original keys intact as a migration backup.
-export function loadProjects(storage: Storage): string[] {
+export function loadProjects(storage: Storage, computerProjects?: unknown): string[] {
+  if (Array.isArray(computerProjects))
+    return computerProjects
+      .filter((item): item is string => typeof item === 'string' && !!item.trim())
+      .reduce(withProject, [] as string[]);
   const shared = read(storage, storageKey);
   if (shared) return shared.reduce(withProject, [] as string[]);
   let projects = read(storage, legacyKey) ?? [];
