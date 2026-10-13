@@ -24,6 +24,8 @@ export function usePoolRotation(options: {
   const mountedAt = useRef(Date.now());
   const rotating = useRef(false);
   const resuming = useRef(false);
+  const hasConnected = useRef(false);
+  const failedConnectionHandled = useRef(false);
   const resumedSession = useRef<string | null>(null);
   const cancelledRuns = useRef(new Set<string>());
   const markedFailures = useRef(new Set<string>());
@@ -31,6 +33,73 @@ export function usePoolRotation(options: {
   const nextAttempt = useRef(0);
   const [working, setWorking] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (state.status === 'connected') {
+      hasConnected.current = true;
+      pool.markAvailable(id);
+    } else if (
+      state.status === 'reconnecting' ||
+      (state.status === 'disconnected' && state.error)
+    ) {
+      pool.markUnavailable(id);
+    }
+    if (state.status === 'connecting') failedConnectionHandled.current = false;
+  }, [state.status, state.error, id, pool.markAvailable, pool.markUnavailable]);
+
+  // Only skip a server before this workspace has connected or submitted any work.
+  // Once a session request may have reached it, keep the normal reconnect/no-replay behavior.
+  useEffect(() => {
+    if (
+      !profiles.autoConnect ||
+      !pool.config.enabled ||
+      state.status !== 'disconnected' ||
+      !state.error ||
+      hasConnected.current ||
+      resuming.current ||
+      failedConnectionHandled.current
+    )
+      return;
+    failedConnectionHandled.current = true;
+    let cancelled = false;
+    setWorking(true);
+    setNotice(`${profiles.initial.name} 连接失败，已禁用调度，正在查找其他代理服务…`);
+    void (async () => {
+      try {
+        const quotas = await pool.refresh();
+        const live = current.current;
+        if (cancelled || !live.profiles.pool.config.enabled) return;
+        const attempted = [...new Set([...(live.profiles.handoff?.attempted ?? []), id])];
+        const next = poolCandidates(
+          live.profiles.profiles,
+          quotas,
+          live.profiles.pool.config,
+          attempted,
+        )[0];
+        if (!next) {
+          setNotice(
+            '账号池已暂停：没有可调度的代理服务。请修复连接后选中该服务重新连接；成功后恢复调度。' +
+              (live.profiles.handoff ? '待续接的任务上下文仍保留。' : ''),
+          );
+          return;
+        }
+        const handoff = live.profiles.handoff ? { ...live.profiles.handoff, attempted } : undefined;
+        await live.close();
+        if (!cancelled) await live.profiles.select(next.id, true, handoff);
+      } catch (error) {
+        if (!cancelled)
+          setNotice(
+            `账号池已暂停：${error instanceof Error ? error.message : '代理服务检测失败'}。请选中可用服务重新连接。`,
+          );
+      } finally {
+        if (!cancelled) setWorking(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      setWorking(false);
+    };
+  }, [state.status, state.error, profiles.autoConnect, pool.config.enabled, pool.refresh, id]);
 
   useEffect(() => {
     pool.observe(id, state.metrics?.rateLimits ?? null);

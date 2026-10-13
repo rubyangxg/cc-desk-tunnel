@@ -22,6 +22,9 @@ function settings(): PoolSettings {
       order: Array.isArray(value.order)
         ? value.order.filter((id: unknown) => typeof id === 'string')
         : [],
+      disabled: Array.isArray(value.disabled)
+        ? value.disabled.filter((id: unknown) => typeof id === 'string')
+        : [],
     };
   } catch {
     return { enabled: false, strategy: 'reset', order: [] };
@@ -30,6 +33,8 @@ function settings(): PoolSettings {
 
 export function useAccountPool(profiles: ConnectionProfile[]) {
   const [config, setConfig] = useState(settings);
+  const currentConfig = useRef(config);
+  currentConfig.current = config;
   const [quotas, setQuotas] = useState<Quotas>({});
   const [refreshing, setRefreshing] = useState(false);
   const current = useRef(profiles);
@@ -130,7 +135,9 @@ export function useAccountPool(profiles: ConnectionProfile[]) {
     }
     connections.current = next;
     if (changed) update(quotas);
-    if (!config.enabled) return;
+    // Startup loads the saved services asynchronously. An empty background probe
+    // must not take the pending slot used by startup's real service selection.
+    if (!config.enabled || !current.current.length) return;
     let cancelled = false;
     if (pending.current)
       void pending.current.then(() => {
@@ -144,12 +151,35 @@ export function useAccountPool(profiles: ConnectionProfile[]) {
     };
   }, [config.enabled, accountsKey, refresh, update]);
   const configure = useCallback((values: Partial<PoolSettings>) => {
-    setConfig((current) => {
-      const next = { ...current, ...values };
-      localStorage.setItem(key, JSON.stringify(next));
-      return next;
-    });
+    const next = { ...currentConfig.current, ...values };
+    currentConfig.current = next;
+    localStorage.setItem(key, JSON.stringify(next));
+    setConfig(next);
   }, []);
-  return { config, quotas, refreshing, refresh, observe, markLimited, configure };
+  const markUnavailable = useCallback(
+    (id: string) => {
+      const disabled = currentConfig.current.disabled ?? [];
+      if (!disabled.includes(id)) configure({ disabled: [...disabled, id] });
+    },
+    [configure],
+  );
+  const markAvailable = useCallback(
+    (id: string) => {
+      const disabled = currentConfig.current.disabled ?? [];
+      if (disabled.includes(id)) configure({ disabled: disabled.filter((item) => item !== id) });
+    },
+    [configure],
+  );
+  return {
+    config,
+    quotas,
+    refreshing,
+    refresh,
+    observe,
+    markLimited,
+    configure,
+    markUnavailable,
+    markAvailable,
+  };
 }
 export type AccountPool = ReturnType<typeof useAccountPool>;

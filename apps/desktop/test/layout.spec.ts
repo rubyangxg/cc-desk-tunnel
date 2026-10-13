@@ -357,7 +357,7 @@ test('a run that goes on only for background tasks looks finished, lists them an
   await page
     .getByLabel('服务凭据', { exact: true })
     .fill('test-only-layout-token-with-enough-length');
-  await page.getByRole('button', { name: '连接', exact: true }).click();
+  await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
   const row = page.locator('.session-row').filter({ hasText: session.title });
   await expect(row).toContainText('后台任务');
   await row.locator('.session-select').click();
@@ -481,7 +481,7 @@ test('approval modes are described where they are chosen, and models sit behind 
   await page
     .getByLabel('服务凭据', { exact: true })
     .fill('test-only-layout-token-with-enough-length');
-  await page.getByRole('button', { name: '连接', exact: true }).click();
+  await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
   await page.locator('.session-select').filter({ hasText: session.title }).click();
 
   const trigger = page.getByRole('button', { name: '审批模式', exact: true });

@@ -66,9 +66,9 @@ export default function LoginPage({
         </div>
         <div className="profile-picker">
           <label>
-            账号配置
+            代理服务
             <select
-              aria-label="账号配置"
+              aria-label="代理服务"
               value={profileId}
               disabled={connecting}
               onChange={(event) => selectProfile(event.target.value)}
@@ -87,7 +87,7 @@ export default function LoginPage({
             onClick={addProfile}
           >
             <Plus />
-            新增账号
+            新增代理服务
           </button>
         </div>
         <form
@@ -99,17 +99,17 @@ export default function LoginPage({
         >
           <fieldset className="connection-fields" disabled={connecting}>
             <label>
-              账号名称
+              服务名称
               <input
                 value={name}
                 maxLength={80}
                 onChange={(event) => changeName(event.target.value)}
                 required
-                placeholder="例如：工作账号"
+                placeholder="例如：工作代理服务"
               />
             </label>
             <p className="profile-hint">
-              每个配置绑定一台服务器；Claude 登录信息保存在对应服务器上。
+              每个代理服务对应一个 Claude 账号；账号登录信息保存在该服务器上。
             </p>
             {window.desktop?.dev && (
               <div className="connection-modes" role="group" aria-label="连接方式">
@@ -188,7 +188,7 @@ export default function LoginPage({
                       })
                     }
                   />
-                  自动登录
+                  启动时自动连接
                 </label>
               </div>
             )}
@@ -204,7 +204,7 @@ export default function LoginPage({
                 onClick={removeProfile}
               >
                 <Trash2 />
-                删除账号
+                删除代理服务
               </button>
             </div>
           </fieldset>
@@ -246,8 +246,11 @@ export default function LoginPage({
           )}
           <button className="button primary login-submit" disabled={connecting}>
             <Unplug />
-            {connecting ? '连接中…' : '连接'}
+            {connecting ? '正在连接选中的服务…' : '连接选中的服务'}
           </button>
+          <p className="profile-hint">
+            此按钮只连接上方选中的代理服务。一次使用一个服务，无需逐个连接；开启账号池后会后台检测其他服务，并按顺序自动切换。
+          </p>
         </form>
         {pool}
         <div className="login-links">

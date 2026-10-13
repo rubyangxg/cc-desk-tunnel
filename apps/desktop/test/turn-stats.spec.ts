@@ -88,7 +88,7 @@ async function open(page: Page, stats: Record<string, unknown>, on = true) {
   await page
     .getByLabel('服务凭据', { exact: true })
     .fill('test-only-stats-token-with-enough-length');
-  await page.getByRole('button', { name: '连接', exact: true }).click();
+  await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
   const expand = page.getByRole('button', { name: '展开会话列表', exact: true });
   if (await expand.isVisible()) await expand.click();
   await page
@@ -222,7 +222,7 @@ test('the settings choose which figures the line shows, or hide it', async ({ pa
   await page
     .getByLabel('服务凭据', { exact: true })
     .fill('test-only-stats-token-with-enough-length');
-  await page.getByRole('button', { name: '连接', exact: true }).click();
+  await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
   await page.locator('.session-row').first().locator('.session-select').click();
   await expect(page.locator('.message.assistant')).toContainText('有什么可以帮你');
   await expect(page.locator('.turn-stats')).toHaveCount(0);

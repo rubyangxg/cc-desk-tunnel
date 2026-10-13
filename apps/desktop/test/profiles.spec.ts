@@ -29,12 +29,12 @@ test('saved account profiles switch servers, isolate drafts and schedules, and n
 }) => {
   const first = connection();
   await page.goto('/');
-  await page.getByLabel('账号名称', { exact: true }).fill('工作账号');
+  await page.getByLabel('服务名称', { exact: true }).fill('工作账号');
   await page.getByLabel('服务地址', { exact: true }).fill(first.serverUrl);
   await page.getByLabel('服务凭据', { exact: true }).fill(first.token);
   await page.getByRole('button', { name: '保存配置', exact: true }).click();
-  await expect(page.getByRole('status')).toHaveText('账号配置已保存。');
-  await page.getByRole('button', { name: '连接', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('代理服务配置已保存。');
+  await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
   await expect(page.locator('.connection-status')).toContainText('工作账号');
   const title = await createSession(page, '账号A会话');
   await page.getByRole('textbox', { name: '消息', exact: true }).fill('账号 A 的未发送草稿');
@@ -61,22 +61,22 @@ test('saved account profiles switch servers, isolate drafts and schedules, and n
     ),
   );
   await page.getByRole('button', { name: '设置与账号', exact: true }).click();
-  await page.getByRole('menuitem', { name: '管理账号与服务器', exact: true }).click();
-  await page.getByRole('button', { name: '新增账号', exact: true }).click();
-  await page.getByLabel('账号名称', { exact: true }).fill('个人账号');
+  await page.getByRole('menuitem', { name: '管理代理服务', exact: true }).click();
+  await page.getByRole('button', { name: '新增代理服务', exact: true }).click();
+  await page.getByLabel('服务名称', { exact: true }).fill('个人账号');
   await page.getByLabel('服务地址', { exact: true }).fill(secondUrl);
   await page.getByLabel('服务凭据', { exact: true }).fill(secondToken);
-  await page.getByRole('button', { name: '连接', exact: true }).click();
+  await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
   await expect(page.locator('.connection-status')).toContainText('个人账号');
   await expect(page.locator('.session-row').filter({ hasText: title })).toHaveCount(0);
   await page.getByRole('button', { name: '定时任务', exact: true }).click();
   await expect(page.getByText('A 的定时任务', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '设置与账号', exact: true }).click();
-  await page.getByRole('menuitem', { name: '切换账号 · 工作账号', exact: true }).click();
+  await page.getByRole('menuitem', { name: '切换代理服务 · 工作账号', exact: true }).click();
   await expect(page.getByLabel('服务地址', { exact: true })).toHaveValue(first.serverUrl);
   await expect(page.getByLabel('服务凭据', { exact: true })).toHaveValue('');
   await page.getByLabel('服务凭据', { exact: true }).fill(first.token);
-  await page.getByRole('button', { name: '连接', exact: true }).click();
+  await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
   await page.locator('.session-row').filter({ hasText: title }).click();
   await expect(page.getByRole('textbox', { name: '消息', exact: true })).toHaveValue(
     '账号 A 的未发送草稿',
@@ -87,26 +87,32 @@ test('saved account profiles switch servers, isolate drafts and schedules, and n
   expect(stored).not.toContain(first.token);
   expect(stored).not.toContain(secondToken);
   await page.getByRole('button', { name: '设置与账号', exact: true }).click();
-  await page.getByRole('menuitem', { name: '管理账号与服务器', exact: true }).click();
+  await page.getByRole('menuitem', { name: '管理代理服务', exact: true }).click();
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByLabel('账号配置', { exact: true }).selectOption({ label: '个人账号' });
+  await page.getByLabel('代理服务', { exact: true }).selectOption({ label: '个人账号' });
   page.once('dialog', (dialog) => dialog.accept());
-  await page.getByRole('button', { name: '删除账号', exact: true }).click();
-  await expect(page.getByLabel('账号配置', { exact: true }).locator('option')).toHaveCount(1);
+  await page.getByRole('button', { name: '删除代理服务', exact: true }).click();
+  await expect(page.getByLabel('代理服务', { exact: true }).locator('option')).toHaveCount(1);
   await page.reload();
-  await expect(page.getByLabel('账号名称', { exact: true })).toHaveValue('工作账号');
+  await expect(page.getByLabel('服务名称', { exact: true })).toHaveValue('工作账号');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
-for (const recovery of [false, true])
+for (const { recovery, failedService } of [
+  { recovery: false, failedService: false },
+  { recovery: true, failedService: false },
+  { recovery: false, failedService: true },
+])
   test(
-    recovery
-      ? 'exhausted pool pauses and resumes the original session after a confirmed reset'
-      : 'remembered desktop profiles switch in order and the pool resumes quota-blocked work on the next server',
+    failedService
+      ? 'a failed connection is disabled, skipped with its handoff preserved, and restored only by reconnecting'
+      : recovery
+        ? 'exhausted pool pauses and resumes the original session after a confirmed reset'
+        : 'remembered desktop profiles switch in order and the pool resumes quota-blocked work on the next server',
     async ({ page }) => {
       const first = connection();
       await page.addInitScript(
-        ({ first, secondUrl, secondToken, recovery }) => {
+        ({ first, secondUrl, secondToken, recovery, failedService }) => {
           const log: string[] = [];
           let limited = false;
           const Original = window.WebSocket;
@@ -158,6 +164,13 @@ for (const recovery of [false, true])
               },
             ],
           };
+          if (failedService)
+            saved.profiles.push({
+              ...saved.profiles[1]!,
+              id: 'offline',
+              name: '离线代理服务',
+              url: 'wss://offline.example.com/ws',
+            });
           Object.assign(window, {
             profileLog: log,
             desktop: {
@@ -212,6 +225,11 @@ for (const recovery of [false, true])
               notify: async () => {},
               connectProxy: async (config: { profileId: string }) => {
                 log.push(`connect:${config.profileId}`);
+                if (
+                  config.profileId === 'offline' &&
+                  !(window as unknown as { serviceRecovered?: boolean }).serviceRecovered
+                )
+                  throw new Error('代理服务无法连接（测试）');
                 return { url: config.profileId === 'default' ? first.serverUrl : secondUrl };
               },
               disconnectProxy: async () => {
@@ -221,13 +239,13 @@ for (const recovery of [false, true])
             },
           });
         },
-        { first, secondUrl, secondToken, recovery },
+        { first, secondUrl, secondToken, recovery, failedService },
       );
       if (recovery) await page.clock.install();
       await page.goto('/');
       await expect(page.locator('.connection-status')).toContainText('工作账号');
       await page.getByRole('button', { name: '设置与账号', exact: true }).click();
-      await page.getByRole('menuitem', { name: '切换账号 · 个人账号', exact: true }).click();
+      await page.getByRole('menuitem', { name: '切换代理服务 · 个人账号', exact: true }).click();
       await expect(page.locator('.connection-status')).toContainText('个人账号');
       const log = await page.evaluate(
         () => (window as unknown as { profileLog: string[] }).profileLog,
@@ -240,7 +258,7 @@ for (const recovery of [false, true])
       expect(log).toContain('drafts:personal');
       expect(log).toContain('schedules:personal');
       await page.getByRole('button', { name: '设置与账号', exact: true }).click();
-      await page.getByRole('menuitem', { name: '切换账号 · 工作账号', exact: true }).click();
+      await page.getByRole('menuitem', { name: '切换代理服务 · 工作账号', exact: true }).click();
       await expect(page.locator('.connection-status')).toContainText('工作账号');
       await page.getByRole('button', { name: '设置与账号', exact: true }).click();
       await page.getByRole('menuitem', { name: /^账号 ·/ }).click();
@@ -253,7 +271,11 @@ for (const recovery of [false, true])
       await page.getByRole('button', { name: '上移 个人账号', exact: true }).click();
       expect(
         await page.evaluate(() => JSON.parse(localStorage.getItem('proxy-account-pool')!).order),
-      ).toEqual(['personal', 'default']);
+      ).toEqual(failedService ? ['personal', 'default', 'offline'] : ['personal', 'default']);
+      if (failedService) {
+        await page.getByRole('button', { name: '上移 离线代理服务', exact: true }).click();
+        await page.getByRole('button', { name: '上移 离线代理服务', exact: true }).click();
+      }
       await page.getByRole('button', { name: '会话', exact: true }).click();
       await page.getByRole('button', { name: '添加项目', exact: true }).click();
       await page.getByRole('button', { name: '新建会话 · /tmp/pool-project', exact: true }).click();
@@ -290,7 +312,41 @@ for (const recovery of [false, true])
         'connect:default',
         'connect:personal',
         'connect:default',
+        ...(failedService ? ['connect:offline'] : []),
         'connect:personal',
       ]);
+      if (failedService) {
+        expect(
+          await page.evaluate(
+            () => JSON.parse(localStorage.getItem('proxy-account-pool')!).disabled,
+          ),
+        ).toContain('offline');
+        await page.reload();
+        await expect(page.locator('.connection-status')).toContainText('个人账号');
+        await page.getByRole('button', { name: '设置与账号', exact: true }).click();
+        await page.getByRole('menuitem', { name: /^账号 ·/ }).click();
+        const offline = page.locator('.pool-accounts li').filter({ hasText: '离线代理服务' });
+        await expect(offline).toContainText('连接失败 · 已禁用调度');
+        await page.getByRole('button', { name: '检测全部服务与额度', exact: true }).click();
+        await expect(offline).toContainText('连接失败 · 已禁用调度');
+        expect(
+          await page.evaluate(() =>
+            (window as unknown as { profileLog: string[] }).profileLog.filter((entry) =>
+              entry.startsWith('connect:'),
+            ),
+          ),
+        ).toEqual(['connect:personal']);
+        await page.evaluate(() => Object.assign(window, { serviceRecovered: true }));
+        await page.getByRole('button', { name: '设置与账号', exact: true }).click();
+        await page
+          .getByRole('menuitem', { name: '切换代理服务 · 离线代理服务', exact: true })
+          .click();
+        await expect(page.locator('.connection-status')).toContainText('离线代理服务');
+        await expect
+          .poll(() =>
+            page.evaluate(() => JSON.parse(localStorage.getItem('proxy-account-pool')!).disabled),
+          )
+          .not.toContain('offline');
+      }
     },
   );

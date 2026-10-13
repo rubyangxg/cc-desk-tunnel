@@ -2,7 +2,13 @@ import type { NativeMetrics, Session, SessionEvent } from '@cc-desk-tunnel/proto
 import type { ConnectionProfile } from './connections.ts';
 import { transcript } from './transcript.ts';
 
-export type PoolSettings = { enabled: boolean; strategy: 'reset' | 'manual'; order: string[] };
+export type PoolSettings = {
+  enabled: boolean;
+  strategy: 'reset' | 'manual';
+  order: string[];
+  // A full connection failure needs a successful connection before scheduling again.
+  disabled?: string[];
+};
 export type QuotaSnapshot = {
   limits: NativeMetrics['rateLimits'];
   checkedAt: number;
@@ -56,6 +62,7 @@ export function poolCandidates(
         profile.remember &&
         !!profile.token &&
         !excluded.includes(profile.id) &&
+        !settings.disabled?.includes(profile.id) &&
         !!quota?.limits?.available &&
         typeof fiveHour(quota)?.utilization === 'number' &&
         fiveHour(quota)!.utilization! < 100 &&

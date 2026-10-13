@@ -113,7 +113,7 @@ test('effort drag previews continuously, saves on release and keeps the menu ope
   await page
     .getByLabel('服务凭据', { exact: true })
     .fill('test-only-effort-token-with-enough-length');
-  await page.getByRole('button', { name: '连接', exact: true }).click();
+  await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
   await page.locator('.session-select').filter({ hasText: session.title }).click();
   await page.getByRole('button', { name: '模型与推理强度', exact: true }).click();
   const menu = page.getByRole('dialog', { name: '模型与推理强度', exact: true });
