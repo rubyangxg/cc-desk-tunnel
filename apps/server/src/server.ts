@@ -88,7 +88,11 @@ export type Run = {
   // Output still arriving in pieces: sent on as it comes, recorded once it is whole.
   open?: Fragment;
   input?: NativeInput;
-  controls: { refresh?: () => Promise<void>; stopTask?: (taskId: string) => Promise<void> };
+  controls: {
+    refresh?: () => Promise<void>;
+    stopTask?: (taskId: string) => Promise<void>;
+    quotaPolicyChanged?: () => void;
+  };
   attempted?: Set<string>;
   nativeId?: string;
 };
@@ -437,6 +441,7 @@ export function createProxyServer(options: ServerOptions) {
     }
     if (command.type === 'pool.configure') {
       pool.configure(command.values);
+      for (const run of runs.values()) run.controls.quotaPolicyChanged?.();
       publishPool();
       return;
     }
@@ -638,7 +643,7 @@ export function createProxyServer(options: ServerOptions) {
         const status = await runClaude(claude, {
           sessionId: run.sessionId,
           nativeSessionId: run.nativeId,
-          stopAtQuota: pool!.settings.enabled,
+          stopAtQuota: () => pool!.settings.enabled,
           nativeRoot: session.nativeRoot ?? session.id,
           projectPath: said.projectPath,
           platform: said.platform,

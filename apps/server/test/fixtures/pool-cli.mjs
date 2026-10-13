@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 
 const directory = process.env.CLAUDE_CONFIG_DIR;
 if (!directory) process.exit(2);
@@ -35,7 +36,7 @@ if (process.argv.includes('auth')) {
     process.argv.find((value) => value.startsWith(`${name}=`))?.slice(name.length + 1) ??
     (process.argv.includes(name) ? process.argv[process.argv.indexOf(name) + 1] : undefined);
   const sessionId = arg('--resume') ?? arg('--session-id') ?? randomUUID();
-  input.on('line', (line) => {
+  input.on('line', async (line) => {
     const message = JSON.parse(line);
     if (message.type === 'control_request') {
       let response = {};
@@ -109,6 +110,7 @@ if (process.argv.includes('auth')) {
         claude_code_version: 'test',
         permissionMode: 'auto',
       });
+      while (state().pauseBeforeQuota) await delay(10);
       if (config.fail === 'quota' || config.fail === 'unknown') {
         save({ ...config, blocked: true });
         if (config.fail === 'unknown')

@@ -41,7 +41,8 @@ export type ClaudeOptions = {
 export type ClaudeRun = {
   sessionId: string;
   nativeSessionId?: string;
-  stopAtQuota?: boolean;
+  // Read the current policy, including changes made after this run started.
+  stopAtQuota?: () => boolean;
   // The session whose Linux directory holds this session's native history; itself unless it is a fork.
   nativeRoot: string;
   projectPath: string;
@@ -74,7 +75,11 @@ export type ClaudeRun = {
   }) => void;
   // Filled in while the CLI is running, so the service can ask it for fresh account quota mid-run and end
   // one of its background tasks.
-  controls: { refresh?: () => Promise<void>; stopTask?: (taskId: string) => Promise<void> };
+  controls: {
+    refresh?: () => Promise<void>;
+    stopTask?: (taskId: string) => Promise<void>;
+    quotaPolicyChanged?: () => void;
+  };
 };
 // `sessionId` is the proxy's name for the session, which a scheduled task needs to continue it.
 export function remotePrompt(
@@ -156,6 +161,7 @@ export async function runClaude(
   let outputSoFar: number | undefined = run.resume ? undefined : 0;
   let settle: ReturnType<typeof setTimeout> | undefined;
   let settled = false;
+  let quotaStopped = false;
   try {
     session = query({
       prompt: run.input.stream(),
@@ -248,10 +254,32 @@ export async function runClaude(
     // its own. Closing the CLI with the turn that started them would kill them, so the run stays open until
     // none is left.
     let background = 0;
+    const stopForQuota = () => {
+      if (
+        quotaStopped ||
+        run.signal.aborted ||
+        !run.stopAtQuota?.() ||
+        !quotaRejected ||
+        background ||
+        [...mapper.tools.values()].some((tool) => !tool.finished)
+      )
+        return false;
+      quotaStopped = true;
+      mapper.result = { failed: true, text: 'Claude 5 小时额度已耗尽。' };
+      return true;
+    };
+    // A rejected CLI may wait silently for the quota reset. Enabling the pool must wake that run too.
+    run.controls.quotaPolicyChanged = () => {
+      if (stopForQuota()) {
+        run.input.close();
+        running.close();
+      }
+    };
     let idle = false;
     let told = false;
     let turnStartedAt = Date.now();
     for await (const message of session) {
+      if (quotaStopped) break;
       if (message.type === 'system' && message.subtype === 'background_tasks_changed') {
         const tasks = message.tasks.filter((task) => !task.ambient);
         background = tasks.length;
@@ -286,15 +314,7 @@ export async function runClaude(
         run.input.observe(message);
         mapper.accept(message);
       }
-      if (
-        run.stopAtQuota &&
-        quotaRejected &&
-        !background &&
-        [...mapper.tools.values()].every((tool) => tool.finished)
-      ) {
-        mapper.result = { failed: true, text: 'Claude 5 小时额度已耗尽。' };
-        break;
-      }
+      if (stopForQuota()) break;
       // Context grows with every model call; show it during a long turn, not only once the turn ends.
       if (
         message.type === 'assistant' &&
@@ -366,12 +386,13 @@ export async function runClaude(
       }
     }
   } catch (error) {
-    if (!settled)
+    if (!settled && !quotaStopped)
       failure = error instanceof Error ? error : new Error('Native SDK process failed.');
   } finally {
     clearTimeout(settle);
     run.controls.refresh = undefined;
     run.controls.stopTask = undefined;
+    run.controls.quotaPolicyChanged = undefined;
     run.input.close();
     session?.close();
     run.signal.removeEventListener('abort', stop);

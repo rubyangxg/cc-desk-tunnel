@@ -181,6 +181,60 @@ nativeTest(
 );
 
 nativeTest(
+  'enabling the pool during a running task applies before and after quota rejection',
+  { timeout: 60000 },
+  async (t) => {
+    for (const alreadyRejected of [false, true]) {
+      await t.test(
+        alreadyRejected ? 'already waiting for quota' : 'before quota is rejected',
+        async (t) => {
+          const f = await fixture(t);
+          await f.request({ type: 'pool.configure', values: { enabled: false } });
+          const file = join(f.config, 'fixture.json');
+          if (!alreadyRejected)
+            writeFileSync(
+              file,
+              JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), pauseBeforeQuota: true }),
+            );
+          const { sessionId } = await f.request({
+            type: 'session.create',
+            title: 'enable while running',
+            projectPath: '/local/project',
+          });
+          await f.request({ type: 'message.send', sessionId, text: 'finish this task' });
+          await f.wait(
+            (message) =>
+              message.type === 'session.event' &&
+              (alreadyRejected
+                ? message.event.payload.type === 'run.error' &&
+                  message.event.payload.code === 'quota_five_hour'
+                : message.event.payload.type === 'native.session'),
+          );
+          await f.request({ type: 'pool.configure', values: { enabled: true } });
+          if (!alreadyRejected)
+            writeFileSync(
+              file,
+              JSON.stringify({
+                ...JSON.parse(readFileSync(file, 'utf8')),
+                pauseBeforeQuota: false,
+              }),
+            );
+          await f.wait(
+            (message) =>
+              message.type === 'session.event' &&
+              message.event.payload.type === 'run.status' &&
+              message.event.payload.status === 'completed',
+            10000,
+          );
+          assert.equal(f.server.store.get(sessionId!).session.accountId, f.id);
+          assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 2);
+        },
+      );
+    }
+  },
+);
+
+nativeTest(
   'an unknown tool result blocks automatic cross-account replay',
   { timeout: 60000 },
   async (t) => {
