@@ -43,7 +43,7 @@ if (process.argv.includes('auth')) {
       const config = state();
       if (message.request.subtype === 'initialize')
         response = {
-          commands: [],
+          commands: config.commands ?? [],
           models: [{ value: 'test', displayName: 'Test', description: '' }],
           account: { email: config.email, subscriptionType: 'pro' },
         };
@@ -110,7 +110,35 @@ if (process.argv.includes('auth')) {
         model: 'test',
         claude_code_version: 'test',
         permissionMode: 'auto',
+        slash_commands: config.commands?.map((command) => command.name),
+        terminal_slash_commands: config.terminalCommands,
       });
+      if (config.commandOutput && message.message.content.startsWith('/')) {
+        emit({
+          type: 'system',
+          subtype: 'local_command_output',
+          content: config.commandOutput,
+          session_id: sessionId,
+        });
+        if (message.message.content.startsWith('/goal'))
+          emit({
+            type: 'active_goal',
+            value: {
+              condition: message.message.content.slice(6),
+              iterations: 0,
+              set_at: Date.now(),
+              tokens_at_start: 0,
+            },
+            session_id: sessionId,
+          });
+      }
+      if (config.changedCommands)
+        emit({
+          type: 'system',
+          subtype: 'commands_changed',
+          commands: config.changedCommands,
+          session_id: sessionId,
+        });
       while (state().pauseBeforeQuota) await delay(10);
       if (['quota', 'quota-result', 'unknown'].includes(config.fail)) {
         save({ ...config, blocked: true });

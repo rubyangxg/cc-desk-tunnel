@@ -16,8 +16,9 @@ type ContextUsage = Awaited<ReturnType<Query['getContextUsage']>>;
 export function nativeCapabilities(
   models: ModelInfo[],
   account: AccountInfo,
-  commands: string[],
+  commands: (string | { name: string; description?: string; argumentHint?: string })[],
   configuredModel?: string,
+  terminalCommands: string[] = [],
 ): EventPayload {
   const catalog: NativeCapabilities['models'] = models.map((model) => ({
     value: model.value,
@@ -46,7 +47,17 @@ export function nativeCapabilities(
   return eventPayloadSchema.parse({
     type: 'native.capabilities',
     models: catalog,
-    commands,
+    commands: commands.map((command) => (typeof command === 'string' ? command : command.name)),
+    commandDetails: commands.map((command) =>
+      typeof command === 'string'
+        ? { name: command, description: '', argumentHint: '' }
+        : {
+            name: command.name,
+            description: command.description ?? '',
+            argumentHint: command.argumentHint ?? '',
+          },
+    ),
+    terminalCommands,
     account: {
       email: account.email,
       organization: account.organization,

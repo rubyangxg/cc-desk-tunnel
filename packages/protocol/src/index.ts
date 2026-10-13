@@ -280,6 +280,16 @@ export const eventPayloadSchema = z.discriminatedUnion('type', [
     models: z.array(modelInfoSchema),
     account: nativeAccountSchema,
     commands: z.array(z.string()),
+    commandDetails: z
+      .array(
+        z.object({
+          name: z.string(),
+          description: z.string(),
+          argumentHint: z.string(),
+        }),
+      )
+      .optional(),
+    terminalCommands: z.array(z.string()).optional(),
   }),
   z.object({
     type: z.literal('native.metrics'),

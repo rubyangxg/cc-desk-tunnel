@@ -1186,6 +1186,21 @@ export function createProxyServer(options: ServerOptions) {
       mutations.delete(command.sessionId);
     }
   }
+  // Prefixing a slash command with a handoff or a move notice turns it into ordinary prompt text.
+  function assertCommandContext(session: Session, text: string) {
+    if (!options.claude || !/^\/[a-z][\w:-]*(?:\s|$)/i.test(text)) return;
+    const known = session.prompt?.told ?? session.prompt;
+    if (
+      session.accountHandoff ||
+      (known &&
+        !session.prompt?.compacted &&
+        (known.projectPath !== session.projectPath || known.device !== session.device?.id))
+    )
+      throw new DomainError(
+        'command_context_changed',
+        '账号或项目已切换，请先发送一条普通消息衔接上下文，再使用指令。',
+      );
+  }
   // A message starts a run, or joins the native run this connection already owns. Compacting is the native
   // /compact command sent as a message.
   function submit(
@@ -1222,6 +1237,7 @@ export function createProxyServer(options: ServerOptions) {
           'quota_waiting',
           '正在等待额度重置；如需发送其他消息，请先停止等待。',
         );
+      assertCommandContext(session, text);
       active.input.assertWritable();
       peer.subscriptions.add(command.sessionId);
       emit(active, { type: 'message.user', messageId: command.requestId, text, scenario });
@@ -1253,6 +1269,7 @@ export function createProxyServer(options: ServerOptions) {
       session = changed;
       updated(session.id);
     }
+    assertCommandContext(session, text);
     peer.subscriptions.add(command.sessionId);
     const run: Run = {
       id: randomUUID(),

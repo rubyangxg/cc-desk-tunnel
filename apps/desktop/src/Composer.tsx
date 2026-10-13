@@ -11,12 +11,13 @@ import type {
 import ComposerControls from './ComposerControls.tsx';
 import PermissionMenu from './PermissionMenu.tsx';
 import { IconButton } from './ui.tsx';
+import { composerCommands } from './commands.ts';
+import type { ComposerCommand } from './commands.ts';
 import type { MenuPosition } from './ui.tsx';
 
 export type Scenario = 'chat' | 'tool' | 'question' | 'error';
 // A draft that is only a slash and an optional command name opens the command menu.
 const slashDraft = /^[/\\][^ \n]*$/;
-const compactDraft = /^[/\\](compact)?$/;
 
 // The branch the project's working tree is on, read from the project by the desktop; it is looked at again
 // whenever the window comes back to the front or a run ends, the moments it may have changed.
@@ -107,6 +108,57 @@ export default function Composer({
   const input = useRef<HTMLTextAreaElement>(null);
   const branch = useBranch(session.projectPath, !!session.activeRun);
   const [dropping, setDropping] = useState(false);
+  const [commandIndex, setCommandIndex] = useState(0);
+  const commandQuery = draft.slice(1).toLowerCase();
+  const commands: ComposerCommand[] = [
+    ...composerCommands(capabilities).filter(
+      (command) =>
+        command.name.toLowerCase().includes(commandQuery) ||
+        command.description.includes(commandQuery),
+    ),
+    { name: 'refresh', description: '刷新命令与额度', argumentHint: '', action: 'refresh' },
+  ];
+  useEffect(() => setCommandIndex(0), [draft, session.id]);
+  const chosenIndex = Math.min(commandIndex, commands.length - 1);
+  useEffect(() => {
+    if (slashOpen)
+      document.getElementById(`slash-command-${chosenIndex}`)?.scrollIntoView({ block: 'nearest' });
+  }, [chosenIndex, slashOpen]);
+  const commandDisabled = (command: ComposerCommand) =>
+    command.action === 'compact'
+      ? controlsDisabled || !canCompact
+      : command.action === 'refresh'
+        ? controlsDisabled || refreshing
+        : inputDisabled;
+  function chooseCommand(command: ComposerCommand, completeOnly = false) {
+    if (commandDisabled(command)) return;
+    setSlashOpen(false);
+    if (command.action && (!completeOnly || command.action === 'refresh')) {
+      if (command.action === 'compact') compact();
+      else {
+        setDraft('');
+        refresh();
+      }
+    } else {
+      setDraft(`/${command.name} `);
+      input.current?.focus();
+    }
+  }
+  function submitDraft() {
+    if (native && /^[/\\]refresh\s*$/.test(draft)) {
+      if (!controlsDisabled && !refreshing) {
+        setDraft('');
+        setSlashOpen(false);
+        refresh();
+      }
+      return;
+    }
+    if (native && /^[/\\]compact\s*$/.test(draft)) {
+      if (!controlsDisabled && canCompact) compact();
+      return;
+    }
+    send();
+  }
   useLayoutEffect(() => {
     // Grow with the draft; the stylesheet's max-height decides when scrolling takes over.
     if (!input.current) return;
@@ -151,38 +203,36 @@ export default function Composer({
   return (
     <div className="composer-area">
       {native && slashOpen && (
-        <div className="slash-menu" role="listbox" aria-label="会话命令">
-          <button
-            type="button"
-            role="option"
-            aria-selected={true}
-            disabled={controlsDisabled || !canCompact}
-            onClick={compact}
-          >
-            <Shrink />
-            <span>
-              压缩上下文
-              <small>
-                {metrics?.context ? `已使用 ${metrics.context.percentage}%` : '/compact'}
-              </small>
-            </span>
-          </button>
-          <button
-            type="button"
-            role="option"
-            aria-selected={false}
-            disabled={controlsDisabled || refreshing}
-            onClick={() => {
-              setSlashOpen(false);
-              setDraft('');
-              refresh();
-            }}
-          >
-            <RefreshCw />
-            <span>
-              刷新原生状态<small>上下文与订阅额度</small>
-            </span>
-          </button>
+        <div className="slash-menu" role="listbox" aria-label="会话命令" id="slash-commands">
+          {commands.map((command, index) => (
+            <button
+              key={command.name}
+              id={`slash-command-${index}`}
+              type="button"
+              role="option"
+              aria-label={`/${command.name} · ${command.description}`}
+              aria-selected={index === chosenIndex}
+              disabled={commandDisabled(command)}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => chooseCommand(command)}
+            >
+              {command.action === 'compact' ? (
+                <Shrink />
+              ) : command.action === 'refresh' ? (
+                <RefreshCw />
+              ) : (
+                <span className="slash-mark">/</span>
+              )}
+              <span>
+                <strong>/{command.name}</strong>
+                {command.argumentHint && <em> {command.argumentHint}</em>}
+                <small>{command.description}</small>
+              </span>
+            </button>
+          ))}
+          {commands.length === 1 && commandQuery && (
+            <p className="slash-empty">当前 Claude 未提供匹配命令</p>
+          )}
         </div>
       )}
       <div className="composer-context">
@@ -212,7 +262,7 @@ export default function Composer({
         className={`composer ${dropping ? 'dropping' : ''}`}
         onSubmit={(event) => {
           event.preventDefault();
-          send();
+          submitDraft();
         }}
         onDragOver={(event) => {
           if (!window.desktop || inputDisabled || !event.dataTransfer.types.includes('Files'))
@@ -231,6 +281,10 @@ export default function Composer({
         <textarea
           ref={input}
           aria-label="消息"
+          aria-controls={native && slashOpen ? 'slash-commands' : undefined}
+          aria-expanded={native && slashOpen}
+          aria-autocomplete="list"
+          aria-activedescendant={native && slashOpen ? `slash-command-${chosenIndex}` : undefined}
           placeholder="随心输入…"
           value={draft}
           disabled={inputDisabled}
@@ -254,14 +308,34 @@ export default function Composer({
             void paste(usable);
           }}
           onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
+            if (native && slashOpen && ['ArrowDown', 'ArrowUp', 'Tab'].includes(event.key)) {
+              event.preventDefault();
+              if (event.key === 'Tab') chooseCommand(commands[chosenIndex], true);
+              else
+                setCommandIndex(
+                  (chosenIndex + (event.key === 'ArrowDown' ? 1 : commands.length - 1)) %
+                    commands.length,
+                );
+              return;
+            }
             if (event.key === 'Escape') {
               setSlashOpen(false);
               return;
             }
             if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
-              if (slashOpen && compactDraft.test(draft)) compact();
-              else send();
+              if (
+                native &&
+                slashOpen &&
+                (commandIndex > 0 ||
+                  (commands.length > 1 &&
+                    !commands.some((command) => command.name === commandQuery)))
+              )
+                chooseCommand(commands[chosenIndex]);
+              else if (native && slashOpen && commandQuery === 'refresh')
+                chooseCommand(commands.find((command) => command.action === 'refresh')!);
+              else submitDraft();
             }
           }}
         />

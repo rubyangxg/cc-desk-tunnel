@@ -234,10 +234,12 @@ export async function runClaude(
       nativeCapabilities(
         initialized.models,
         initialized.account,
-        initialized.commands.map((command) => command.name),
+        initialized.commands,
         run.model ?? options.model,
       ),
     );
+    let commands = initialized.commands;
+    let terminalCommands: string[] = [];
     let metrics: NativeMetrics | undefined;
     let refresh: Promise<void> | undefined;
     let refreshedAt = 0;
@@ -280,6 +282,34 @@ export async function runClaude(
     let turnStartedAt = Date.now();
     for await (const message of session) {
       if (quotaStopped) break;
+      if (
+        message.type === 'system' &&
+        (message.subtype === 'commands_changed' || message.subtype === 'init')
+      ) {
+        if (message.subtype === 'commands_changed') commands = message.commands;
+        else {
+          terminalCommands = message.terminal_slash_commands ?? [];
+          if (message.slash_commands)
+            commands = message.slash_commands.map(
+              (name) =>
+                commands.find((command) => command.name === name) ?? {
+                  name,
+                  description: '',
+                  argumentHint: '',
+                },
+            );
+        }
+        if (!run.signal.aborted)
+          run.emit(
+            nativeCapabilities(
+              initialized.models,
+              initialized.account,
+              commands,
+              run.model ?? options.model,
+              terminalCommands,
+            ),
+          );
+      }
       if (message.type === 'system' && message.subtype === 'background_tasks_changed') {
         const tasks = message.tasks.filter((task) => !task.ambient);
         background = tasks.length;
@@ -477,7 +507,7 @@ export async function readNativeStatus(
       nativeCapabilities(
         initialized.models,
         initialized.account,
-        initialized.commands.map((command) => command.name),
+        initialized.commands,
         options.model,
       ),
       await nativeMetrics(process),

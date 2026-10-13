@@ -85,7 +85,9 @@ export class ClaudeStream {
           trigger: String(metadata.trigger ?? 'unknown'),
           previousTokens: typeof metadata.pre_tokens === 'number' ? metadata.pre_tokens : null,
         });
-      } else if (['status', 'informational'].includes(String(message.subtype))) {
+      } else if (
+        ['status', 'informational', 'local_command_output'].includes(String(message.subtype))
+      ) {
         const text =
           typeof message.content === 'string'
             ? message.content
@@ -94,6 +96,20 @@ export class ClaudeStream {
               : String(message.status ?? message.subtype);
         this.emit({ type: 'native.notice', text });
       }
+    }
+    if (message.type === 'active_goal') {
+      const goal = message.value;
+      if (goal === null) this.emit({ type: 'native.notice', text: '目标已完成或清除。' });
+      else if (
+        goal &&
+        typeof goal === 'object' &&
+        'condition' in goal &&
+        typeof goal.condition === 'string'
+      )
+        this.emit({
+          type: 'native.notice',
+          text: `当前目标：${goal.condition}${'last_reason' in goal && typeof goal.last_reason === 'string' ? `\n${goal.last_reason}` : ''}`,
+        });
     }
     if (message.type === 'tool_progress') {
       this.emit({

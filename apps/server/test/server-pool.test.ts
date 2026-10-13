@@ -520,3 +520,83 @@ nativeTest(
     assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 1);
   },
 );
+
+nativeTest(
+  'slash commands reach the native CLI unchanged and publish command output and updated catalogs',
+  { timeout: 30000 },
+  async (t) => {
+    const f = await fixture(t, '');
+    await f.request({ type: 'pool.configure', values: { enabled: false } });
+    const file = join(f.config, 'fixture.json');
+    writeFileSync(
+      file,
+      JSON.stringify({
+        loggedIn: true,
+        email: 'a@example.test',
+        commands: [
+          { name: 'goal', description: 'Set goal', argumentHint: '<condition>' },
+          { name: 'exit', description: 'Exit', argumentHint: '' },
+        ],
+        terminalCommands: ['exit'],
+        commandOutput: 'Goal configured',
+        changedCommands: [
+          { name: 'goal', description: 'Set goal', argumentHint: '<condition>' },
+          { name: 'review', description: 'Review code', argumentHint: '' },
+        ],
+      }),
+    );
+    const { sessionId } = await f.request({
+      type: 'session.create',
+      title: 'commands',
+      projectPath: '/local/project',
+    });
+    const text = '/goal 所有测试通过，并修复现有错误';
+    await f.request({ type: 'message.send', sessionId, text });
+    await f.wait(
+      (message) =>
+        message.type === 'session.event' &&
+        message.event.payload.type === 'run.status' &&
+        message.event.payload.status === 'completed',
+    );
+    const calls = readFileSync(f.log, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].prompt, text);
+    const events = f.server.store.snapshot(sessionId!).events;
+    assert.ok(
+      events.some(
+        (event) =>
+          event.payload.type === 'native.notice' && event.payload.text === 'Goal configured',
+      ),
+    );
+    assert.ok(
+      events.some(
+        (event) =>
+          event.payload.type === 'native.notice' && event.payload.text.startsWith('当前目标：'),
+      ),
+    );
+    const catalog = events.findLast(
+      (event) => event.payload.type === 'native.capabilities',
+    )!.payload;
+    assert.equal(catalog.type, 'native.capabilities');
+    if (catalog.type === 'native.capabilities') {
+      assert.deepEqual(catalog.commands, ['goal', 'review']);
+      assert.deepEqual(catalog.terminalCommands, ['exit']);
+      assert.equal(catalog.commandDetails?.[0].argumentHint, '<condition>');
+    }
+    await f.request({ type: 'session.account', sessionId, accountId: f.id });
+    const requestId = randomUUID();
+    f.socket.send(
+      JSON.stringify({ type: 'message.send', sessionId, requestId, text: '/goal keep context' }),
+    );
+    const rejected = await f.wait(
+      (message) => message.type === 'response' && message.requestId === requestId,
+    );
+    assert.ok(
+      rejected.type === 'response' && !rejected.ok && rejected.code === 'command_context_changed',
+    );
+    assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 1);
+  },
+);

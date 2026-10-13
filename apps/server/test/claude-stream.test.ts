@@ -223,3 +223,19 @@ test('the model requests of a turn are counted from their start events', () => {
   stream.accept({ type: 'stream_event', event: { type: 'message_start' } });
   assert.equal(stream.requests, 1);
 });
+
+test('local slash-command output and native goal updates are visible without becoming model output', () => {
+  const events: EventPayload[] = [];
+  const stream = new ClaudeStream((event) => events.push(event));
+  stream.accept({ type: 'system', subtype: 'local_command_output', content: 'Goal configured' });
+  stream.accept({
+    type: 'active_goal',
+    value: { condition: 'All tests pass', last_reason: 'Two failures remain' },
+  });
+  stream.accept({ type: 'active_goal', value: null });
+  assert.deepEqual(events, [
+    { type: 'native.notice', text: 'Goal configured' },
+    { type: 'native.notice', text: '当前目标：All tests pass\nTwo failures remain' },
+    { type: 'native.notice', text: '目标已完成或清除。' },
+  ]);
+});

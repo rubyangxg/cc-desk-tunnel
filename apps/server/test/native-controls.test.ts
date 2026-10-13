@@ -294,3 +294,31 @@ test('native quota windows retain reset times and per-model rows without exposin
     { name: 'seven_day:Test model', utilization: null, resetsAt: null },
   ]);
 });
+
+test('command metadata keeps descriptions and argument hints without forwarding arbitrary SDK fields', () => {
+  const event = nativeCapabilities(
+    [],
+    {},
+    [
+      {
+        name: 'goal',
+        description: 'Set a goal',
+        argumentHint: '<condition>',
+        secret: 'private-field',
+      } as never,
+      'compact',
+    ],
+    undefined,
+    ['exit'],
+  );
+  assert.equal(event.type, 'native.capabilities');
+  if (event.type !== 'native.capabilities') return;
+  assert.deepEqual(event.commands, ['goal', 'compact']);
+  assert.deepEqual(event.commandDetails?.[0], {
+    name: 'goal',
+    description: 'Set a goal',
+    argumentHint: '<condition>',
+  });
+  assert.deepEqual(event.terminalCommands, ['exit']);
+  assert.equal(JSON.stringify(event).includes('private-field'), false);
+});
