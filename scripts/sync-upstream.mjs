@@ -28,8 +28,9 @@ try {
     git('remote', 'add', 'upstream', 'https://github.com/sun168567/cc-desk-tunnel.git');
   if (repository('upstream') !== 'sun168567/cc-desk-tunnel')
     throw new Error('upstream 不是原作者仓库；未修改远程地址。');
-  git('fetch', 'upstream', 'main');
-  git('fetch', 'origin', 'personal');
+  // Cloud/single-branch clones may only track main; create these tracking refs explicitly.
+  git('fetch', 'upstream', 'refs/heads/main:refs/remotes/upstream/main');
+  git('fetch', 'origin', 'refs/heads/personal:refs/remotes/origin/personal');
   if (check) {
     console.log(
       git('log', '--oneline', 'origin/personal..upstream/main') || '目前没有待同步的上游提交。',
