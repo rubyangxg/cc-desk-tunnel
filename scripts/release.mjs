@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { releaseFiles } from './release-manifest.mjs';
 
-// Releases the version in apps/desktop/package.json from what the main branch on GitHub holds. Nothing is
+// Releases the version in apps/desktop/package.json from what the personal branch on GitHub holds. Nothing is
 // built on this computer: the `package` workflow on GitHub builds every file from that commit, starts each
 // client as a check, and attaches them to a draft release this script made, with release.json and
 // SHA256SUMS. The release stays a draft unless --publish is given; --prerelease marks it as a preview, which
@@ -20,9 +20,17 @@ const unknown = process.argv
   .filter((word) => !['--dry-run', '--publish', '--prerelease'].includes(word));
 if (unknown.length)
   throw new Error(`Unknown argument ${unknown.join(' ')}. Use --dry-run, --prerelease, --publish.`);
+const repositoryName = 'rubyangxg/cc-desk-tunnel';
+const releaseBranch = 'personal';
 const gh = process.env.GH ?? 'gh';
 const run = (file, args, options = {}) =>
-  execFileSync(file, args, { cwd: root, encoding: 'utf8', windowsHide: true, ...options });
+  execFileSync(file, args, {
+    cwd: root,
+    encoding: 'utf8',
+    windowsHide: true,
+    env: { ...process.env, GH_REPO: repositoryName },
+    ...options,
+  });
 const git = (...args) => run('git', args).trim();
 
 const version = JSON.parse(readFileSync(join(root, 'apps/desktop/package.json'), 'utf8')).version;
@@ -34,7 +42,7 @@ const section = new RegExp(
   .exec(readFileSync(join(root, 'CHANGELOG.md'), 'utf8'))?.[1]
   .trim();
 if (!section) throw new Error(`CHANGELOG.md has no section "## ${version}".`);
-const repository = 'https://github.com/sun168567/cc-desk-tunnel';
+const repository = `https://github.com/${repositoryName}`;
 const [installer, server, ...others] = releaseFiles(version);
 // Every release reads the same way: what the project is, this version's section of the change log with its
 // headings one level up, then how to get and upgrade to it. A preview carries the same text, so that making
@@ -45,7 +53,7 @@ const notes = [
   // The change log links to files beside it; on the release page those links need the whole address.
   section
     .replace(/^### /gm, '## ')
-    .replace(/\]\((?![a-z]+:|#)([^)]+)\)/g, `](${repository}/blob/main/$1)`),
+    .replace(/\]\((?![a-z]+:|#)([^)]+)\)/g, `](${repository}/blob/${releaseBranch}/$1)`),
   '',
   '---',
   '',
@@ -54,10 +62,10 @@ const notes = [
   '- **已在使用**：在客户端的“设置 → 关于与更新”里先升级服务端，再按提示升级客户端；两端需要同一版本。',
   `- **Windows 客户端**：下载 \`${installer}\` 并安装。安装包没有代码签名，SmartScreen 与杀毒软件的提示见[说明](${repository}#杀毒软件与-smartscreen)。`,
   `- **服务端**：新部署按[快速开始](${repository}#快速开始)用一条命令安装；\`${server}\` 是它下载的程序包。`,
-  `- **macOS 与 Linux 客户端（实验性）**：${others.map((name) => `\`${name}\``).join('、')}。没有签名，也不带应用内更新，升级时重新下载安装；安装与首次打开见 [macOS 说明](${repository}/blob/main/docs/macos.md)与 [Linux 说明](${repository}/blob/main/docs/linux.md)。`,
+  `- **macOS 与 Linux 客户端（实验性）**：${others.map((name) => `\`${name}\``).join('、')}。没有签名，也不带应用内更新，升级时重新下载安装；安装与首次打开见 [macOS 说明](${repository}/blob/${releaseBranch}/docs/macos.md)与 [Linux 说明](${repository}/blob/${releaseBranch}/docs/linux.md)。`,
   '- **校验**：各文件的 SHA256 在 `SHA256SUMS` 与 `release.json` 中。',
   '',
-  `文档：[部署手册](${repository}/blob/main/deploy/README.md) · [变更记录](${repository}/blob/main/CHANGELOG.md) · [安全须知](${repository}#安全须知)`,
+  `文档：[部署手册](${repository}/blob/${releaseBranch}/deploy/README.md) · [变更记录](${repository}/blob/${releaseBranch}/CHANGELOG.md) · [安全须知](${repository}#安全须知)`,
 ].join('\n');
 const output = join(root, 'artifacts/release');
 mkdirSync(output, { recursive: true });
@@ -68,11 +76,17 @@ if (dryRun) {
     `The notes of ${tag} are in ${join(output, 'notes.md')}; nothing was sent to GitHub.`,
   );
 } else {
-  // A release is cut from exactly what the main branch on GitHub holds, so the tag matches the files.
+  // A release is cut from exactly what the personal branch on GitHub holds, so the tag matches the files.
   const commit = git('rev-parse', 'HEAD');
   if (git('status', '--porcelain')) throw new Error('Commit or discard local changes first.');
-  const remote = run(gh, ['api', 'repos/{owner}/{repo}/commits/main', '--jq', '.sha']).trim();
-  if (remote !== commit) throw new Error('Check out the current main branch from GitHub first.');
+  const remote = run(gh, [
+    'api',
+    `repos/${repositoryName}/commits/${releaseBranch}`,
+    '--jq',
+    '.sha',
+  ]).trim();
+  if (remote !== commit)
+    throw new Error('Check out the current personal branch from GitHub first.');
   let exists = true;
   try {
     run(gh, ['release', 'view', tag], { stdio: 'pipe' });
@@ -130,7 +144,7 @@ if (dryRun) {
         ]),
       );
     const before = new Set(runs().map((item) => item.databaseId));
-    run(gh, ['workflow', 'run', 'package.yml', '--ref', 'main', '-f', `release=${tag}`]);
+    run(gh, ['workflow', 'run', 'package.yml', '--ref', releaseBranch, '-f', `release=${tag}`]);
     let started;
     for (let attempt = 0; !started && attempt < 30; attempt++) {
       wait(5_000);

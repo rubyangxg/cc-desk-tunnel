@@ -1,8 +1,8 @@
 # Builds the release files on GitHub's machines instead of a maintainer's own: the Windows installer, the
 # macOS and Linux packages and the server bundle, each client started as a check. This is where a release
 # is built: the release script names its draft in `release`, and the files are attached to it with their
-# hashes. Nothing is signed with a certificate. Otherwise the files are kept with the run for 3 days; it
-# runs when asked for, and by itself when what does the packaging changes on a dev branch.
+# hashes. Nothing is signed with a certificate. Otherwise the files are kept with the run for 30 days; it
+# runs when asked for and after a push to the personal branch.
 name: package
 on:
   workflow_dispatch:
@@ -11,13 +11,7 @@ on:
         description: Tag of a draft release to attach the files to. Left empty, they stay with the run.
         default: ''
   push:
-    branches: ['dev/**']
-    paths:
-      - .github/workflows/package.yml
-      - scripts/package-*.mjs
-      - scripts/release-manifest.mjs
-      - scripts/smoke-posix-package.mjs
-      - scripts/prepare-windows.ps1
+    branches: [personal]
 permissions:
   contents: read
 concurrency:
@@ -62,7 +56,7 @@ jobs:
           name: windows-x64
           path: artifacts/windows/*.exe
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 30
   # One package for each kind of Mac, each built and started on a machine of its own kind. The picture is of
   # the window as the system draws it there.
   macos:
@@ -107,14 +101,14 @@ jobs:
             artifacts/macos/*.dmg
             artifacts/macos/*.zip
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 30
       # By itself, so that it can be looked at without fetching the package.
       - uses: actions/upload-artifact@v4
         with:
           name: macos-${{ matrix.arch }}-window
           path: artifacts/macos/*.png
           if-no-files-found: warn
-          retention-days: 3
+          retention-days: 30
   # The .deb, built and then installed the way a user installs it, and started from where it was installed:
   # that is where its sandbox and what it depends on are in place. A virtual screen stands in for a desktop.
   linux:
@@ -154,13 +148,13 @@ jobs:
           name: linux-x64
           path: artifacts/linux/*.deb
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
           name: linux-x64-window
           path: artifacts/linux/*.png
           if-no-files-found: warn
-          retention-days: 3
+          retention-days: 30
   server:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -178,7 +172,7 @@ jobs:
           name: server
           path: artifacts/server/*.tar.gz
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 30
   # For the release script: every file of the release goes from here to the draft it made, described by
   # release.json and SHA256SUMS, without passing through a maintainer's computer. The only job that may
   # write to the repository.

@@ -68,7 +68,7 @@ export function environmentConfig(env: NodeJS.ProcessEnv, defaultDataDir: string
   // Releases are followed only by a real service; the entry script of the image says where programs and runtime are.
   if (native && env.PROXY_RELEASE_REPO !== 'none')
     options.updates = {
-      repository: env.PROXY_RELEASE_REPO ?? 'sun168567/cc-desk-tunnel',
+      repository: env.PROXY_RELEASE_REPO ?? 'rubyangxg/cc-desk-tunnel',
       token: env.PROXY_RELEASE_TOKEN || undefined,
       programDir:
         env.PROXY_PROGRAM_DIR && env.PROXY_RUNTIME_DIR ? env.PROXY_PROGRAM_DIR : undefined,
