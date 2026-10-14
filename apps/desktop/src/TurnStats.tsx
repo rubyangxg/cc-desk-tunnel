@@ -10,9 +10,13 @@ export default function TurnStats({ stats }: { stats: Stats }) {
   const [open, setOpen] = useState(false);
   const container = useRef<HTMLDivElement>(null);
   const card = useRef<HTMLDivElement>(null);
-  // The card opens upward; with no room above, it opens below the button instead.
+  // The card opens upward; with no room above, it opens below the button instead. The room ends where the
+  // conversation's scrolling area begins, under the title bar, not at the top of the window.
   useLayoutEffect(() => {
-    card.current?.classList.toggle('below', card.current.getBoundingClientRect().top < 8);
+    const node = card.current;
+    if (!node) return;
+    const top = node.closest('.conversation')?.getBoundingClientRect().top ?? 0;
+    node.classList.toggle('below', node.getBoundingClientRect().top < top + 8);
   }, [open]);
   useEffect(() => {
     if (!open) return;

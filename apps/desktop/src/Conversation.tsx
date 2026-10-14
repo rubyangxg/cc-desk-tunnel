@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from 'react';
 import {
   ArrowUpToLine,
@@ -244,48 +245,94 @@ function WorkGroup({
   );
 }
 
+// No message has a heading; what belongs to it is in a line under it, shown while the pointer is over the message. Under
+// a question: how it was delivered, its time, editing and copy, at the right like the question. Under the reply that
+// closes a turn: copy, the turn's figures and the time, always shown on the latest. Replies said along the way have
+// nothing under them. A delivery that did not plainly arrive stays in sight. Replies of the simulated service keep the
+// heading, which says they are not real.
 function Message({
   item,
   native,
   edit,
+  footer,
+  closing = false,
+  latest = false,
+  joined = false,
 }: {
   item: Text;
   native: boolean;
   edit?: (item: Text) => void;
+  footer?: ReactNode;
+  closing?: boolean;
+  latest?: boolean;
+  // A question put in while the run went on.
+  joined?: boolean;
 }) {
-  const time = messageTime(item.at);
+  const time = messageTime(item.kind === 'assistant' ? (item.doneAt ?? item.at) : item.at);
+  const user = item.kind === 'user';
+  const stamp = time && (
+    <time className="message-time" dateTime={item.at} title={time.full}>
+      {time.short}
+    </time>
+  );
   return (
-    <article className={`message ${item.kind}`}>
-      <div className="message-label">
-        {edit && (
-          <button
-            type="button"
-            className="message-action"
-            aria-label="编辑重发"
-            title="编辑重发：从这条消息之前分叉出新会话，原会话保留"
-            onClick={() => edit(item)}
-          >
-            <Pencil />
-          </button>
-        )}
-        {item.kind === 'user' ? '你' : native ? 'Claude Code' : 'CC Desk Tunnel'}
-        {item.kind === 'assistant' && !native && <span>模拟</span>}
-        {item.kind === 'user' && item.delivery && <span>{item.delivery}</span>}
-        {time && (
-          <time className="message-time" dateTime={item.at} title={time.full}>
-            {time.short}
-          </time>
-        )}
-        <CopyButton text={item.text} />
-      </div>
+    <article className={`message ${item.kind}${latest ? ' latest' : ''}${joined ? ' joined' : ''}`}>
+      {!user && !native && (
+        <div className="message-label">
+          CC Desk Tunnel
+          <span>模拟</span>
+          {stamp}
+          <CopyButton text={item.text} />
+        </div>
+      )}
       <div className="message-content" data-search-content data-copy-text={item.text}>
-        {item.kind === 'user' ? <p>{item.text}</p> : <Rich text={item.text} />}
+        {user ? <p>{item.text}</p> : <Rich text={item.text} />}
       </div>
+      {user && (
+        <div className="message-footer">
+          {item.delivery && (
+            <span
+              className={`message-delivery${item.delivery === '原生已接收' ? '' : ' unsettled'}`}
+            >
+              {item.delivery}
+            </span>
+          )}
+          {stamp}
+          {edit && (
+            <button
+              type="button"
+              className="message-action"
+              aria-label="编辑重发"
+              title="编辑重发：从这条消息之前分叉出新会话，原会话保留"
+              onClick={() => edit(item)}
+            >
+              <Pencil />
+            </button>
+          )}
+          <CopyButton text={item.text} />
+        </div>
+      )}
+      {!user && native && closing && (
+        <div className="message-footer">
+          <CopyButton text={item.text} />
+          {footer}
+          {stamp}
+        </div>
+      )}
     </article>
   );
 }
-
-function TurnView({ turn, native, live }: { turn: Turn; native: boolean; live: Live }) {
+function TurnView({
+  turn,
+  native,
+  live,
+  latest,
+}: {
+  turn: Turn;
+  native: boolean;
+  live: Live;
+  latest: boolean;
+}) {
   const active = !turn.endedAt;
   const notes = turn.steps.filter((step) => step.kind === 'assistant').length;
   const steps = () =>
@@ -315,6 +362,7 @@ function TurnView({ turn, native, live }: { turn: Turn; native: boolean; live: L
             item={turn.question}
             native={native}
             edit={turn.joined ? undefined : live.edit}
+            joined={turn.joined}
           />
         )
       )}
@@ -334,8 +382,24 @@ function TurnView({ turn, native, live }: { turn: Turn; native: boolean; live: L
               {steps}
             </Fold>
           )}
-      {turn.answer && <Message item={turn.answer} native={native} />}
-      {turn.stats && <TurnStats stats={turn.stats} />}
+      {turn.answer ? (
+        <Message
+          item={turn.answer}
+          native={native}
+          closing
+          latest={latest}
+          footer={turn.stats && <TurnStats stats={turn.stats} />}
+        />
+      ) : (
+        turn.stats &&
+        turn.endedAt && (
+          <div className={`message assistant${latest ? ' latest' : ''}`}>
+            <div className="message-footer">
+              <TurnStats stats={turn.stats} />
+            </div>
+          </div>
+        )
+      )}
       {turn.notices.map((item) => (
         <div
           key={item.id}
@@ -645,8 +709,14 @@ export default function Conversation({
                 <span className="empty-project">{session.projectPath}</span>
               </div>
             )}
-            {turns.map((turn) => (
-              <TurnView key={turn.id} turn={turn} native={native} live={live} />
+            {turns.map((turn, index) => (
+              <TurnView
+                key={turn.id}
+                turn={turn}
+                native={native}
+                live={live}
+                latest={index === turns.length - 1}
+              />
             ))}
             {session.activeRun && background && (
               <div className="background-tasks">

@@ -1982,7 +1982,8 @@ kbd {
   width: 13px;
   height: 13px;
 }
-.message-label > .copy-button span {
+.message-label > .copy-button span,
+.message-footer > .copy-button span {
   display: none;
 }
 .code-block {
@@ -2067,8 +2068,15 @@ kbd {
   font-size: 10px;
   color: var(--faint);
 }
+/* A question is a bubble as wide as its words, at the right, with its line under it. */
 .message.user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
   margin-left: 12%;
+}
+.user .message-content {
+  max-width: 100%;
 }
 .user .message-label {
   justify-content: flex-end;
@@ -2076,18 +2084,15 @@ kbd {
 .message-action {
   display: inline-flex;
   border: 0;
-  padding: 2px;
+  border-radius: 4px;
+  padding: 3px 6px;
   background: none;
-  color: var(--faint);
+  color: var(--muted);
   cursor: pointer;
-  opacity: 0;
-}
-.message:hover .message-action,
-.message-action:focus-visible {
-  opacity: 1;
 }
 .message-action:hover {
-  color: #3b4350;
+  background: var(--hover);
+  color: var(--text);
 }
 .message-action svg {
   width: 13px;
@@ -2263,9 +2268,71 @@ details[open] > summary > .fold-chevron {
 /* The button under a reply; it opens a card above it with the figures, like the usage card in other chat apps. */
 .turn-stats {
   position: relative;
-  margin: -10px 0 22px;
   font-size: 12px;
   color: var(--muted);
+}
+/* Under a message: what belongs to it. Hidden until the pointer is over the message, always there on the latest reply,
+   and always there where there is no pointer to bring it up. What is hidden is each part rather than the line, so a
+   delivery that did not plainly arrive can stay in sight on its own. */
+.message-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.message-footer > * {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.message.latest .message-footer > *,
+.message:hover .message-footer > *,
+.message:focus-within .message-footer > *,
+.message-footer:has([aria-expanded='true']) > *,
+.message-footer > .message-delivery.unsettled {
+  opacity: 1;
+}
+@media (hover: none) {
+  .message-footer > * {
+    opacity: 1;
+  }
+}
+.user .message-footer {
+  justify-content: flex-end;
+}
+.message.user:has(> .message-footer) {
+  margin-bottom: 12px;
+}
+.message-delivery {
+  padding: 0 4px;
+  font-size: 11px;
+  color: var(--faint);
+}
+.message-delivery.unsettled {
+  color: var(--muted);
+}
+/* A question put in while the run went on is a word in passing: a smaller bubble. */
+.message.user.joined .message-content {
+  padding: 7px 14px;
+  font-size: 13px;
+}
+.message-footer .message-time {
+  padding: 0 4px;
+}
+/* The line is always there to take its room, shown or not, so a reply makes up for it in the space below: replies one
+   after the other stay as close as they were, and the latest keeps the room it had for the figures. */
+.message:has(> .message-footer) {
+  margin-bottom: 2px;
+}
+.message.latest:has(> .message-footer) {
+  margin-bottom: 22px;
+}
+/* A reply is skipped when it is off screen, and what is skipped is clipped to its box; the figures card opens above its
+   line, outside that box, so while it is open the reply is drawn as a whole. */
+.message:has(.turn-stats-card) {
+  content-visibility: visible;
 }
 .turn-stats > button {
   display: flex;

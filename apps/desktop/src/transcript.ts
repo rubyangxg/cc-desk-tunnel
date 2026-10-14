@@ -19,6 +19,8 @@ export type TranscriptItem =
       // Stands for the "continue" button: there is no message of the user's to show, edit or copy.
       continued?: boolean;
       at: string;
+      // A reply: when its last text arrived, which is when it was done (`at` is when it began).
+      doneAt?: string;
     }
   | { kind: 'notice'; id: string; runId: string; text: string; error: boolean; at: string }
   | {
@@ -73,8 +75,10 @@ export function transcript(events: SessionEvent[]): TranscriptItem[] {
     }
     if (payload.type === 'text.delta') {
       const existing = byId.get(payload.messageId);
-      if (existing?.kind === 'assistant') existing.text += payload.text;
-      else add({ kind: 'assistant', id: payload.messageId, runId, text: payload.text, at });
+      if (existing?.kind === 'assistant') {
+        existing.text += payload.text;
+        existing.doneAt = at;
+      } else add({ kind: 'assistant', id: payload.messageId, runId, text: payload.text, at });
     }
     // Sessions recorded before summaries were requested hold thinking with nothing in it.
     if (payload.type === 'thinking.delta' && payload.text) {
