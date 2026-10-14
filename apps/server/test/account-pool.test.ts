@@ -195,6 +195,21 @@ test('handoff omits reasoning, is bounded, and refuses unknown tools and unconfi
     event({ type: 'message.delivery', messageId: supplementalId, status: 'unconfirmed' }),
   ];
   assert.equal(canHandoff(supplemental, runId), false);
+  const continuedId = randomUUID();
+  const continued = [
+    ...events,
+    event({
+      type: 'message.user',
+      messageId: continuedId,
+      text: 'continue',
+      scenario: 'chat',
+      continued: true,
+    }),
+    event({ type: 'message.delivery', messageId: continuedId, status: 'unconfirmed' }),
+  ];
+  assert.equal(canHandoff(continued, runId), true);
+  assert.ok(poolHandoff(continued).includes('最近用户任务：Complete my task'));
+  assert.equal(canHandoff([...supplemental, ...continued.slice(events.length)], runId), false);
   events.push(
     event({ type: 'tool.requested', toolId: 't', name: 'Bash', input: '{}', target: 'Linux' }),
   );

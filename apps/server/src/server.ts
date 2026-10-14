@@ -9,7 +9,7 @@ import { createServer as createHttpsServer } from 'node:https';
 import { WebSocket, WebSocketServer } from 'ws';
 import { nativeStore } from './native-store.ts';
 import { AccountPool, orderedAccounts, nextAccountReset } from './account-pool.ts';
-import { poolHandoff, canHandoff } from './pool-handoff.ts';
+import { poolHandoff, handoffBlockReason } from './pool-handoff.ts';
 import { accountStatus, accountLogout, NativeLogin } from './native-account.ts';
 import {
   authSchema,
@@ -773,19 +773,31 @@ export function createProxyServer(options: ServerOptions) {
           },
         });
         const events = store.runEvents(run.sessionId, run.id);
+        if (quota) {
+          pool!.block(accountId, quota.resetsAt);
+          publishPool();
+        }
+        const blocked = handoffBlockReason(events, run.id);
         if (
           status !== 'failed' ||
           run.controller.signal.aborted ||
           (!pool!.settings.enabled && !resumesAfterQuota(run)) ||
           !quota ||
-          !canHandoff(events, run.id)
+          blocked
         ) {
+          if (status === 'failed' && quota && !run.controller.signal.aborted)
+            emit(run, {
+              type: 'native.notice',
+              text:
+                !pool!.settings.enabled && !resumesAfterQuota(run)
+                  ? '自动接力未开启。开启账号池自动接力后，可手动继续当前任务。'
+                  : `自动接力已暂停：${blocked}`,
+            });
           if (status === 'failed' && !quota)
             pool!.update(accountId, { error: '本次运行异常，请检测账号后再参与自动调度' });
           finish(run, status, run.cancelReason);
           return;
         }
-        pool!.block(accountId, quota.resetsAt);
         run.attempted ??= new Set();
         run.attempted.add(accountId);
         publishPool();
@@ -890,21 +902,20 @@ export function createProxyServer(options: ServerOptions) {
         const messageId = randomUUID();
         const prompt =
           next.id !== accountId
-            ? poolHandoff(store.history(run.sessionId, randomUUID(), 0).events)
+            ? `${poolHandoff(store.history(run.sessionId, randomUUID(), 0).events)}\n\ncontinue`
             : resumedAfterReset
               ? 'continue'
               : CONTINUE;
         run.input = new NativeInput(selected.nativeSessionId ?? selected.id, (event) =>
           emit(run, event),
         );
-        if (resumedAfterReset)
-          emit(run, {
-            type: 'message.user',
-            messageId,
-            text: 'continue',
-            scenario: 'chat',
-            continued: true,
-          });
+        emit(run, {
+          type: 'message.user',
+          messageId,
+          text: 'continue',
+          scenario: 'chat',
+          continued: true,
+        });
         run.input.submit(messageId, prompt);
       }
       finish(run, 'cancelled', run.cancelReason);

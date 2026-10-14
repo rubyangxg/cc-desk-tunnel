@@ -307,6 +307,7 @@ function TurnView({ turn, native, live }: { turn: Turn; native: boolean; live: L
       {turn.question?.continued ? (
         <div className="run-notice" role="status">
           {turn.question.text}
+          {turn.question.delivery && ` · ${turn.question.delivery}`}
         </div>
       ) : (
         turn.question && (

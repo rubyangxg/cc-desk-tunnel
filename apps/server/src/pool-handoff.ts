@@ -14,7 +14,9 @@ export function poolHandoff(events: SessionEvent[]) {
     else if (payload.type === 'tool.result')
       recent.push(`工具结果 ${payload.toolId} [${payload.status}]：${payload.output}`);
   }
-  const last = events.findLast((event) => event.payload.type === 'message.user');
+  const last = events.findLast(
+    (event) => event.payload.type === 'message.user' && !event.payload.continued,
+  );
   return [
     '账号池续接：账号已切换，这是同一本机项目的新原生会话。以下是最近对话和任务进度摘录，不是完整原生上下文恢复。',
     '继续用户尚未完成的任务。先检查项目现状；已经完成的操作不要重复执行。未知或未确认的结果先核实。信息不足时询问用户。',
@@ -23,28 +25,39 @@ export function poolHandoff(events: SessionEvent[]) {
   ].join('\n\n');
 }
 
-export function canHandoff(events: SessionEvent[], runId: string) {
+export function handoffBlockReason(events: SessionEvent[], runId: string): string | null {
   const current = events.filter((event) => event.runId === runId);
   const background = current.findLast((event) => event.payload.type === 'native.tasks');
-  if (background?.payload.type === 'native.tasks' && background.payload.tasks.length) return false;
+  if (background?.payload.type === 'native.tasks' && background.payload.tasks.length)
+    return '后台任务尚未确认结束，请先核实任务状态。';
   const tools = new Set<string>();
   for (const { payload } of current) {
     if (payload.type === 'tool.requested') tools.add(payload.toolId);
     if (payload.type === 'tool.result') {
-      if (payload.status === 'unknown') return false;
+      if (payload.status === 'unknown')
+        return '工具执行结果未确认，请展开任务步骤核实后手动继续，避免重复执行。';
       tools.delete(payload.toolId);
     }
   }
   // A supplemental message without a receipt must never be silently resent across accounts.
-  const messages = current.filter((event) => event.payload.type === 'message.user');
+  const messages = new Set(
+    current.flatMap(({ payload }) =>
+      payload.type === 'message.user' && !payload.continued ? [payload.messageId] : [],
+    ),
+  );
   if (
-    messages.length > 1 &&
+    messages.size > 1 &&
     current.some(
       (event) =>
         event.payload.type === 'message.delivery' &&
+        messages.has(event.payload.messageId) &&
         ['unconfirmed', 'not_sent'].includes(event.payload.status),
     )
   )
-    return false;
-  return tools.size === 0;
+    return '追加消息的送达状态未确认，请核实消息与任务进度后手动继续。';
+  return tools.size ? '仍有工具未返回结果，请先核实执行状态。' : null;
+}
+
+export function canHandoff(events: SessionEvent[], runId: string) {
+  return handoffBlockReason(events, runId) === null;
 }

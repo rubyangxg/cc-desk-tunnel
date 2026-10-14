@@ -158,6 +158,29 @@ nativeTest(
     assert.equal(calls[1].apiKeyPresent, false);
     assert.ok(calls[1].prompt.includes('账号池续接'));
     assert.ok(calls[1].prompt.includes('finish this task'));
+    assert.ok(calls[1].prompt.endsWith('\n\ncontinue'));
+    const resumed = f.server.store.snapshot(sessionId).events;
+    const continues = resumed.filter(
+      ({ payload }) => payload.type === 'message.user' && payload.continued,
+    );
+    assert.equal(continues.length, 1, 'one visible continue is sent after the account switch');
+    const continuation = continues[0].payload;
+    assert.ok(continuation.type === 'message.user');
+    assert.equal(continuation.text, 'continue');
+    assert.deepEqual(
+      resumed.flatMap(({ payload }) =>
+        payload.type === 'message.delivery' && payload.messageId === continuation.messageId
+          ? [payload.status]
+          : [],
+      ),
+      ['submitted', 'queued', 'received'],
+    );
+    assert.ok(
+      resumed.some(
+        ({ payload }) => payload.type === 'text.delta' && payload.text.includes('b@example.test'),
+      ),
+      'the second account actually answers without another click or message',
+    );
     const nativeId = calls[1].sessionId;
     await f.request({ type: 'message.send', sessionId, text: 'another turn' });
     await f.wait(
@@ -170,7 +193,7 @@ nativeTest(
     assert.equal(last.sessionId, nativeId, JSON.stringify(last));
     assert.equal(last.prompt, 'another turn');
     const events = f.server.store.snapshot(sessionId).events;
-    assert.equal(events.filter((event) => event.payload.type === 'message.user').length, 2);
+    assert.equal(events.filter((event) => event.payload.type === 'message.user').length, 3);
     assert.ok(
       events.some(
         (event) =>
@@ -253,6 +276,24 @@ nativeTest(
     );
     assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 1);
     assert.equal(f.server.store.get(sessionId!).session.accountId, 'default');
+    assert.ok(
+      f.server.store
+        .snapshot(sessionId!)
+        .events.some(
+          ({ payload }) =>
+            payload.type === 'native.notice' &&
+            payload.text.includes('自动接力已暂停：工具执行结果未确认'),
+        ),
+    );
+    const pool = await f.request({ type: 'pool.status' });
+    assert.ok(pool.ok);
+    await f.wait(
+      (message) =>
+        message.type === 'pool.state' &&
+        message.accounts.some(
+          (account) => account.id === 'default' && (account.blockedUntil ?? 0) > Date.now(),
+        ),
+    );
   },
 );
 

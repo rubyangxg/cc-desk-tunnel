@@ -119,4 +119,32 @@ test('returning from settings settles at the latest message and keeps manual rea
   });
   await expect(page.locator('.message.assistant').last()).toContainText('阅读历史时到达的新消息');
   expect(Math.abs((await view.evaluate((e) => e.scrollTop)) - top)).toBeLessThan(3);
+  const continuationId = randomUUID();
+  const continuationRun = randomUUID();
+  push({
+    sessionId: session.id,
+    runId: continuationRun,
+    sequence: ++sequence,
+    createdAt: now,
+    payload: {
+      type: 'message.user',
+      messageId: continuationId,
+      text: 'continue',
+      scenario: 'chat',
+      continued: true,
+    },
+  });
+  for (const [status, label] of [
+    ['submitted', '已提交'],
+    ['received', '原生已接收'],
+  ] as const) {
+    push({
+      sessionId: session.id,
+      runId: continuationRun,
+      sequence: ++sequence,
+      createdAt: now,
+      payload: { type: 'message.delivery', messageId: continuationId, status },
+    });
+    await expect(view.getByRole('status').filter({ hasText: `继续 · ${label}` })).toHaveCount(1);
+  }
 });
