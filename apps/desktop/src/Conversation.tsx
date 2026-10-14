@@ -471,6 +471,11 @@ export default function Conversation({
   // Earlier history is inserted above; the anchor keeps the lines being read where they were.
   const prependAnchor = useRef<{ sessionId: string; height: number; top: number } | null>(null);
   const lastTop = useRef(0);
+  const scrollToBottom = () => {
+    if (!scroll.current) return;
+    scroll.current.scrollTop = scroll.current.scrollHeight;
+    lastTop.current = scroll.current.scrollTop;
+  };
   const loadMore = () => {
     if (!session || !connected || !history?.hasEarlier || history.loadingEarlier || history.loading)
       return;
@@ -486,19 +491,30 @@ export default function Conversation({
   useLayoutEffect(() => {
     prependAnchor.current = null;
     follow.current = true;
-    scroll.current?.scrollTo(0, scroll.current.scrollHeight);
+    scrollToBottom();
   }, [session?.id]);
   useLayoutEffect(() => {
     const anchor = prependAnchor.current;
     if (anchor && anchor.sessionId === session?.id && !history?.loadingEarlier && scroll.current) {
       scroll.current.scrollTop = anchor.top + scroll.current.scrollHeight - anchor.height;
+      lastTop.current = scroll.current.scrollTop;
       prependAnchor.current = null;
       follow.current = false;
       return;
     }
     if (anchor) return;
-    if (follow.current && !findOpen) scroll.current?.scrollTo(0, scroll.current.scrollHeight);
+    if (follow.current && !findOpen) scrollToBottom();
   }, [events, history?.loadingEarlier, session?.id]);
+  useLayoutEffect(() => {
+    if (!scroll.current || !transcriptRoot.current) return;
+    // Markdown and content-visibility can change message heights after the initial scroll.
+    const observer = new ResizeObserver(() => {
+      if (follow.current && !findOpen && !prependAnchor.current) scrollToBottom();
+    });
+    observer.observe(transcriptRoot.current);
+    observer.observe(scroll.current);
+    return () => observer.disconnect();
+  }, [session?.id, findOpen]);
 
   return (
     <SearchExpanded.Provider value={searching}>
@@ -571,12 +587,15 @@ export default function Conversation({
         onScroll={() => {
           if (!scroll.current) return;
           const top = scroll.current.scrollTop;
-          follow.current = scroll.current.scrollHeight - top - scroll.current.clientHeight < 80;
+          if (scroll.current.scrollHeight - top - scroll.current.clientHeight < 80)
+            follow.current = true;
+          else if (top < lastTop.current) follow.current = false;
           // Reading on upwards past what is loaded brings the page before it; a failed load waits for the button.
           if (top < lastTop.current && top < 240 && !loadError) loadMore();
           lastTop.current = top;
         }}
         onWheel={(event) => {
+          if (event.deltaY < 0) follow.current = false;
           // A loaded page shorter than the window cannot scroll, so the wheel itself asks for more.
           if (event.deltaY < 0 && scroll.current?.scrollTop === 0 && !loadError) loadMore();
         }}
