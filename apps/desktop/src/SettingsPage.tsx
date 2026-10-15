@@ -15,6 +15,7 @@ import type { ProxyClient } from './client.ts';
 import Help from './Help.tsx';
 import type { ConnectionForm } from './LoginPage.tsx';
 import { connectionWaits, setPrefs, usePrefs, waitRange } from './prefs.ts';
+import { viewModes } from './transcriptView.ts';
 import type { ConnectionWaits, NotifyKind } from './prefs.ts';
 import { inSummary, sampleStats, statFields, summaryText } from './turnStats.ts';
 import { GithubMark, openProject, project } from './project.tsx';
@@ -108,6 +109,41 @@ const waits: { step: keyof ConnectionWaits; title: string; detail: string }[] = 
     detail: '从连上服务端到隧道接通的总时间；至少比上一项多 35 秒',
   },
 ];
+// How much of the work behind a reply is shown is a choice of this computer's window too.
+function TranscriptViewSettings() {
+  const { view } = usePrefs();
+  const set = (values: Partial<typeof view>) =>
+    setPrefs((prefs) => ({ ...prefs, view: { ...prefs.view, ...values } }));
+  const current = viewModes.find((entry) => entry.mode === view.mode) ?? viewModes[0];
+  return (
+    <>
+      <h2 className="page-heading">工作步骤展示</h2>
+      <div className="card">
+        <div className="setting-row stat-picks">
+          <span>
+            <strong>展示多少</strong>
+            <small>{current.detail}</small>
+          </span>
+          <div className="stat-chips" role="radiogroup" aria-label="工作步骤展示">
+            {viewModes.map((entry) => (
+              <button
+                type="button"
+                key={entry.mode}
+                role="radio"
+                className="stat-chip"
+                aria-checked={entry.mode === view.mode}
+                onClick={() => set({ mode: entry.mode })}
+              >
+                {entry.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // The line under each reply is a choice of this computer's window, so it works outside the desktop app too.
 function ReplyStats() {
   const { stats } = usePrefs();
@@ -476,6 +512,7 @@ function General({
             />
           </Row>
         </div>
+        <TranscriptViewSettings />
         <ReplyStats />
       </div>
     </section>

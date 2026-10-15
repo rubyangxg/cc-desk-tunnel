@@ -25,7 +25,10 @@ test('native model and account mapping preserves capability boundaries and does 
       apiKeySource: 'environment',
       secret: 'must-not-leave-sdk',
     } as never,
-    ['compact', 'context'],
+    [
+      { name: 'compact', description: 'Compact', argumentHint: '' },
+      { name: 'context', description: 'Context', argumentHint: '' },
+    ],
     'deepseek-chat',
   );
   assert.ok(capabilities.type === 'native.capabilities');
@@ -33,6 +36,26 @@ test('native model and account mapping preserves capability boundaries and does 
   assert.deepEqual(capabilities.models[0].supportedEffortLevels, []);
   assert.deepEqual(capabilities.models[1].supportedEffortLevels, ['low', 'high']);
   assert.equal(JSON.stringify(capabilities).includes('must-not-leave-sdk'), false);
+});
+
+test('commands go with what they do and take, without those bound to the CLI terminal', () => {
+  const event = nativeCapabilities(
+    [],
+    {},
+    [
+      { name: 'review', description: 'Review a pull request', argumentHint: '<pr>' },
+      { name: 'usage', description: 'Show usage', argumentHint: '', aliases: ['cost', 'stats'] },
+      { name: 'statusline', description: 'Set up the status line', argumentHint: '' },
+    ],
+    undefined,
+    ['statusline'],
+  );
+  assert.ok(event.type === 'native.capabilities');
+  assert.deepEqual(event.commands, ['review', 'usage']);
+  assert.deepEqual(event.commandDetails, [
+    { name: 'review', description: 'Review a pull request', argumentHint: '<pr>' },
+    { name: 'usage', description: 'Show usage', argumentHint: '', aliases: ['cost', 'stats'] },
+  ]);
 });
 
 test('context comes from the native summary and is distinct from cumulative usage totals', async () => {

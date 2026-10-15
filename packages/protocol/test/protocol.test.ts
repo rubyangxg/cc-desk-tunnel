@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import {
+  PROTOCOL_HISTORY,
   PROTOCOL_VERSION,
   clientServerMessageSchema,
   serverMessageSchema,
@@ -23,7 +24,7 @@ test('only clients accept the audited v0.3.1 protocol and retry its version refu
   };
   assert.equal(clientServerMessageSchema.safeParse(ready).success, true);
   assert.equal(serverMessageSchema.safeParse(ready).success, false);
-  for (const protocolVersion of [15, 18, 9999])
+  for (const protocolVersion of [15, 19, 9999])
     assert.equal(clientServerMessageSchema.safeParse({ ...ready, protocolVersion }).success, false);
   const refusal = {
     type: 'connection.error' as const,
@@ -31,6 +32,13 @@ test('only clients accept the audited v0.3.1 protocol and retry its version refu
     service: '0.3.1',
     message: 'Incompatible protocol',
   };
+  assert.equal(
+    clientServerMessageSchema.safeParse({ ...ready, protocolVersion: 17 }).success,
+    true,
+  );
+  assert.equal(serverMessageSchema.safeParse({ ...ready, protocolVersion: 17 }).success, false);
+  assert.equal(fallbackServerProtocol(refusal, PROTOCOL_VERSION), 16);
+  assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.9' }, PROTOCOL_VERSION), 17);
   assert.equal(fallbackServerProtocol(refusal, 17), 16);
   assert.equal(fallbackServerProtocol(refusal, 16), null);
   assert.equal(fallbackServerProtocol({ ...refusal, service: '0.2.13' }, 17), null);
@@ -53,6 +61,9 @@ test('protocol validates UTF-8 text, IDs and bounded input', () => {
   assert.equal(commandSchema.safeParse({ ...command, token: 'unexpected' }).success, false);
 });
 
+test('the protocol history ends with the current version', () => {
+  assert.equal(Object.values(PROTOCOL_HISTORY).at(-1), PROTOCOL_VERSION);
+});
 test('authentication version and event ordering are explicit', () => {
   const auth = {
     type: 'auth',

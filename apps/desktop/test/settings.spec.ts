@@ -111,3 +111,72 @@ test('the settings of this computer open from the login page without a connectio
   await page.getByRole('button', { name: '返回登录', exact: true }).click();
   await expect(page.getByLabel('服务地址')).toBeVisible();
 });
+
+test('the global CLAUDE.md is edited here and saved only over what was read', async ({ page }) => {
+  const file = { text: '回复用中文。\n', version: 'v1' };
+  const updates: { text: string; version: string }[] = [];
+  await page.routeWebSocket('ws://127.0.0.1:18896/ws', (route) => {
+    const send = (value: unknown) => route.send(JSON.stringify(value));
+    route.onMessage((raw) => {
+      const message = JSON.parse(String(raw));
+      if (message.type === 'device') return;
+      if (message.type === 'auth') {
+        send({
+          type: 'ready',
+          protocolVersion: PROTOCOL_VERSION,
+          version: '0.0.1',
+          connectionId: randomUUID(),
+          adapter: 'claude-code',
+          sessions: [],
+        });
+        return;
+      }
+      if (message.type === 'instructions.update') {
+        updates.push({ text: message.text, version: message.version });
+        if (message.version !== file.version) {
+          send({
+            type: 'response',
+            requestId: message.requestId,
+            ok: false,
+            code: 'instructions_changed',
+            message: '全局说明已在别处修改，请重新载入后再改。',
+          });
+          return;
+        }
+        Object.assign(file, { text: message.text, version: `v${updates.length + 1}` });
+      }
+      if (message.type.startsWith('instructions.'))
+        send({ type: 'instructions.state', requestId: message.requestId, ...file });
+      send({ type: 'response', requestId: message.requestId, ok: true });
+    });
+  });
+  await page.goto('/');
+  await page.getByLabel('服务地址', { exact: true }).fill('ws://127.0.0.1:18896/ws');
+  await page
+    .getByLabel('服务凭据', { exact: true })
+    .fill('test-only-instructions-token-with-enough-length');
+  await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
+  await page.getByRole('button', { name: '设置与账号', exact: true }).click();
+  await page.getByRole('menuitem', { name: '设置', exact: true }).click();
+  // The other settings of the page are not answered here.
+  const panel = page.locator('.instructions-card');
+  const editor = panel.getByLabel('全局说明', { exact: true });
+  const save = panel.getByRole('button', { name: '保存', exact: true });
+  await expect(editor).toHaveValue('回复用中文。\n');
+  await expect(save).toBeDisabled();
+  await editor.fill('回复用中文。\n提交信息用中文。\n');
+  await save.click();
+  await expect(panel.getByRole('status')).toHaveText('已保存，从下一次运行起生效');
+  await expect(save).toBeDisabled();
+  expect(updates).toEqual([{ text: '回复用中文。\n提交信息用中文。\n', version: 'v1' }]);
+  await page.screenshot({ path: resolve('.local/screenshots/global-instructions.png') });
+  // Changed in the terminal meanwhile: the save is refused, and what was typed stays to compare.
+  Object.assign(file, { text: '终端里改过\n', version: 'v9' });
+  await editor.fill('又改了一句\n');
+  await save.click();
+  await expect(panel.getByRole('alert')).toContainText('已在别处修改');
+  await expect(editor).toHaveValue('又改了一句\n');
+  await panel.getByRole('button', { name: '重新载入', exact: true }).click();
+  await expect(editor).toHaveValue('终端里改过\n');
+  await expect(panel.getByRole('alert')).toHaveCount(0);
+});

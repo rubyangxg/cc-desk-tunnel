@@ -234,8 +234,76 @@ test('local slash-command output and native goal updates are visible without bec
   });
   stream.accept({ type: 'active_goal', value: null });
   assert.deepEqual(events, [
-    { type: 'native.notice', text: 'Goal configured' },
+    {
+      type: 'text.delta',
+      messageId: (events[0] as { messageId: string }).messageId,
+      text: '```text\nGoal configured\n```',
+    },
     { type: 'native.notice', text: '当前目标：All tests pass\nTwo failures remain' },
     { type: 'native.notice', text: '目标已完成或清除。' },
   ]);
+});
+
+test('what a local command printed becomes a reply of its own, without terminal colours', () => {
+  const events: EventPayload[] = [];
+  const stream = new ClaudeStream((event) => events.push(event));
+  stream.accept({
+    type: 'system',
+    subtype: 'local_command_output',
+    content: '\u001b[1mContext\u001b[0m 12%',
+    uuid: randomUUID(),
+    session_id: randomUUID(),
+  });
+  assert.equal(events.length, 1);
+  assert.ok(events[0].type === 'text.delta');
+  assert.equal(events[0].text, '```text\nContext 12%\n```');
+});
+
+test('a local command that prints plain text is shown as printed, its dollars no formula', () => {
+  const events: EventPayload[] = [];
+  const stream = new ClaudeStream((event) => events.push(event));
+  const usage =
+    'Total cost:            $0.0919 (costs may be inaccurate)\nUsage by model:\n  gpt-5.6-terra:  16.2k input ($0.0919)';
+  stream.accept({ type: 'assistant', message: { content: [{ type: 'text', text: usage }] } });
+  stream.accept({ type: 'result', subtype: 'success', is_error: false, result: usage });
+  // A reply of the model that is plain text stays as it came.
+  stream.accept({ type: 'stream_event', event: { type: 'message_start' } });
+  stream.accept({
+    type: 'assistant',
+    message: { content: [{ type: 'text', text: '$x$ 是变量' }] },
+  });
+  const texts = events.flatMap((event) => (event.type === 'text.delta' ? [event.text] : []));
+  assert.deepEqual(texts, ['```text\n' + usage + '\n```', '$x$ 是变量']);
+});
+
+test('a local command answered after a streamed reply is shown as a reply of its own', () => {
+  const events: EventPayload[] = [];
+  const stream = new ClaudeStream((event) => events.push(event));
+  stream.accept({ type: 'stream_event', event: { type: 'message_start' } });
+  stream.accept({
+    type: 'stream_event',
+    event: { type: 'content_block_delta', delta: { type: 'text_delta', text: '模型的回答' } },
+  });
+  stream.accept({
+    type: 'assistant',
+    message: { content: [{ type: 'text', text: '模型的回答' }] },
+  });
+  stream.accept({ type: 'result', subtype: 'success', is_error: false, result: '模型的回答' });
+  // Claude Code 2.1.293 answers /context and /usage with a whole message, and no model request before it.
+  stream.accept({
+    type: 'assistant',
+    message: { content: [{ type: 'text', text: '## Context Usage' }] },
+  });
+  stream.accept({
+    type: 'result',
+    subtype: 'success',
+    is_error: false,
+    result: '## Context Usage',
+  });
+  const texts = events.filter((event) => event.type === 'text.delta');
+  assert.deepEqual(
+    texts.map((event) => event.text),
+    ['模型的回答', '## Context Usage'],
+  );
+  assert.notEqual(texts[0].messageId, texts[1].messageId);
 });

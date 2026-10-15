@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { onSharedChange, saveShared, shareOnce, shared } from './shared.ts';
+import { defaultView, viewModes } from './transcriptView.ts';
+import type { TranscriptView } from './transcriptView.ts';
 
 // Choices that belong to this computer and never reach the service: what is pinned, what a project is called
 // here, which events raise a notification, and the keyboard shortcuts. The windows of the computer's
@@ -30,6 +32,8 @@ export type Prefs = {
   stats: { enabled: boolean; summary: Record<string, boolean> };
   // Whether the quota used is shown beside the message box.
   quota: boolean;
+  // How much of the work behind a reply is shown.
+  view: TranscriptView;
 };
 
 const storageKey = 'proxy-prefs';
@@ -54,6 +58,7 @@ const defaults: Prefs = {
   bypassPermissions: false,
   stats: { enabled: false, summary: {} },
   quota: false,
+  view: defaultView,
 };
 
 function stored(): unknown {
@@ -97,6 +102,9 @@ function read(saved: any = shared('prefs') ?? stored()): Prefs {
       ) as ConnectionWaits,
       bypassPermissions: saved.bypassPermissions === true,
       quota: saved.quota === true,
+      view: {
+        mode: viewModes.find((entry) => entry.mode === saved.view?.mode)?.mode ?? defaultView.mode,
+      },
       stats: {
         enabled: saved.stats?.enabled === true,
         summary: Object.fromEntries(

@@ -185,7 +185,8 @@ export function App({ profiles }: { profiles: ProfileControls }) {
   const othersBusy = useShared('busy');
   const selected = state.sessions.find((session) => session.id === state.selectedId);
   // What is listed and managed here is what is on this computer. Sessions on the user's other computers are
-  // shown apart: they can be read, and taken over or forked into a directory here.
+  // shown apart: they can be read, worked on from here while their computer is connected, and taken over or
+  // forked into a directory here.
   // Sessions from before computers were told apart name none, and would be listed on every one of the user's
   // computers. Their folders are looked for here; a session whose folder is not here goes with the other
   // computers' sessions, from where it can be taken over like any of them.
@@ -212,6 +213,11 @@ export function App({ profiles }: { profiles: ProfileControls }) {
   const sessions = state.sessions.filter((session) => onThis(session));
   const elsewhere = state.sessions.filter((session) => !onThis(session));
   const away = !!selected && !onThis(selected);
+  // Another computer's session is worked on from here while that computer is connected and its commands
+  // reach it: what is sent here runs there, as if sent there.
+  const reachable = (session: Session) =>
+    state.devices.some((device) => device.id === session.device?.id && device.ready);
+  const remote = away && reachable(selected);
   // Two connections may have Claude working in one folder at once, each unaware of the other. A window tells
   // the others what it has running, and says so when another's session works where the shown one does. A
   // session this window lists too is the same service's and no other.
@@ -286,9 +292,10 @@ export function App({ profiles }: { profiles: ProfileControls }) {
     !!selected?.activeRun ||
     !!history?.loading ||
     !!terminalSessionId;
-  // A run is that of the computer its session is on, whichever connection of it started the run.
-  const ownsRun = !!selected?.activeRun && onThis(selected);
-  // A native run accepts follow-up messages from the computer it runs for.
+  // A run is that of the computer its session is on, whichever window of whichever computer started it; any
+  // of them answers and stops it while that computer can be reached.
+  const ownsRun = !!selected?.activeRun && (!away || remote);
+  // A native run accepts follow-up messages from wherever it can be worked on.
   const inputDisabled =
     !connected ||
     rotation.working ||
@@ -304,7 +311,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
   const stopped =
     !!selected &&
     !selected.activeRun &&
-    !away &&
+    (!away || remote) &&
     lastStatus?.type === 'run.status' &&
     lastStatus.surface !== 'terminal' &&
     (lastStatus.status === 'cancelled' || lastStatus.status === 'failed');
@@ -811,12 +818,12 @@ export function App({ profiles }: { profiles: ProfileControls }) {
       show(response.sessionId);
     });
   }
-  async function send() {
-    if (!selected || !draft.trim() || inputDisabled) return;
+  async function send(text = draft) {
+    if (!selected || !text.trim() || inputDisabled) return;
     const sessionId = selected.id;
     setSlashOpen(false);
     await act(async () => {
-      await client.request({ type: 'message.send', sessionId, text: draft, scenario });
+      await client.request({ type: 'message.send', sessionId, text, scenario });
       setDraft(sessionId, '');
     });
   }
@@ -1378,6 +1385,14 @@ export function App({ profiles }: { profiles: ProfileControls }) {
               : currentError
           }
           upgrade={state.mismatch && window.desktop ? upgrade : null}
+          older={
+            form.mode === 'remote' &&
+            state.mismatch &&
+            state.service &&
+            isNewer(version, state.service)
+              ? state.service
+              : null
+          }
           direct={direct}
           downloaded={downloaded}
           install={install}
@@ -1536,6 +1551,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
             unifiedHistory={serverPool}
             sessions={sessions}
             elsewhere={elsewhere}
+            devices={state.devices}
             selectedId={selected?.id}
             projects={projects}
             workspaceRoots={workspaceRoots}
@@ -1675,8 +1691,9 @@ export function App({ profiles }: { profiles: ProfileControls }) {
                 });
               }}
               stop={stopRun}
-              replyApproval={(runId, approvalId, allowed, answers) => {
-                void act(async () => {
+              replyApproval={async (runId, approvalId, allowed, answers) => {
+                let sent = false;
+                await act(async () => {
                   await client.request({
                     type: 'approval.reply',
                     sessionId: selected!.id,
@@ -1685,7 +1702,9 @@ export function App({ profiles }: { profiles: ProfileControls }) {
                     allowed,
                     ...(answers ? { answers } : {}),
                   });
+                  sent = true;
                 });
+                return sent;
               }}
             />
             {state.status === 'reconnecting' && (
@@ -1712,11 +1731,20 @@ export function App({ profiles }: { profiles: ProfileControls }) {
             {selected && away && (
               <div className="elsewhere-bar" role="status">
                 <Laptop />
-                <p>
-                  这个会话在设备“{selected.device?.name ?? '未知设备'}”上，项目目录是{' '}
-                  <code>{selected.projectPath}</code>
-                  。要在这台电脑上接着做，先选它在这里的项目目录；下一条消息会告诉 Claude 换了电脑。
-                </p>
+                {remote ? (
+                  <p>
+                    这个会话在设备“{selected.device?.name}”上，项目目录是{' '}
+                    <code>{selected.projectPath}</code>
+                    。在这里发的消息、审批和停止都作用于那台电脑上的会话，命令也在那里执行。要换到这台电脑上做，选它在这里的项目目录或分叉到本机。
+                  </p>
+                ) : (
+                  <p>
+                    这个会话在设备“{selected.device?.name ?? '未知设备'}”上，项目目录是{' '}
+                    <code>{selected.projectPath}</code>
+                    。那台电脑目前不在线，这里只能查看；它连上服务后可以直接在这里操作。要在这台电脑上接着做，先选它在这里的项目目录；下一条消息会告诉
+                    Claude 换了电脑。
+                  </p>
+                )}
                 <button
                   type="button"
                   className="button primary"
@@ -1748,7 +1776,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
                 </button>
               </div>
             )}
-            {selected && !away && !terminalSessionId && (
+            {selected && (!away || remote) && !terminalSessionId && (
               <Composer
                 openAccount={() => open('settings', 'account')}
                 session={selected}
@@ -1758,7 +1786,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
                     : projectLabel(selected.projectPath)
                 }
                 chooseProject={
-                  controlsDisabled
+                  controlsDisabled || away
                     ? undefined
                     : (position) => setMenu({ kind: 'move', sessionId: selected.id, ...position })
                 }
@@ -1780,8 +1808,8 @@ export function App({ profiles }: { profiles: ProfileControls }) {
                 capabilities={capabilities}
                 nativeSession={nativeSession}
                 metrics={metrics}
-                send={() => {
-                  void send();
+                send={(text) => {
+                  void send(text);
                 }}
                 resume={stopped && !inputDisabled ? resume : undefined}
                 compact={() => {

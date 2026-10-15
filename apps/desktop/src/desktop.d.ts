@@ -90,6 +90,18 @@ declare global {
       onUpdateProgress: (
         callback: (progress: { received: number; size: number }) => void,
       ) => () => void;
+      // Has a service that refused this client as the newer one upgrade itself to the newest release, given
+      // the service's version from the refusal; ends with the version installed or why it was not.
+      upgradeService: (config: {
+        url: string;
+        fingerprint: string;
+        token: string;
+        deviceName: string;
+        service: string;
+      }) => Promise<{ version?: string; error?: string }>;
+      onServiceUpgrade: (
+        callback: (update: import('@cc-desk-tunnel/protocol').ServiceUpdate) => void,
+      ) => () => void;
       connectProxy: (config: {
         profileId?: string;
         url: string;

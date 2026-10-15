@@ -218,34 +218,50 @@ export type Turn = {
   tools: number;
   // What the turn used, reported by the service a moment after it ended.
   stats?: TurnStats;
+  // How the run that ended the turn ended, when it did not finish: stopped by the user, or failed.
+  outcome?: 'cancelled' | 'failed';
 };
 
 export function conversation(events: SessionEvent[]): Turn[] {
   // A run that goes on only for its background tasks has finished its turn; the turn a task starts reopens it.
   const ended = new Map<string, string>();
+  const endedHow = new Map<string, string>();
+  // Each time a run stopped working, finished or not: a question put in later ends the turn at the last of them.
+  const stops = new Map<string, string[]>();
   for (const { runId, createdAt, payload } of events)
     if (payload.type !== 'run.status') continue;
     else if (
       ['completed', 'cancelled', 'failed'].includes(payload.status) ||
       payload.waiting === 'background'
-    )
+    ) {
       ended.set(runId, createdAt);
-    else if (payload.status === 'running') ended.delete(runId);
+      endedHow.set(runId, payload.status);
+      stops.set(runId, [...(stops.get(runId) ?? []), createdAt]);
+    } else if (payload.status === 'running') {
+      ended.delete(runId);
+      endedHow.delete(runId);
+    }
+  // How the run ended, when it did not finish.
+  const outcome = (runId: string) => {
+    const how = endedHow.get(runId);
+    return how === 'cancelled' || how === 'failed' ? how : undefined;
+  };
   const turns: Turn[] = [];
   let runId = '';
   for (const item of transcript(events)) {
     let turn = turns.at(-1);
     if (!turn || item.kind === 'user') {
-      // The next question closes the turn before it, also for a message added while the run continues.
-      if (turn && !turn.endedAt) turn.endedAt = ended.get(runId) ?? item.at;
-      turn = {
-        id: item.id,
-        joined: !!turn && item.runId === runId,
-        steps: [],
-        notices: [],
-        startedAt: item.at,
-        tools: 0,
-      };
+      const joined = !!turn && item.runId === runId;
+      // The next question closes the turn before it. One put in while the same run goes on closes it where the run
+      // last stopped working, or else at the question; how the run ends later belongs to the turn it ends in.
+      if (turn && !turn.endedAt && joined) {
+        const from = turn.startedAt;
+        turn.endedAt = stops.get(runId)?.findLast((at) => at >= from && at <= item.at) ?? item.at;
+      } else if (turn && !turn.endedAt) {
+        turn.endedAt = ended.get(runId) ?? item.at;
+        turn.outcome = outcome(runId);
+      }
+      turn = { id: item.id, joined, steps: [], notices: [], startedAt: item.at, tools: 0 };
       turns.push(turn);
     }
     runId = item.runId;
@@ -260,7 +276,10 @@ export function conversation(events: SessionEvent[]): Turn[] {
     }
   }
   const last = turns.at(-1);
-  if (last && !last.endedAt) last.endedAt = ended.get(runId);
+  if (last && !last.endedAt) {
+    last.endedAt = ended.get(runId);
+    if (last.endedAt) last.outcome = outcome(runId);
+  }
   const answered = new Map(
     turns.flatMap((turn) => (turn.question ? [[turn.question.id, turn]] : [])),
   );

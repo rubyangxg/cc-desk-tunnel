@@ -121,6 +121,19 @@ for (const type of [
   });
 }
 
+test('the connected computers are what the service last said, and unknown while the connection is down', (t) => {
+  const { client, socket } = fixture(t);
+  const desk = { id: randomUUID(), name: '台式机', ready: true };
+  const laptop = { id: randomUUID(), name: '笔记本', platform: 'darwin', ready: false };
+  socket.message({ type: 'devices', devices: [desk, laptop] });
+  assert.deepEqual(client.state.devices, [desk, laptop]);
+  socket.message({ type: 'devices', devices: [desk] });
+  assert.deepEqual(client.state.devices, [desk]);
+  socket.close();
+  assert.equal(client.state.status, 'reconnecting');
+  assert.deepEqual(client.state.devices, []);
+});
+
 test('login only receives the session directory; content is loaded when selected and cache is bounded', (t) => {
   const { client, socket, sessions, snapshot } = fixture(t);
   assert.equal(client.state.selectedId, null);

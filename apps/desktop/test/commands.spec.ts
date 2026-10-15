@@ -31,6 +31,11 @@ test('slash menu filters native commands, completes without sending, and dispatc
     commandDetails: [
       { name: 'goal', description: 'Set goal', argumentHint: '<condition>' },
       { name: 'custom-check', description: 'Check project', argumentHint: '<file>' },
+      ...['compact', 'review', 'context', 'usage', 'exit'].map((name) => ({
+        name,
+        description: '',
+        argumentHint: '',
+      })),
     ],
     terminalCommands: ['exit'],
   };
@@ -87,9 +92,7 @@ test('slash menu filters native commands, completes without sending, and dispatc
   const input = page.getByRole('textbox', { name: '消息', exact: true });
   const menu = page.getByRole('listbox', { name: '会话命令', exact: true });
   await input.fill('/');
-  await expect(
-    menu.getByRole('option', { name: '/goal · 设置或查看任务目标', exact: true }),
-  ).toBeVisible();
+  await expect(menu.getByRole('option', { name: /^\/goal.*设置或查看任务目标/ })).toBeVisible();
   await expect(menu.getByRole('option', { name: /^\/exit/ })).toHaveCount(0);
   await expect(menu.getByRole('option', { name: /^\/init/ })).toHaveCount(0);
   await input.fill('/go');
@@ -102,7 +105,7 @@ test('slash menu filters native commands, completes without sending, and dispatc
   await expect.poll(() => sent.length).toBe(1);
   expect(sent[0]).toMatchObject({ type: 'message.send', text: '/goal 所有测试通过' });
   await input.fill('/review');
-  await menu.getByRole('option', { name: '/review · 审查代码', exact: true }).click();
+  await menu.getByRole('option', { name: /^\/review.*审查代码/ }).click();
   await expect(input).toHaveValue('/review ');
   expect(sent).toHaveLength(1);
   await input.fill('/review 当前修改');
@@ -116,6 +119,7 @@ test('slash menu filters native commands, completes without sending, and dispatc
   await input.fill('/');
   await input.press('ArrowDown');
   await input.press('ArrowDown');
+  await input.press('ArrowDown');
   await input.press('Tab');
   await expect(input).toHaveValue('/review ');
   await input.fill('/custom');
@@ -125,10 +129,10 @@ test('slash menu filters native commands, completes without sending, and dispatc
   push({ ...capabilities, commands: ['review'], commandDetails: [] });
   await input.fill('/goal');
   await expect(menu.getByRole('option', { name: /^\/goal/ })).toHaveCount(0);
-  await expect(menu).toContainText('当前 Claude 未提供匹配命令');
+  await expect(menu).not.toBeVisible();
   expect(sent).toHaveLength(3);
   await input.fill('/refresh');
-  await input.press('Tab');
+  await input.press('Enter');
   await expect(input).toHaveValue('');
   expect(sent).toHaveLength(3);
 });

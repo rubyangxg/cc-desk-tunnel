@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { WebSocket, WebSocketServer } from 'ws';
+import { PROTOCOL_VERSION } from '@cc-desk-tunnel/protocol';
 import { ProxyClient } from '../src/client.ts';
 
 async function fixture(t, protocolVersion, { deny = false, refuseAgain = false } = {}) {
@@ -23,7 +24,7 @@ async function fixture(t, protocolVersion, { deny = false, refuseAgain = false }
               type: 'connection.error',
               code: deny ? 'unauthorized' : 'version_mismatch',
               message: 'Connection refused',
-              ...(deny ? {} : { service: '0.3.1' }),
+              ...(deny ? {} : { service: protocolVersion === 17 ? '0.4.9' : '0.3.1' }),
             }),
           );
           socket.close();
@@ -87,9 +88,9 @@ for (const version of [16, 17]) {
     assert.equal(f.client.state.mismatch, false);
     assert.deepEqual(
       f.seen.filter((m) => m.type === 'auth').map((m) => m.protocolVersion),
-      version === 16 ? [17, 16] : [17],
+      [PROTOCOL_VERSION, version],
     );
-    assert.equal(f.bridges(), version === 16 ? 2 : 1);
+    assert.equal(f.bridges(), 2);
     await f.client.request({ type: 'session.create', title: 'test', projectPath: 'D:\\project' });
     assert.equal(f.seen.filter((m) => m.type === 'session.create').length, 1);
     // A protocol error after readiness is not an invitation to restart/replay work.
@@ -102,14 +103,14 @@ for (const version of [16, 17]) {
       }),
     );
     await f.waitFor('disconnected');
-    assert.equal(f.bridges(), version === 16 ? 2 : 1);
+    assert.equal(f.bridges(), 2);
   });
 }
 
 for (const [name, version, options, attempts] of [
-  ['wrong token', 16, { deny: true }, [17]],
-  ['unsupported protocol', 15, {}, [17, 16]],
-  ['repeated version refusal', 16, { refuseAgain: true }, [17, 16]],
+  ['wrong token', 16, { deny: true }, [PROTOCOL_VERSION]],
+  ['unsupported protocol', 15, {}, [PROTOCOL_VERSION, 16]],
+  ['repeated version refusal', 16, { refuseAgain: true }, [PROTOCOL_VERSION, 16]],
 ]) {
   test(`${name} stops authentication without sending session commands`, async (t) => {
     const f = await fixture(t, version, options);

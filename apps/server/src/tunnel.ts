@@ -375,6 +375,10 @@ export class Door {
   uses(tunnel: Tunnel | undefined) {
     return this.tunnel === tunnel;
   }
+  // Whether a command reaches the device now, rather than waiting for it to come back.
+  get ready() {
+    return !!this.tunnel?.ssh;
+  }
   async close() {
     if (this.closed) return;
     this.closed = true;

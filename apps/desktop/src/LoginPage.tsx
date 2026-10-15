@@ -1,4 +1,6 @@
 import { Download, Plus, Save, Settings, SquareTerminal, Trash2, Unplug } from 'lucide-react';
+import { useState } from 'react';
+import { thisDevice } from './device.ts';
 import { GithubMark, openProject, project } from './project.tsx';
 import type { ConnectionForm, ConnectionProfile } from './connections.ts';
 import type { ReactNode } from 'react';
@@ -14,6 +16,7 @@ export default function LoginPage({
   direct,
   downloaded,
   install,
+  older,
   newer,
   showNotes,
   submit,
@@ -41,6 +44,8 @@ export default function LoginPage({
   downloaded: number | null;
   // Fetches and runs the installer the service holds, or the given version's from the release page.
   install: (version?: string) => void;
+  // The service's version, when it refused this client as the newer one: it can be asked to upgrade itself.
+  older: string | null;
   // The version the service is at or offers, when it is newer than this client: its notes can be read.
   newer: string | null;
   // Shows what a version changed.
@@ -60,6 +65,39 @@ export default function LoginPage({
   pool: ReactNode;
 }) {
   const connectionName = useConnectionName();
+  const [serviceUpgrade, setServiceUpgrade] = useState<{
+    phase: 'running' | 'done' | 'failed';
+    text: string;
+  } | null>(null);
+  function upgradeService(service: string) {
+    if (!window.confirm(`服务端 ${service} 将升级到最新的正式版并重启，需要几分钟。继续？`)) return;
+    setServiceUpgrade({ phase: 'running', text: '正在升级服务端' });
+    const stop = window.desktop!.onServiceUpgrade(
+      (update) =>
+        update.detail &&
+        setServiceUpgrade({ phase: 'running', text: `正在升级服务端：${update.detail}` }),
+    );
+    void thisDevice()
+      .then((device) =>
+        window.desktop!.upgradeService({
+          url: form.url,
+          fingerprint: form.fingerprint,
+          token: form.token.trim(),
+          deviceName: device.name,
+          service,
+        }),
+      )
+      .then(({ version, error }) =>
+        setServiceUpgrade(
+          version
+            ? { phase: 'done', text: `服务端已升级到 ${version}，正在重启；稍候再连接。` }
+            : { phase: 'failed', text: error ?? '服务端升级失败。' },
+        ),
+      )
+      .finally(stop);
+  }
+  const shownError =
+    serviceUpgrade && serviceUpgrade.phase !== 'running' ? serviceUpgrade.text : error;
   return (
     <main className="login-page">
       <div className="window-drag" />
@@ -116,6 +154,7 @@ export default function LoginPage({
         <form
           onSubmit={(event) => {
             event.preventDefault();
+            setServiceUpgrade(null);
             submit();
           }}
           className="connection-form"
@@ -236,9 +275,9 @@ export default function LoginPage({
               {notice}
             </p>
           )}
-          {error && (
+          {shownError && (
             <p className="error-text" role="alert">
-              {error}
+              {shownError}
             </p>
           )}
           {upgrade && (
@@ -250,6 +289,17 @@ export default function LoginPage({
             >
               <Download />
               升级客户端到 {upgrade}
+            </button>
+          )}
+          {older && serviceUpgrade?.phase !== 'done' && (
+            <button
+              className="button login-submit"
+              type="button"
+              disabled={connecting || serviceUpgrade?.phase === 'running'}
+              onClick={() => upgradeService(older)}
+            >
+              <Download />
+              {serviceUpgrade?.phase === 'running' ? serviceUpgrade.text : '升级服务端'}
             </button>
           )}
           {newer && (

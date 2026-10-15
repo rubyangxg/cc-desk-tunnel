@@ -320,6 +320,21 @@ handle('proxy:connect', async (event, config) => {
   keepAwake(true);
   return { url: bridge.url };
 });
+// A service older than this client refuses it at sign-in; it is asked to upgrade over a connection of its own.
+handle('service:upgrade', async (event, config) => {
+  const { upgradeService } = await import(
+    pathToFileURL(path.join(__dirname, 'proxy-bridge.mjs')).href
+  );
+  return upgradeService(config, {
+    resolveProxy: (url) => session.defaultSession.resolveProxy(url),
+    onUpdate: (update) => {
+      if (!event.sender.isDestroyed()) event.sender.send('service:upgrade-progress', update);
+    },
+  }).then(
+    (version) => ({ version }),
+    (error) => ({ error: error.message }),
+  );
+});
 // Each token uses the current OS account's secure storage. The old single login becomes the default profile.
 handle('profiles:load', () => loadProfiles(readSettings(), safeStorage));
 handle('profiles:save', (_event, profiles) => {

@@ -363,6 +363,9 @@ test('a run that goes on only for background tasks looks finished, lists them an
   await row.locator('.session-select').click();
   const panel = page.locator('.background-tasks');
   await expect(panel.getByRole('status')).toContainText('后台任务 2 个');
+  // Why the model, the approval mode and forking are greyed out while the tasks go on.
+  await expect(panel).toContainText('任务结束前不能更改模型');
+  await expect(panel).toContainText('消息可以照常发送');
   await expect(panel.getByRole('listitem')).toHaveText([/完整渲染/, /开发服务器/]);
   // The turn itself is over: its answer shows as final, and the composer offers sending, not stopping.
   await expect(page.locator('.message.assistant')).toContainText('渲染已在后台开始。');
@@ -626,11 +629,17 @@ test('Electron: frameless window, the project branch, files by path and window s
     const notes = page.getByRole('dialog');
     await expect(notes.getByRole('heading', { name: /的更新内容$/ })).toBeVisible();
     await expect(notes).toContainText('升级说明');
-    // A link into the repository goes to that file on GitHub, and from there to the user's browser.
-    await expect(notes.getByRole('link', { name: 'macOS 说明' })).toHaveAttribute(
-      'href',
-      /^https:\/\/github\.com\/[^/]+\/[^/]+\/blob\/v[\d.]+\/docs\/macos\.md$/,
-    );
+    // A link into the repository goes to that file on GitHub (see notes-quota.test.mjs), and from there to the
+    // user's browser: whatever this version's notes link to, no link is left relative to the program's page.
+    expect(
+      await notes
+        .locator('.release-notes a')
+        .evaluateAll((links) =>
+          links
+            .map((link) => link.getAttribute('href') ?? '')
+            .filter((href) => !/^(https?:|mailto:|#)/.test(href)),
+        ),
+    ).toEqual([]);
     // The notes wrap inside their dialog and scroll downwards only.
     expect(
       await notes.evaluate((dialog) =>

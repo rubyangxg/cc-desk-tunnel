@@ -11,6 +11,7 @@ import {
   X,
 } from 'lucide-react';
 import type { Session } from '@cc-desk-tunnel/protocol';
+import type { ConnectedDevice } from './client.ts';
 import NoticeBell from './NoticeBell.tsx';
 import type { Notifications } from './notifications.ts';
 import { ago, folderName, isInside, pathKey } from './paths.ts';
@@ -30,6 +31,8 @@ function activity(session: Session) {
 // Another computer's sessions: by project folder, and those without a project.
 type Elsewhere = {
   name: string;
+  // Connected, and its commands reach it: its sessions can be worked on from here.
+  online: boolean;
   projects: Map<string, { path: string; sessions: Session[] }>;
   plain: Session[];
 };
@@ -39,6 +42,7 @@ export default function Sidebar({
   unifiedHistory = false,
   sessions,
   elsewhere,
+  devices,
   selectedId,
   projects,
   workspaceRoots,
@@ -60,6 +64,7 @@ export default function Sidebar({
   // Sessions on the user's other computers: listed apart, by computer and under it by project folder, and not
   // part of any project here.
   elsewhere: Session[];
+  devices: ConnectedDevice[];
   selectedId: string | undefined;
   projects: string[];
   // Sessions whose directory lies under one of these belong to no project and are listed on their own.
@@ -125,17 +130,18 @@ export default function Sidebar({
 
   const others = useMemo(() => {
     const term = search.trim().toLowerCase();
-    const devices = new Map<string, Elsewhere>();
+    const groups = new Map<string, Elsewhere>();
     for (const session of elsewhere) {
       if (!`${session.title} ${session.projectPath}`.toLowerCase().includes(term)) continue;
       // A session from before computers were told apart, whose folder is not on this one.
       const device = session.device ?? { id: '', name: '未知设备' };
-      const entry: Elsewhere = devices.get(device.id) ?? {
+      const entry: Elsewhere = groups.get(device.id) ?? {
         name: device.name,
+        online: devices.some((item) => item.id === device.id && item.ready),
         projects: new Map(),
         plain: [],
       };
-      devices.set(device.id, entry);
+      groups.set(device.id, entry);
       // Which folders hold another computer's sessions without a project is not known here; the ones this
       // program makes are told by their shape, a day and under it a time.
       if (/[\\/]\d{4}-\d{2}-\d{2}[\\/]\d{6}(-\d+)?[\\/]?$/.test(session.projectPath)) {
@@ -147,8 +153,8 @@ export default function Sidebar({
       project.sessions.push(session);
       entry.projects.set(key, project);
     }
-    return [...devices.entries()];
-  }, [elsewhere, search]);
+    return [...groups.entries()];
+  }, [elsewhere, devices, search]);
   const othersCount = others.reduce(
     (count, [, device]) =>
       count +
@@ -369,7 +375,7 @@ export default function Sidebar({
         {plain.map(renderSession)}
         {othersCount > 0 && (
           <section className="project-group">
-            <h2 title="这些会话的项目目录在你的其他电脑上；可以查看，也可以接到这台电脑上继续">
+            <h2 title="这些会话的项目目录在你的其他电脑上；那台电脑在线时可以直接在这里操作，也可以接到这台电脑上继续">
               <button
                 type="button"
                 className="project-toggle"
@@ -390,7 +396,12 @@ export default function Sidebar({
             {othersOpen &&
               others.map(([id, device]) => (
                 <Fragment key={id}>
-                  <div className="list-heading">{device.name}</div>
+                  <div className="list-heading">
+                    <span>{device.name}</span>
+                    <span className={`device-state${device.online ? ' online' : ''}`}>
+                      {device.online ? '在线' : '离线'}
+                    </span>
+                  </div>
                   {[...device.projects.entries()].map(([key, project]) => (
                     <Fragment key={key}>
                       <div className="elsewhere-project" title={project.path}>

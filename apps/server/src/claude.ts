@@ -230,16 +230,26 @@ export async function runClaude(
       },
     });
     const initialized = await session.initializationResult();
-    run.emit(
-      nativeCapabilities(
+    // The commands change while the run goes on: each turn's `init` names those bound to the CLI's terminal, and
+    // skills found on the way bring a new list. A change is passed on once.
+    let commands = initialized.commands;
+    let terminal: string[] = [];
+    let offered = '';
+    const offer = () => {
+      const payload = nativeCapabilities(
         initialized.models,
         initialized.account,
-        initialized.commands,
+        commands,
         run.model ?? options.model,
-      ),
-    );
-    let commands = initialized.commands;
-    let terminalCommands: string[] = [];
+        terminal,
+      );
+      const key =
+        payload.type === 'native.capabilities' ? JSON.stringify(payload.commandDetails) : '';
+      if (key === offered || run.signal.aborted) return;
+      offered = key;
+      run.emit(payload);
+    };
+    offer();
     let metrics: NativeMetrics | undefined;
     let refresh: Promise<void> | undefined;
     let refreshedAt = 0;
@@ -284,33 +294,13 @@ export async function runClaude(
     const progress = new Map<string, { said: string; at: number }>();
     for await (const message of session) {
       if (quotaStopped) break;
-      if (
-        message.type === 'system' &&
-        (message.subtype === 'commands_changed' || message.subtype === 'init')
-      ) {
-        if (message.subtype === 'commands_changed') commands = message.commands;
-        else {
-          terminalCommands = message.terminal_slash_commands ?? [];
-          if (message.slash_commands)
-            commands = message.slash_commands.map(
-              (name) =>
-                commands.find((command) => command.name === name) ?? {
-                  name,
-                  description: '',
-                  argumentHint: '',
-                },
-            );
-        }
-        if (!run.signal.aborted)
-          run.emit(
-            nativeCapabilities(
-              initialized.models,
-              initialized.account,
-              commands,
-              run.model ?? options.model,
-              terminalCommands,
-            ),
-          );
+      if (message.type === 'system' && message.subtype === 'init') {
+        terminal = message.terminal_slash_commands ?? [];
+        offer();
+      }
+      if (message.type === 'system' && message.subtype === 'commands_changed') {
+        commands = message.commands;
+        offer();
       }
       if (message.type === 'system' && message.subtype === 'task_progress' && !run.signal.aborted) {
         const tool = message.last_tool_name?.slice(0, 100);

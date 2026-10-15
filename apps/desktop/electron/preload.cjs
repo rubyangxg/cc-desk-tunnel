@@ -69,6 +69,12 @@ contextBridge.exposeInMainWorld('desktop', {
     ipcRenderer.on('update:progress', listener);
     return () => ipcRenderer.removeListener('update:progress', listener);
   },
+  upgradeService: (config) => ipcRenderer.invoke('service:upgrade', config),
+  onServiceUpgrade: (callback) => {
+    const listener = (_event, update) => callback(update);
+    ipcRenderer.on('service:upgrade-progress', listener);
+    return () => ipcRenderer.removeListener('service:upgrade-progress', listener);
+  },
   connectProxy: (config) => ipcRenderer.invoke('proxy:connect', config),
   disconnectProxy: () => ipcRenderer.invoke('proxy:disconnect'),
   onProxyClosed: (callback) => {

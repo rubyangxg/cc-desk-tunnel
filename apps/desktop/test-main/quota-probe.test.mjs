@@ -163,11 +163,11 @@ test(
     seen.length = 0;
     protocols.length = 0;
     assert.deepEqual(await probeQuota(config), limits);
-    assert.deepEqual(protocols, [17, 16]);
+    assert.deepEqual(protocols, [PROTOCOL_VERSION, 16]);
     assert.deepEqual(seen, ['auth', 'auth', 'session.subscribe', 'session.status']);
     refuseAllVersions = true;
     protocols.length = 0;
     await assert.rejects(probeQuota(config), /Incompatible protocol/);
-    assert.deepEqual(protocols, [17, 16], 'a refusal after fallback must not loop');
+    assert.deepEqual(protocols, [PROTOCOL_VERSION, 16], 'a refusal after fallback must not loop');
   },
 );

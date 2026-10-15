@@ -12,6 +12,8 @@ import { startPosixSsh } from './posix-ssh.mjs';
 import { openChannels } from './tunnel-channels.mjs';
 import { httpProxy, openSocket } from './system-proxy.mjs';
 import { channelFailure, controlFailure, passing } from './connect-errors.mjs';
+// Loaded by the main process from here, so that the package's bundle of this module holds it.
+export { upgradeService } from './service-upgrade.mjs';
 
 // The SSH service of a connection. The two are started and closed alike and give the same credentials; what
 // is behind them differs with the system: see each module.

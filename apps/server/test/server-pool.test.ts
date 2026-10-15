@@ -609,7 +609,7 @@ nativeTest(
     assert.ok(
       events.some(
         (event) =>
-          event.payload.type === 'native.notice' && event.payload.text === 'Goal configured',
+          event.payload.type === 'text.delta' && event.payload.text.includes('Goal configured'),
       ),
     );
     assert.ok(
@@ -713,3 +713,28 @@ nativeTest(
     assert.deepEqual(done.quotaWaits, []);
   },
 );
+
+nativeTest('global instructions are isolated by account', async (t) => {
+  const f = await fixture(t);
+  writeFileSync(join(f.config, 'CLAUDE.md'), 'Default account instructions');
+  await f.request({ type: 'instructions.get', accountId: f.id });
+  const state = await f.wait((m) => m.type === 'instructions.state');
+  assert.ok(state.type === 'instructions.state');
+  assert.equal(state.text, '');
+  await f.request({
+    type: 'instructions.update',
+    accountId: f.id,
+    text: 'Second account instructions',
+    version: state.version,
+  });
+  await f.wait((m) => m.type === 'instructions.state');
+  assert.equal(
+    readFileSync(join(f.dir, 'accounts', f.id, 'config', 'CLAUDE.md'), 'utf8'),
+    'Second account instructions',
+  );
+  await f.request({ type: 'instructions.get' });
+  const original = await f.wait((m) => m.type === 'instructions.state');
+  assert.ok(original.type === 'instructions.state');
+  assert.equal(original.text, 'Default account instructions');
+  assert.equal(readFileSync(join(f.config, 'CLAUDE.md'), 'utf8'), original.text);
+});

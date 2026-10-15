@@ -59,6 +59,10 @@ class Client {
     }
     throw new Error('Timed out waiting for server message');
   }
+  // Forgets what it was told of the connected computers so far, for a test of what it is told next.
+  forgetDevices() {
+    this.messages = this.messages.filter((message) => message.type !== 'devices');
+  }
   event(type: SessionEvent['payload']['type']) {
     return this.wait(
       (message) => message.type === 'session.event' && message.event.payload.type === type,
@@ -277,8 +281,9 @@ test('cancel during streaming stops events and never restarts the run', async (t
   await new Promise((resolve) => setTimeout(resolve, 70));
   assert.equal(f.server.store.snapshot(sessionId).events.length, length);
   assert.equal(f.server.store.get(sessionId).session.activeRun, null);
+  // Another window may have stopped it first: stopping it again is nothing.
   const late = await client.request({ type: 'run.cancel', sessionId, runId });
-  assert.ok(late.type === 'response' && !late.ok && late.code === 'run_inactive');
+  assert.ok(late.type === 'response' && late.ok);
 });
 
 test('disconnect while awaiting approval cancels, cursor replay restores history and does not execute', async (t) => {
@@ -315,36 +320,40 @@ test('disconnect while awaiting approval cancels, cursor replay restores history
   assert.ok(late.type === 'response' && !late.ok);
 });
 
-test('another computer cannot approve or cancel a run; another window of the same one can', async (t) => {
-  const f = await fixture(t);
+test('another computer answers and stops a run; of two answers the first counts, the later is told so', async (t) => {
+  const f = await fixture(t, 100);
   const owner = await f.connect();
-  const observer = await f.connect({ id: randomUUID(), name: '另一台' });
+  const other = await f.connect({ id: randomUUID(), name: '另一台' });
   const sessionId = await f.create(owner);
-  await owner.request({ type: 'message.send', sessionId, text: '权限测试', scenario: 'tool' });
+  await owner.request({ type: 'message.send', sessionId, text: '两端审批', scenario: 'tool' });
   const approval = await owner.event('approval.requested');
   assert.ok(
     approval.type === 'session.event' && approval.event.payload.type === 'approval.requested',
   );
-  for (const command of [
-    { type: 'run.cancel', sessionId, runId: approval.event.runId },
-    {
-      type: 'approval.reply',
-      sessionId,
-      runId: approval.event.runId,
-      approvalId: approval.event.payload.approvalId,
-      allowed: true,
-    },
-  ]) {
-    const response = await observer.request(command);
-    assert.ok(response.type === 'response' && !response.ok && response.code === 'not_owner');
-  }
-  const second = await f.connect();
-  const stopped = await second.request({
-    type: 'run.cancel',
+  const reply = {
+    type: 'approval.reply',
     sessionId,
     runId: approval.event.runId,
-  });
-  assert.ok(stopped.type === 'response' && stopped.ok);
+    approvalId: approval.event.payload.approvalId,
+  };
+  const first = await other.request({ ...reply, allowed: true });
+  assert.ok(first.type === 'response' && first.ok);
+  const second = await owner.request({ ...reply, allowed: false });
+  assert.ok(second.type === 'response' && !second.ok && second.code === 'approval_answered');
+  assert.match(second.message ?? '', /已经处理过了/);
+  const resolved = f.server.store
+    .snapshot(sessionId)
+    .events.filter((event) => event.payload.type === 'approval.resolved');
+  assert.deepEqual(
+    resolved.map((event) => event.payload.type === 'approval.resolved' && event.payload.allowed),
+    [true],
+  );
+  const stop = { type: 'run.cancel', sessionId, runId: approval.event.runId };
+  for (const client of [other, owner]) {
+    const stopped = await client.request(stop);
+    assert.ok(stopped.type === 'response' && stopped.ok);
+  }
+  assert.equal(f.server.store.get(sessionId).session.activeRun, null);
 });
 
 // A run waiting for approval, and where its record stood when the connection was cut.
@@ -380,17 +389,9 @@ async function snapshot(client: Client, sessionId: string, afterSequence: number
 test('a run outlives its connection: the same computer comes back, answers the approval and sees it finish', async (t) => {
   const f = await fixture(t, 2, 2000);
   const cut = await cutOff(f);
-  // Another computer finds it running and may not touch it.
+  // Another computer finds it running, its computer away.
   const other = await f.connect({ id: randomUUID(), name: '另一台' });
   assert.ok((await snapshot(other, cut.sessionId, cut.cursor)).session.activeRun);
-  const refused = await other.request({
-    type: 'approval.reply',
-    sessionId: cut.sessionId,
-    runId: cut.runId,
-    approvalId: cut.approvalId,
-    allowed: true,
-  });
-  assert.ok(refused.type === 'response' && !refused.ok && refused.code === 'not_owner');
   const back = await f.connect();
   const history = await snapshot(back, cut.sessionId, cut.cursor);
   assert.equal(history.session.activeRun?.id, cut.runId);
@@ -457,7 +458,7 @@ test('a stopped turn is taken up again without a message of the user', async (t)
   assert.ok(message.type === 'session.event' && message.event.runId !== approval.event.runId);
 });
 
-test('a session is worked on from its own computer; another one takes it over or forks it, with a directory there', async (t) => {
+test('a session runs on its own computer whichever sends to it; another one takes it over or forks it, with a directory there', async (t) => {
   const f = await fixture(t);
   const laptop = { id: randomUUID(), name: '笔记本' };
   const desk = await f.connect();
@@ -470,10 +471,16 @@ test('a session is worked on from its own computer; another one takes it over or
   assert.deepEqual(ready.sessions[0]!.device, device);
   const send = (client: Client, id = sessionId) =>
     client.request({ type: 'message.send', sessionId: id, text: '继续', scenario: 'chat' });
-  const refused = await send(away);
-  assert.ok(refused.type === 'response' && !refused.ok && refused.code === 'other_device');
-  assert.match(refused.message ?? '', /测试设备/);
-  assert.equal(f.server.store.get(sessionId).events.length, 0);
+  // Sent from the laptop, the message runs on the desk's computer, where the session is.
+  const remote = await send(away);
+  assert.ok(remote.type === 'response' && remote.ok);
+  await desk.wait(
+    (message) =>
+      message.type === 'session.event' &&
+      message.event.payload.type === 'run.status' &&
+      message.event.payload.status === 'completed',
+  );
+  assert.deepEqual(f.server.store.get(sessionId).session.device, device);
 
   // A fork lands on the computer that asked, in the directory it names there; the original stays put.
   const forked = await away.request({
@@ -504,8 +511,49 @@ test('a session is worked on from its own computer; another one takes it over or
       message.event.payload.type === 'run.status' &&
       message.event.payload.status === 'completed',
   );
+  // Its computer gone, the session can only be read.
+  desk.forgetDevices();
+  away.send({ type: 'leave' });
+  away.socket.terminate();
+  const gone = await desk.wait(
+    (message) => message.type === 'devices' && message.devices.length === 1,
+  );
+  assert.ok(gone.type === 'devices' && gone.devices[0]!.id === device.id);
   const back = await send(desk);
-  assert.ok(back.type === 'response' && !back.ok && back.code === 'other_device');
+  assert.ok(back.type === 'response' && !back.ok && back.code === 'device_offline');
+  assert.match(back.message ?? '', /笔记本/);
+});
+
+test('every window is told which computers are connected and whether commands reach them', async (t) => {
+  const f = await fixture(t);
+  const laptop = { id: randomUUID(), name: '笔记本' };
+  const desk = await f.connect();
+  const both = (message: ServerMessage) =>
+    message.type === 'devices' && message.devices.length === 2;
+  const away = await f.connect(laptop);
+  const told = await desk.wait(both);
+  assert.ok(told.type === 'devices');
+  assert.deepEqual(
+    told.devices.map(({ id, name, ready }) => [id, name, ready]).sort(),
+    [
+      [device.id, device.name, true],
+      [laptop.id, laptop.name, true],
+    ].sort(),
+  );
+  // A second window of a computer is not another computer.
+  desk.forgetDevices();
+  await f.connect();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(!desk.messages.some((message) => message.type === 'devices'));
+  await away.wait(both);
+  away.send({ type: 'leave' });
+  away.socket.terminate();
+  const left = await desk.wait((message) => message.type === 'devices');
+  assert.ok(left.type === 'devices');
+  assert.deepEqual(
+    left.devices.map((item) => item.id),
+    [device.id],
+  );
 });
 test('a connection that never said which computer it is can look but not work', async (t) => {
   const f = await fixture(t);

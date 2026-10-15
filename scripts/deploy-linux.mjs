@@ -128,11 +128,12 @@ try {
       `tar -xzf ${quote(base + '/service.tar.gz')} -C ${quote(base + '/app')}; cd ${quote(base + '/app')}; export PATH=${quote(base + '/runtime/node/bin')}:$PATH; npm ci --omit=dev --workspace=@cc-desk-tunnel/server --workspace=@cc-desk-tunnel/protocol`,
     ),
   );
-  // Only stop the exact executable and script previously launched by this deployment.
+  // Only stop the exact executable and script previously launched by this deployment. A small machine takes a few
+  // seconds to start the service; its health is asked for until then.
   const script = `${base}/app/apps/server/src/main.ts`;
   console.log(
     await exec(
-      `pid_file=${quote(base + '/service.pid')}; if [ -f "$pid_file" ]; then pid="$(cat "$pid_file")"; if [ -r "/proc/$pid/cmdline" ] && tr '\\0' '\\n' < "/proc/$pid/cmdline" | grep -Fxq ${quote(script)}; then kill -TERM "$pid"; for i in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done; fi; fi; cd ${quote(base + '/app')}; nohup ${quote(base + '/runtime/node/bin/node')} --env-file=${quote(base + '/service.env')} ${quote(script)} </dev/null >${quote(base + '/logs/service.log')} 2>&1 & echo $! > "$pid_file"; sleep 1; curl --cacert ${quote(certPath)} --resolve cc-desk-tunnel.local:${port}:127.0.0.1 -fsS https://cc-desk-tunnel.local:${port}/health`,
+      `pid_file=${quote(base + '/service.pid')}; if [ -f "$pid_file" ]; then pid="$(cat "$pid_file")"; if [ -r "/proc/$pid/cmdline" ] && tr '\\0' '\\n' < "/proc/$pid/cmdline" | grep -Fxq ${quote(script)}; then kill -TERM "$pid"; for i in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done; fi; fi; cd ${quote(base + '/app')}; nohup ${quote(base + '/runtime/node/bin/node')} --env-file=${quote(base + '/service.env')} ${quote(script)} </dev/null >${quote(base + '/logs/service.log')} 2>&1 & echo $! > "$pid_file"; for i in $(seq 1 30); do sleep 0.5; curl --cacert ${quote(certPath)} --resolve cc-desk-tunnel.local:${port}:127.0.0.1 -fsS https://cc-desk-tunnel.local:${port}/health 2>/dev/null && exit 0; done; curl --cacert ${quote(certPath)} --resolve cc-desk-tunnel.local:${port}:127.0.0.1 -fsS https://cc-desk-tunnel.local:${port}/health`,
     ),
   );
   writeFileSync(

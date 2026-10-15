@@ -25,11 +25,16 @@ export async function probeQuota(config, resolveProxy, timeoutMs = 25000) {
   } catch (error) {
     const remaining = deadline - Date.now();
     if (!(error instanceof LegacyProtocolError) || remaining <= 0) throw error;
-    return queryQuota(config, address, resolveProxy, remaining, 16);
+    return queryQuota(config, address, resolveProxy, remaining, error.protocolVersion);
   }
 }
 
-class LegacyProtocolError extends Error {}
+class LegacyProtocolError extends Error {
+  constructor(protocolVersion) {
+    super('Older service protocol');
+    this.protocolVersion = protocolVersion;
+  }
+}
 
 function queryQuota(config, address, resolveProxy, timeoutMs, protocolVersion) {
   return new Promise((resolve, reject) => {
@@ -93,7 +98,7 @@ function queryQuota(config, address, resolveProxy, timeoutMs, protocolVersion) {
       if (message.type === 'connection.error') {
         finish(
           !ready && fallbackServerProtocol(message, protocolVersion) !== null
-            ? new LegacyProtocolError(message.message)
+            ? new LegacyProtocolError(fallbackServerProtocol(message, protocolVersion))
             : new Error(message.message),
         );
         return;
