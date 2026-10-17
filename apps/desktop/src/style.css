@@ -2377,7 +2377,8 @@ details[open] > summary > .fold-chevron {
 .message:has(.turn-stats-card) {
   content-visibility: visible;
 }
-.turn-stats > button {
+.turn-stats > button,
+.session-bar-part > button {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -2391,13 +2392,46 @@ details[open] > summary > .fold-chevron {
   cursor: pointer;
 }
 .turn-stats > button:hover,
-.turn-stats > button[aria-expanded='true'] {
+.turn-stats > button[aria-expanded='true'],
+.session-bar-part > button:hover,
+.session-bar-part > button[aria-expanded='true'] {
   background: var(--hover, rgba(0, 0, 0, 0.05));
 }
-.turn-stats svg {
+.turn-stats svg,
+.session-bar-part svg {
   width: 14px;
   height: 14px;
   flex: none;
+}
+/* The strip under the input box: two buttons, each with a card like a reply's. */
+.session-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0 6px;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 820px;
+  margin: -16px auto 0;
+  padding: 0 28px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+/* Each card opens above its own button, its left edge in line with it. */
+.session-bar-part {
+  position: relative;
+  min-width: 0;
+}
+.session-bar-part > button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The context ring in the strip is drawn smaller, and in the card's header as well. */
+.session-bar-part .context-ring {
+  width: 14px;
+  height: 14px;
 }
 .turn-stats-card {
   position: absolute;
@@ -2454,6 +2488,72 @@ details[open] > summary > .fold-chevron {
 .turn-stats-card p {
   margin: 10px 0 0;
   color: var(--faint);
+}
+.context-breakdown {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.context-breakdown-bar {
+  display: flex;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--line-soft);
+}
+.context-breakdown-bar span {
+  min-width: 2px;
+}
+.context-breakdown ul {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+.context-breakdown li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.context-breakdown li span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.context-breakdown li b {
+  margin-left: auto;
+  color: var(--text);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.context-breakdown li i {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--faint);
+}
+.context-breakdown .part-0 {
+  background: #98a1b3;
+}
+.context-breakdown .part-1 {
+  background: #a78bfa;
+}
+.context-breakdown .part-2 {
+  background: #4f8df5;
+}
+.context-breakdown .part-3 {
+  background: #2fb5a2;
+}
+.context-breakdown .part-4 {
+  background: #e8a33d;
+}
+.context-breakdown .part-5 {
+  background: #e06c8b;
 }
 .work {
   margin: -6px 0 18px;
@@ -3943,7 +4043,8 @@ dialog {
   font-size: 12px;
   cursor: pointer;
 }
-.stat-chip[aria-pressed='true'] {
+.stat-chip[aria-pressed='true'],
+.stat-chip[aria-checked='true'] {
   border-color: var(--accent);
   background: var(--accent-soft, rgba(37, 99, 235, 0.1));
   color: var(--accent);

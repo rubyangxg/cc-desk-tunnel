@@ -193,7 +193,8 @@ test('the settings choose which figures the line shows, or hide it', async ({ pa
   await switchOn(page);
   await page.goto('/');
   await page.getByRole('button', { name: '本机设置', exact: true }).click();
-  const choice = (name: string) => page.getByRole('button', { name, exact: true });
+  const choice = (name: string) =>
+    page.getByRole('group', { name: '小结里显示' }).getByRole('button', { name, exact: true });
   await expect(choice('平均首字')).toHaveAttribute('aria-pressed', 'true');
   await expect(choice('缓存命中')).toHaveAttribute('aria-pressed', 'false');
   await expect(page.getByText('4.9万 tok · 平均首字 952 ms · 平均 99 tok/s')).toBeVisible();

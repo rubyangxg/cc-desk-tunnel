@@ -181,6 +181,23 @@ nativeTest(
       ),
       'the second account actually answers without another click or message',
     );
+    // A visible session keeps the totals of every account segment after rotating.
+    const insertUsage = f.server.store.database.prepare(`INSERT INTO api_requests
+      (at, session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+       cost_usd, duration_ms, ttft_ms, source, request_id, prompt_id)
+      VALUES (?, ?, 'test-model', 10, ?, 100, 0, 0.1, 1000, 100, 'sdk', ?, ?)`);
+    for (const [id, output] of [
+      [calls[0].sessionId, 200],
+      [calls[1].sessionId, 300],
+      [randomUUID(), 9000],
+    ] as const)
+      insertUsage.run(Date.now(), id, output, randomUUID(), randomUUID());
+    await f.request({ type: 'session.stats', sessionId });
+    const stats = await f.wait((m) => m.type === 'session.stats' && m.sessionId === sessionId);
+    assert.ok(stats.type === 'session.stats');
+    assert.equal(stats.requests, 2);
+    assert.equal(stats.turns, 2);
+    assert.equal(stats.outputTokens, 500, 'both accounts count, unrelated sessions do not');
     const nativeId = calls[1].sessionId;
     await f.request({ type: 'message.send', sessionId, text: 'another turn' });
     await f.wait(

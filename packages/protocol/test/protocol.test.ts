@@ -24,7 +24,7 @@ test('only clients accept the audited v0.3.1 protocol and retry its version refu
   };
   assert.equal(clientServerMessageSchema.safeParse(ready).success, true);
   assert.equal(serverMessageSchema.safeParse(ready).success, false);
-  for (const protocolVersion of [15, 19, 9999])
+  for (const protocolVersion of [15, PROTOCOL_VERSION + 1, 9999])
     assert.equal(clientServerMessageSchema.safeParse({ ...ready, protocolVersion }).success, false);
   const refusal = {
     type: 'connection.error' as const,
@@ -39,6 +39,13 @@ test('only clients accept the audited v0.3.1 protocol and retry its version refu
   assert.equal(serverMessageSchema.safeParse({ ...ready, protocolVersion: 17 }).success, false);
   assert.equal(fallbackServerProtocol(refusal, PROTOCOL_VERSION), 16);
   assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.9' }, PROTOCOL_VERSION), 17);
+  assert.equal(
+    clientServerMessageSchema.safeParse({ ...ready, protocolVersion: 18 }).success,
+    true,
+  );
+  assert.equal(serverMessageSchema.safeParse({ ...ready, protocolVersion: 18 }).success, false);
+  assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.10' }, PROTOCOL_VERSION), 18);
+  assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.10' }, 18), null);
   assert.equal(fallbackServerProtocol(refusal, 17), 16);
   assert.equal(fallbackServerProtocol(refusal, 16), null);
   assert.equal(fallbackServerProtocol({ ...refusal, service: '0.2.13' }, 17), null);
@@ -152,6 +159,34 @@ test('a run waiting only for background tasks, its task list and the request to 
   };
   assert.ok(commandSchema.safeParse(stop).success);
   assert.equal(commandSchema.safeParse({ ...stop, taskId: '' }).success, false);
+});
+
+test('a session report is asked for by session and answers with its figures', () => {
+  const requestId = randomUUID();
+  const sessionId = randomUUID();
+  assert.ok(commandSchema.safeParse({ type: 'session.stats', requestId, sessionId }).success);
+  assert.equal(commandSchema.safeParse({ type: 'session.stats', requestId }).success, false);
+  const stats = {
+    type: 'session.stats',
+    requestId,
+    sessionId,
+    turns: 2,
+    requests: 4,
+    inputTokens: 40,
+    outputTokens: 1000,
+    cacheReadTokens: 4000,
+    cacheCreationTokens: 200,
+    modelMs: 11500,
+    ttftMs: null,
+    outputPerSecond: null,
+    firstRecordAt: null,
+  };
+  assert.equal(serverMessageSchema.safeParse(stats).success, true);
+  assert.equal(serverMessageSchema.safeParse({ ...stats, turns: -1 }).success, false);
+  assert.equal(
+    serverMessageSchema.safeParse({ ...stats, firstRecordAt: 'yesterday' }).success,
+    false,
+  );
 });
 
 test('a turn report names the message it answered, or none for a turn a background task started', () => {

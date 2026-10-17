@@ -4,7 +4,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { upgradeService } from '../electron/service-upgrade.mjs';
 
 // A 0.3.2 service: signs in only a client of protocol 17, and answers an update check with `found`.
-async function upgrade(found, service = '0.3.2') {
+async function upgrade(found, service = '0.3.2', protocol = 17) {
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
   await new Promise((resolve) => server.once('listening', resolve));
   const received = [];
@@ -13,7 +13,7 @@ async function upgrade(found, service = '0.3.2') {
     socket.on('message', (raw) => {
       const message = JSON.parse(raw.toString());
       received.push(message);
-      if (message.type === 'auth' && message.protocolVersion !== 17)
+      if (message.type === 'auth' && message.protocolVersion !== protocol)
         send({ type: 'connection.error', code: 'version_mismatch', message: '版本不一致' });
       else if (message.type === 'auth') send({ type: 'ready', update: { state: 'idle' } });
       else if (message.type === 'service.update.check')
@@ -61,5 +61,12 @@ test('the personal 0.4.9 service upgrades using protocol 17', async () => {
   const { result, received } = await upgrade('available', '0.4.9');
   assert.equal(result, '0.3.4');
   assert.equal(received[0].protocolVersion, 17);
+  assert.equal(received.at(-1).type, 'service.update.install');
+});
+
+test('the personal 0.4.10 service upgrades using protocol 18', async () => {
+  const { result, received } = await upgrade('available', '0.4.10', 18);
+  assert.equal(result, '0.3.4');
+  assert.equal(received[0].protocolVersion, 18);
   assert.equal(received.at(-1).type, 'service.update.install');
 });

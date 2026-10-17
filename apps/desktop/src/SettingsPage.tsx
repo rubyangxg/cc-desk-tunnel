@@ -18,6 +18,7 @@ import { connectionWaits, setPrefs, usePrefs, waitRange } from './prefs.ts';
 import { viewModes } from './transcriptView.ts';
 import type { ConnectionWaits, NotifyKind } from './prefs.ts';
 import { inSummary, sampleStats, statFields, summaryText } from './turnStats.ts';
+import { barText, inBar, sampleSession, sessionFields } from './sessionStats.ts';
 import { GithubMark, openProject, project } from './project.tsx';
 import SettingsPanel from './SettingsPanel.tsx';
 import { useShared } from './shared.ts';
@@ -50,7 +51,7 @@ const sections: { id: Section; name: string; group: string; icon: typeof Bell; w
     group: '客户端',
     icon: SlidersHorizontal,
     words:
-      '额度 输入框 托盘 后台 记住凭据 自动登录 启动 普通会话 文件夹 连接 超时 等待 SSH 回复小结 用量 首字 速度 缓存 多开 多个连接 窗口 服务端',
+      '额度 输入框 托盘 后台 记住凭据 自动登录 启动 普通会话 文件夹 连接 超时 等待 SSH 回复小结 会话栏 用量 首字 速度 缓存 多开 多个连接 窗口 服务端',
   },
   {
     id: 'notifications',
@@ -139,6 +140,64 @@ function TranscriptViewSettings() {
             ))}
           </div>
         </div>
+      </div>
+    </>
+  );
+}
+
+// The strip under the input box: its two parts each show the figures switched on, and open a card with all of them.
+function SessionBarSettings() {
+  const { sessionBar } = usePrefs();
+  const set = (values: Partial<typeof sessionBar>) =>
+    setPrefs((prefs) => ({ ...prefs, sessionBar: { ...prefs.sessionBar, ...values } }));
+  const preview = (['session', 'tokens'] as const)
+    .map((group) => barText(group, sampleSession, sessionBar.summary))
+    .filter(Boolean)
+    .join('　　');
+  return (
+    <>
+      <h2 className="page-heading">会话栏</h2>
+      <div className="card">
+        <Row title="显示会话栏" detail="输入框下方一行：整个会话的轮数、步数、速度和 Token 用量">
+          <Switch
+            label="显示会话栏"
+            checked={sessionBar.enabled}
+            onChange={(enabled) => set({ enabled })}
+          />
+        </Row>
+        <div className="setting-row stat-picks">
+          <span>
+            <strong>会话栏里显示</strong>
+            <small>{preview || '都不选时每一块只显示它的名字'}</small>
+          </span>
+          <div className="stat-chips" role="group" aria-label="会话栏里显示">
+            {sessionFields.map((field) => {
+              const on = inBar(field, sessionBar.summary);
+              return (
+                <button
+                  type="button"
+                  key={field.key}
+                  className="stat-chip"
+                  aria-pressed={on}
+                  disabled={!sessionBar.enabled}
+                  onClick={() => set({ summary: { ...sessionBar.summary, [field.key]: !on } })}
+                >
+                  {field.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <Row title="恢复默认" detail="点开后的明细不受这里的选择影响">
+          <button
+            type="button"
+            className="button"
+            disabled={Object.keys(sessionBar.summary).length === 0}
+            onClick={() => set({ summary: {} })}
+          >
+            恢复默认
+          </button>
+        </Row>
       </div>
     </>
   );
@@ -514,6 +573,7 @@ function General({
         </div>
         <TranscriptViewSettings />
         <ReplyStats />
+        <SessionBarSettings />
       </div>
     </section>
   );

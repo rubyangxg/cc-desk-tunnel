@@ -194,6 +194,10 @@ test('the settings choose how much of the work is shown', async ({ page }) => {
   await expect(mode.getByRole('radio', { name: '标准' })).toBeChecked();
   await mode.getByRole('radio', { name: '全部展开' }).click();
   await expect(mode.getByRole('radio', { name: '全部展开' })).toBeChecked();
+  // Checked is not enough: the one chosen must also look chosen.
+  const colorOf = (name: string) =>
+    mode.getByRole('radio', { name }).evaluate((el) => getComputedStyle(el).color);
+  expect(await colorOf('全部展开')).not.toBe(await colorOf('标准'));
   await expect(page.getByText('也不自动收起')).toBeVisible();
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem('proxy-prefs')!).view)).toEqual({
     mode: 'expanded',

@@ -16,6 +16,7 @@ import type { SshConnection } from './tunnel.ts';
 import { nativeCapabilities, nativeContextRefresh, nativeMetrics } from './native-controls.ts';
 import type { NativeInput } from './native-input.ts';
 import { readNativeSettings, settingsPath } from './native-settings.ts';
+import { questionTally } from './question.ts';
 
 // Whether reasoning summaries are asked for. A settings file that cannot be read leaves them on.
 function thinkingShown(options: ClaudeOptions) {
@@ -64,7 +65,8 @@ export type ClaudeRun = {
   ssh: SshConnection;
   // Told when Claude has finished its turn and the run goes on only for background tasks, and when it resumes.
   waiting: (background: boolean) => void;
-  // Told when a turn ends: the user message it answered, its time window, and how many model requests it made.
+  // Told when a turn ends: the figures so far for the user message the turn answered. A turn that a background task
+  // started adds to the question it belongs to, so these are running totals and `background` says more may follow.
   turnEnded: (turn: {
     messageId?: string;
     startedAt: number;
@@ -72,6 +74,7 @@ export type ClaudeRun = {
     requests: number;
     outputTokens: number;
     promptIds: string[];
+    background: boolean;
   }) => void;
   // Filled in while the CLI is running, so the service can ask it for fresh account quota mid-run and end
   // one of its background tasks.
@@ -156,6 +159,7 @@ export async function runClaude(
   let session: Query | undefined;
   // The prompts the CLI took since the last turn ended; the OpenTelemetry records of their requests carry the same ids.
   let promptIds: string[] = [];
+  const tally = questionTally();
   // Output tokens of every model call so far, subagents included, as the CLI's running total counts them; a turn's
   // share is the step from one result to the next. A resumed session's total already holds earlier runs.
   let outputSoFar: number | undefined = run.resume ? undefined : 0;
@@ -397,14 +401,14 @@ export async function runClaude(
         if (!run.signal.aborted) {
           // A turn that merged several messages answers them all; the last one is where the reply is shown.
           const answered = message.user_message_uuids ?? [message.user_message_uuid];
-          run.turnEnded({
+          const question = tally({
             messageId: answered.filter((id) => id).at(-1),
             startedAt: turnStartedAt,
-            endedAt,
             requests: mapper.requests,
             outputTokens: turnOutput,
             promptIds,
           });
+          run.turnEnded({ ...question, endedAt, background: background > 0 });
         }
         turnStartedAt = endedAt;
         mapper.requests = 0;

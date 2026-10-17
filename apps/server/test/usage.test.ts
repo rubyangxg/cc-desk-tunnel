@@ -386,7 +386,54 @@ test('a turn is summed over its time window with the figures the call log shows'
   );
 });
 
-test('a turn is summed over the requests of its prompts, whatever the time', () => {
+test('a session is summed over all its requests, turns being its distinct prompts', () => {
+  const log = new UsageLog(new DatabaseSync(':memory:'));
+  const session = '4f0c9d0e-1111-4222-8333-444455556666';
+  assert.deepEqual(log.sessionStats(session), {
+    turns: 0,
+    requests: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    modelMs: 0,
+    ttftMs: null,
+    outputPerSecond: null,
+    firstRecordAt: null,
+  });
+  log.ingest(
+    batch(
+      request(base, 'a1', { 'prompt.id': 'p1' }),
+      request(base + 1000, 'a2', {
+        'prompt.id': 'p1',
+        output_tokens: 400,
+        ttft_ms: 500,
+        duration_ms: 2500,
+      }),
+      request(base + 2000, 'b1', { 'prompt.id': 'p2' }),
+      request(base + 3000, 'unnamed'),
+      request(base + 4000, 'elsewhere', {
+        'session.id': 'ffffffff-1111-4222-8333-444455556666',
+        'prompt.id': 'p3',
+      }),
+    ),
+  );
+  // Streamed time is what is left after the first token: 2000, 2000 and 2000 ms for 800 and 200 tokens.
+  assert.deepEqual(log.sessionStats(session), {
+    turns: 2,
+    requests: 4,
+    inputTokens: 40,
+    outputTokens: 1000,
+    cacheReadTokens: 4000,
+    cacheCreationTokens: 200,
+    modelMs: 11500,
+    ttftMs: 875,
+    outputPerSecond: 1000 / ((2000 * 4) / 1000),
+    firstRecordAt: new Date(base).toISOString(),
+  });
+});
+
+test('a turn is summed over the requests of its prompts, whatever the time, and of its window', () => {
   const log = new UsageLog(new DatabaseSync(':memory:'));
   const session = '4f0c9d0e-1111-4222-8333-444455556666';
   log.ingest(
@@ -402,13 +449,55 @@ test('a turn is summed over the requests of its prompts, whatever the time', () 
       request(base + 2000, 'unnamed'),
     ),
   );
-  const turn = (promptIds: string[]) => ({ promptIds, startedAt: base, endedAt: base + 5000 });
+  const turn = (promptIds: string[]) => ({ promptIds, startedAt: base, endedAt: base + 500 });
   assert.equal(log.turnStats(session, turn(['p1'])).requests, 2);
   assert.equal(log.turnStats(session, turn(['p1'])).outputTokens, 300);
   // Only the main loop's requests count towards the requests the turn is waiting for.
   assert.equal(log.turnStats(session, turn(['p1'])).mainRequests, 1);
   assert.equal(log.turnStats(session, turn(['p1', 'p2'])).requests, 3);
-  assert.equal(log.turnStats(session, turn([])).requests, 3);
+  // Without prompts, the window alone: the first request, not the subagent's a minute later.
+  assert.equal(log.turnStats(session, turn([])).requests, 1);
+  // A request in the window counts once, whether or not its prompt is named too.
+  assert.equal(
+    log.turnStats(session, { promptIds: ['p1'], startedAt: base, endedAt: base + 1500 }).requests,
+    3,
+  );
+});
+
+test('a question is summed over the prompts of every turn it took, late subagent requests included', () => {
+  const log = new UsageLog(new DatabaseSync(':memory:'));
+  const session = '4f0c9d0e-1111-4222-8333-444455556666';
+  const subagent = { query_source: 'agent:builtin:general-purpose', output_tokens: 100 };
+  log.ingest(
+    batch(
+      // The user's prompt: a main request, then a background subagent's while the first turn is still running.
+      request(base, 'a', { 'prompt.id': 'p1' }),
+      request(base + 1000, 'b', { 'prompt.id': 'p1', ...subagent }),
+      // The subagent hands back, which starts a turn with a prompt of its own.
+      request(base + 5000, 'c', { 'prompt.id': 'p2' }),
+      // Subagent requests made after that turn ended carry the latest prompt's id, not the first one's.
+      request(base + 6000, 'd', { 'prompt.id': 'p2', ...subagent }),
+      request(base + 9000, 'e', { 'prompt.id': 'p3' }),
+      request(base + 9500, 'f', { 'prompt.id': 'p3', ...subagent }),
+      // Subagent requests under a prompt the CLI never told us of still fall in the question's window.
+      request(base + 7000, 'h', { 'prompt.id': 'unseen', ...subagent }),
+      // Another question's request, and one nobody named, both after the question.
+      request(base + 20000, 'g', { 'prompt.id': 'p4' }),
+      request(base + 30000, 'i'),
+    ),
+  );
+  const turn = (promptIds: string[]) => ({ promptIds, startedAt: base, endedAt: base + 10000 });
+  // The first prompt alone, over the first turn's window, misses the subagent requests made later.
+  assert.equal(
+    log.turnStats(session, { promptIds: ['p1'], startedAt: base, endedAt: base + 2000 }).requests,
+    2,
+  );
+  const whole = log.turnStats(session, turn(['p1', 'p2', 'p3']));
+  assert.equal(whole.requests, 7);
+  assert.equal(whole.mainRequests, 3);
+  assert.equal(whole.outputTokens, 3 * 200 + 4 * 100);
+  // The same prompt named twice is counted once.
+  assert.equal(log.turnStats(session, turn(['p1', 'p2', 'p3', 'p3'])).requests, 7);
 });
 
 test('account quota costs recover historical attribution and remain isolated through switches and deletion', () => {

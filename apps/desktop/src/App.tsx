@@ -43,6 +43,7 @@ import AccountPanel from './AccountPanel.tsx';
 import ServerAccountPool from './ServerAccountPool.tsx';
 import { ProxyClient, RequestInterruptedError } from './client.ts';
 import Composer from './Composer.tsx';
+import SessionBar from './SessionBar.tsx';
 import { isHere, thisDevice } from './device.ts';
 import { isMac, selfUpdating } from './platform.ts';
 import { useDrafts } from './drafts.ts';
@@ -254,6 +255,11 @@ export function App({ profiles }: { profiles: ProfileControls }) {
   );
   const history = selected ? state.history[selected.id] : undefined;
   const nativeSession = latest(events, 'native.session');
+  // Each turn's report is a reason to ask for the session's figures again.
+  const turnReports = useMemo(
+    () => events.filter((event) => event.payload.type === 'turn.stats').length,
+    [events],
+  );
   const capabilities = latest(events, 'native.capabilities') ?? state.capabilities;
   const metrics = latest(events, 'native.metrics');
   // Quota belongs to the account, so the newest reading from any session wins over the selected session's.
@@ -1820,6 +1826,15 @@ export function App({ profiles }: { profiles: ProfileControls }) {
                 }}
                 configure={configure}
                 stop={stopRun}
+              />
+            )}
+            {selected && !away && !terminalSessionId && (
+              <SessionBar
+                client={client}
+                sessionId={selected.id}
+                refresh={turnReports}
+                metrics={metrics}
+                native={nativeMode}
               />
             )}
           </main>

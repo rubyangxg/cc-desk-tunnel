@@ -46,6 +46,7 @@ import { completeOnboarding } from './native-onboarding.ts';
 import { readNativeSettings, updateNativeSettings, settingsPath } from './native-settings.ts';
 import { readInstructions, writeInstructions, instructionsPath } from './native-instructions.ts';
 import type { NativeTerminal } from './native-terminal.ts';
+import { inOrder } from './question.ts';
 import { simulate } from './simulation.ts';
 import { SessionStore } from './store.ts';
 import { Throttle } from './throttle.ts';
@@ -102,6 +103,8 @@ export type Run = {
   wakeQuota?: () => void;
   attempted?: Set<string>;
   nativeId?: string;
+  // Serialize reports so later totals never arrive before earlier ones.
+  stats: ReturnType<typeof inOrder>;
 };
 type Terminal = { id: string; sessionId: string; owner: Peer; process?: NativeTerminal };
 // One of the user's computers, while it is connected or expected back: its connections, the door its commands
@@ -657,13 +660,14 @@ export function createProxyServer(options: ServerOptions) {
       requests: number;
       outputTokens: number;
       promptIds: string[];
+      background: boolean;
     },
+    nativeId: string,
   ) {
     // Complete once every request of the main loop is there and the records add up to the output the CLI counted for the
     // turn, which includes its subagents. Subagent records must not stand in for a main request that is still on its way.
     const complete = (stats: { mainRequests: number; outputTokens: number }) =>
       stats.mainRequests >= turn.requests && stats.outputTokens >= turn.outputTokens;
-    const nativeId = run.nativeId ?? run.sessionId;
     let stats = usage.turnStats(nativeId, turn);
     // Without a count of requests to wait for, give the usual export delay one chance.
     for (let waited = 0; waited < 8000; waited += 500) {
@@ -677,7 +681,7 @@ export function createProxyServer(options: ServerOptions) {
         type: 'turn.stats',
         messageId: turn.messageId,
         ...figures,
-        partial: !complete(stats),
+        partial: turn.background || !complete(stats),
       });
   }
   function finish(run: Run, status: 'completed' | 'cancelled' | 'failed', reason?: string) {
@@ -788,7 +792,11 @@ export function createProxyServer(options: ServerOptions) {
               connectionId: run.connectionId,
               ...(background ? { waiting: 'background' as const } : {}),
             }),
-          turnEnded: (turn) => track(turnStats(run, turn).catch(() => {})),
+          turnEnded: (turn) => {
+            // The account may rotate before this queued report starts.
+            const nativeId = run.nativeId ?? run.sessionId;
+            track(run.stats(() => turnStats(run, turn, nativeId)));
+          },
           dataDir: store.directory,
           resume: store.hasNativeContext(run.sessionId),
           signal: run.controller.signal,
@@ -1386,6 +1394,7 @@ export function createProxyServer(options: ServerOptions) {
       approvals: new Map(),
       answered: new Set(),
       controls: {},
+      stats: inOrder(),
     };
     runs.set(command.sessionId, run);
     if (options.claude)
@@ -1541,6 +1550,18 @@ export function createProxyServer(options: ServerOptions) {
       }
       case 'usage.summary':
         send(peer, { type: 'usage.summary', requestId: command.requestId, ...usage.summary() });
+        return undefined;
+      case 'session.stats':
+        store.get(command.sessionId);
+        send(peer, {
+          type: 'session.stats',
+          requestId: command.requestId,
+          sessionId: command.sessionId,
+          ...usage.sessionStats(
+            command.sessionId,
+            store.nativeSegments(command.sessionId).map((segment) => segment.id),
+          ),
+        });
         return undefined;
       case 'service.update.check':
         if (!updates) throw new DomainError('updates_unavailable', '此服务未启用版本跟踪。');

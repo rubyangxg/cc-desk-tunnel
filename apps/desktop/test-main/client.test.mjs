@@ -95,6 +95,7 @@ for (const type of [
   'session.history',
   'account.status',
   'usage.query',
+  'session.stats',
   'settings.get',
   'message.send',
   'settings.update',

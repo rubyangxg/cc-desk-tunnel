@@ -34,6 +34,8 @@ export type Prefs = {
   quota: boolean;
   // How much of the work behind a reply is shown.
   view: TranscriptView;
+  // The strip under the input box with the whole session's figures; chosen the same way.
+  sessionBar: { enabled: boolean; summary: Record<string, boolean> };
 };
 
 const storageKey = 'proxy-prefs';
@@ -59,6 +61,7 @@ const defaults: Prefs = {
   stats: { enabled: false, summary: {} },
   quota: false,
   view: defaultView,
+  sessionBar: { enabled: false, summary: {} },
 };
 
 function stored(): unknown {
@@ -109,6 +112,14 @@ function read(saved: any = shared('prefs') ?? stored()): Prefs {
         enabled: saved.stats?.enabled === true,
         summary: Object.fromEntries(
           Object.entries(saved.stats?.summary ?? {}).filter(
+            (entry): entry is [string, boolean] => typeof entry[1] === 'boolean',
+          ),
+        ),
+      },
+      sessionBar: {
+        enabled: saved.sessionBar?.enabled === true,
+        summary: Object.fromEntries(
+          Object.entries(saved.sessionBar?.summary ?? {}).filter(
             (entry): entry is [string, boolean] => typeof entry[1] === 'boolean',
           ),
         ),

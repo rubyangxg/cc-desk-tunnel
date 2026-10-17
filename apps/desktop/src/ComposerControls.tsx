@@ -9,6 +9,7 @@ import type {
   NativeMetrics,
   NativeSession,
 } from '@cc-desk-tunnel/protocol';
+import ContextMeter from './ContextMeter.tsx';
 import { IconButton } from './ui.tsx';
 
 const effortNames: Record<Effort, string> = {
@@ -43,20 +44,19 @@ export default function ComposerControls({
   refreshing: boolean;
   canRefreshModels: boolean;
 }) {
-  const [open, setOpen] = useState(false),
-    [contextOpen, setContextOpen] = useState(false);
+  const [open, setOpen] = useState(false);
+  // With the strip under the input box switched on, the ring is shown there instead.
+  const barShowsContext = usePrefs().sessionBar.enabled;
   const container = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
       if (!container.current?.contains(event.target as Node)) {
         setOpen(false);
-        setContextOpen(false);
       }
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setOpen(false);
-        setContextOpen(false);
       }
     };
     document.addEventListener('pointerdown', dismiss);
@@ -78,16 +78,6 @@ export default function ComposerControls({
   const actual = nativeSession?.effort;
   const shownEffort = preview ?? effort ?? actual;
   const label = chosen?.displayName ?? model ?? '原生默认';
-  const context = metrics?.context;
-  // How full the window is, drawn as a ring that changes colour as it runs out.
-  const contextUsed = context ? Math.min(100, Math.max(0, context.percentage)) : 0;
-  const contextLevel = !context
-    ? 'unknown'
-    : contextUsed >= 90
-      ? 'full'
-      : contextUsed >= 70
-        ? 'high'
-        : 'ok';
   async function saveEffort() {
     dragging.current = false;
     if (!commitPending.current || disabled) return;
@@ -129,53 +119,7 @@ export default function ComposerControls({
           {quota.map((figure) => `${figure.label} ${figure.used}%`).join(' · ')}
         </button>
       )}
-      <div
-        className="context-control"
-        onMouseEnter={() => setContextOpen(true)}
-        onMouseLeave={() => setContextOpen(false)}
-      >
-        <button
-          type="button"
-          className="icon-button context-button"
-          aria-label="上下文窗口"
-          aria-expanded={contextOpen}
-          title={context ? `上下文 ${context.percentage}%` : '上下文窗口'}
-          onFocus={() => setContextOpen(true)}
-          onBlur={() => setContextOpen(false)}
-          onClick={() => setContextOpen(true)}
-        >
-          <svg className={`context-ring ${contextLevel}`} viewBox="0 0 20 20" aria-hidden="true">
-            <circle cx="10" cy="10" r="7.5" pathLength={100} />
-            <circle
-              className="context-ring-used"
-              cx="10"
-              cy="10"
-              r="7.5"
-              pathLength={100}
-              strokeDasharray={`${contextUsed} 100`}
-            />
-          </svg>
-        </button>
-        {contextOpen && (
-          <div className="context-tooltip" role="tooltip">
-            <strong>上下文窗口</strong>
-            {context ? (
-              <>
-                <span>
-                  {context.percentage}% 已用（剩余 {Math.max(0, 100 - context.percentage)}%）
-                </span>
-                <span>
-                  {context.usedTokens.toLocaleString()} / {context.windowTokens.toLocaleString()}{' '}
-                  tokens
-                </span>
-                <small>{new Date(context.measuredAt).toLocaleTimeString('zh-CN')} · 原生摘要</small>
-              </>
-            ) : (
-              <span>{metrics?.errors?.context ?? '等待原生状态'}</span>
-            )}
-          </div>
-        )}
-      </div>
+      {!barShowsContext && <ContextMeter metrics={metrics} />}
       <div className="model-control">
         <button
           type="button"
