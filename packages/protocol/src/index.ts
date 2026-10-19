@@ -445,6 +445,22 @@ export const deviceSchema = z.object({
 export const platformOf = (device?: { platform?: DevicePlatform } | null): DevicePlatform =>
   device?.platform ?? 'win32';
 export type Device = z.infer<typeof deviceSchema>;
+export const messageQueueSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        id,
+        text: z.string().trim().min(1).max(16000),
+        scenario: scenarioSchema,
+        createdAt: timestamp,
+      }),
+    )
+    .max(20),
+  paused: z.boolean(),
+  reason: z.string().optional(),
+  // Persisted before dispatch so restart recovery can distinguish an accepted message.
+  dispatching: id.optional(),
+});
 export const sessionSchema = z.object({
   id,
   title: z.string().min(1).max(120),
@@ -462,6 +478,7 @@ export const sessionSchema = z.object({
   accountId: poolAccountIdSchema.optional(),
   nativeSessionId: id.optional(),
   accountHandoff: z.boolean().optional(),
+  messageQueue: messageQueueSchema.optional(),
   // What the system prompt of the session's native runs says. It is kept word for word until a compaction,
   // which loses the prompt cache anyway: a move to another project or another computer is told to Claude
   // with the user's next message instead, and `told` is what it was last told that way.
@@ -727,6 +744,31 @@ export const commandSchema = z.discriminatedUnion('type', [
       sessionId: id,
       text: z.string().trim().min(1).max(16000),
       scenario: scenarioSchema.default('chat'),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('message.enqueue'),
+      ...request,
+      sessionId: id,
+      text: z.string().trim().min(1).max(16000),
+      scenario: scenarioSchema.default('chat'),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('message.queue.remove'),
+      ...request,
+      sessionId: id,
+      messageId: id,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('message.queue.pause'),
+      ...request,
+      sessionId: id,
+      paused: z.boolean(),
     })
     .strict(),
   z.object({ type: z.literal('run.cancel'), ...request, sessionId: id, runId: id }).strict(),

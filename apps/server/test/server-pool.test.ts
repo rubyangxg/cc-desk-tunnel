@@ -755,3 +755,53 @@ nativeTest('global instructions are isolated by account', async (t) => {
   assert.equal(original.text, 'Default account instructions');
   assert.equal(readFileSync(join(f.config, 'CLAUDE.md'), 'utf8'), original.text);
 });
+
+nativeTest(
+  'queued messages wait through account rotation, then start once on the selected account',
+  { timeout: 60000 },
+  async (t) => {
+    const f = await fixture(t);
+    const file = join(f.config, 'fixture.json');
+    writeFileSync(
+      file,
+      JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), pauseBeforeQuota: true }),
+    );
+    const created = await f.request({
+      type: 'session.create',
+      title: 'queued rotation',
+      projectPath: '/local/project',
+    });
+    const sessionId = created.sessionId!;
+    await f.request({ type: 'message.send', sessionId, text: 'first task' });
+    await f.wait(
+      (message) =>
+        message.type === 'session.event' && message.event.payload.type === 'native.session',
+    );
+    await f.request({ type: 'message.enqueue', sessionId, text: 'queued follow-up' });
+    assert.equal(f.server.store.get(sessionId).session.messageQueue?.items.length, 1);
+    writeFileSync(
+      file,
+      JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), pauseBeforeQuota: false }),
+    );
+    for (let i = 0; i < 2; i++)
+      await f.wait(
+        (message) =>
+          message.type === 'session.event' &&
+          message.event.payload.type === 'run.status' &&
+          message.event.payload.status === 'completed',
+      );
+    const calls = readFileSync(f.log, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    assert.equal(calls.length, 3);
+    assert.ok(calls[1].prompt.endsWith('\n\ncontinue'));
+    assert.equal(calls[2].prompt, 'queued follow-up');
+    assert.equal(calls[2].directory, calls[1].directory);
+    assert.equal(f.server.store.get(sessionId).session.messageQueue?.items.length, 0);
+    const messages = f.server.store
+      .snapshot(sessionId)
+      .events.flatMap(({ payload }) => (payload.type === 'message.user' ? [payload.text] : []));
+    assert.deepEqual(messages, ['first task', 'continue', 'queued follow-up']);
+  },
+);

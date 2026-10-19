@@ -77,7 +77,8 @@ const topics: { title: string; lines: string[] }[] = [
   },
 ];
 const keys: [string, string][] = [
-  ['Enter', '发送消息'],
+  ['Enter', '排队发送（需服务端支持）'],
+  ['Ctrl / ⌘ + Enter', '直接发送'],
   ['Shift + Enter', '换行'],
   ['/ 或 \\', '打开会话命令（压缩上下文、刷新状态）'],
   ['Esc', '关闭菜单与弹出层'],

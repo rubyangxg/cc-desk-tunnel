@@ -1012,3 +1012,182 @@ test('the newest client installer is announced on sign-in and downloads only wit
   assert.equal(download.status, 200);
   assert.equal(await download.text(), 'installer bytes');
 });
+
+test('persistent queue waits for completion, dispatches FIFO and deduplicates across connections', async (t) => {
+  const f = await fixture(t, 5);
+  const client = await f.connect();
+  const sessionId = await f.create(client);
+  await client.request({ type: 'message.send', sessionId, text: 'first', scenario: 'tool' });
+  const approval = await client.event('approval.requested');
+  assert.ok(
+    approval.type === 'session.event' && approval.event.payload.type === 'approval.requested',
+  );
+  const queued = {
+    type: 'message.enqueue',
+    requestId: randomUUID(),
+    sessionId,
+    text: 'second',
+    scenario: 'chat',
+  };
+  client.send(queued);
+  await client.wait(
+    (message) => message.type === 'response' && message.requestId === queued.requestId,
+  );
+  await client.request({ type: 'message.enqueue', sessionId, text: 'third' });
+  const other = await f.connect();
+  other.send(queued);
+  await other.wait(
+    (message) => message.type === 'response' && message.requestId === queued.requestId,
+  );
+  assert.equal(f.server.store.get(sessionId).session.messageQueue?.items.length, 2);
+  assert.deepEqual(
+    f.server.store
+      .snapshot(sessionId)
+      .events.flatMap(({ payload }) => (payload.type === 'message.user' ? [payload.text] : [])),
+    ['first'],
+  );
+  await client.request({
+    type: 'approval.reply',
+    sessionId,
+    runId: approval.event.runId,
+    approvalId: approval.event.payload.approvalId,
+    allowed: true,
+  });
+  for (let i = 0; i < 3; i++)
+    await client.wait(
+      (message) =>
+        message.type === 'session.event' &&
+        message.event.payload.type === 'run.status' &&
+        message.event.payload.status === 'completed',
+    );
+  assert.deepEqual(
+    f.server.store
+      .snapshot(sessionId)
+      .events.flatMap(({ payload }) => (payload.type === 'message.user' ? [payload.text] : [])),
+    ['first', 'second', 'third'],
+  );
+  assert.equal(f.server.store.get(sessionId).session.messageQueue?.items.length, 0);
+  const reconnected = await f.connect();
+  reconnected.send(queued);
+  await reconnected.wait(
+    (message) => message.type === 'response' && message.requestId === queued.requestId,
+  );
+  assert.equal(f.server.store.get(sessionId).session.activeRun, null);
+  assert.equal(
+    f.server.store
+      .snapshot(sessionId)
+      .events.filter(({ payload }) => payload.type === 'message.user').length,
+    3,
+  );
+});
+
+test('stop and failure pause pending messages; removal and explicit resume control dispatch', async (t) => {
+  const f = await fixture(t, 10);
+  const client = await f.connect();
+  const sessionId = await f.create(client);
+  await client.request({ type: 'message.send', sessionId, text: 'wait', scenario: 'tool' });
+  await client.event('approval.requested');
+  await client.request({ type: 'message.enqueue', sessionId, text: 'remove me' });
+  await client.request({
+    type: 'message.enqueue',
+    sessionId,
+    text: 'fail next',
+    scenario: 'error',
+  });
+  await client.request({ type: 'message.enqueue', sessionId, text: 'last' });
+  const runId = f.server.store.get(sessionId).session.activeRun!.id;
+  await client.request({ type: 'run.cancel', sessionId, runId });
+  let queue = f.server.store.get(sessionId).session.messageQueue!;
+  assert.equal(queue.paused, true);
+  assert.equal(queue.items.length, 3);
+  await client.request({ type: 'message.queue.remove', sessionId, messageId: queue.items[0].id });
+  await client.request({ type: 'message.queue.pause', sessionId, paused: false });
+  await client.wait(
+    (message) =>
+      message.type === 'session.event' &&
+      message.event.payload.type === 'run.status' &&
+      message.event.payload.status === 'failed',
+  );
+  queue = f.server.store.get(sessionId).session.messageQueue!;
+  assert.equal(queue.paused, true);
+  assert.deepEqual(
+    queue.items.map((item) => item.text),
+    ['last'],
+  );
+  await client.request({ type: 'message.queue.pause', sessionId, paused: false });
+  await client.wait(
+    (message) =>
+      message.type === 'session.event' &&
+      message.event.payload.type === 'run.status' &&
+      message.event.payload.status === 'completed',
+  );
+  assert.deepEqual(
+    f.server.store
+      .snapshot(sessionId)
+      .events.flatMap(({ payload }) => (payload.type === 'message.user' ? [payload.text] : [])),
+    ['wait', 'fail next', 'last'],
+  );
+});
+
+test('queue restart recovery keeps unsent messages, excludes accepted dispatch and never copies into forks', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'cc-desk-queue-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const store = new SessionStore(directory);
+  const session = store.create(randomUUID(), 'queue', 'D:\\project', device);
+  const first = {
+    id: randomUUID(),
+    text: 'accepted',
+    scenario: 'chat' as const,
+    createdAt: new Date().toISOString(),
+  };
+  const second = { ...first, id: randomUUID(), text: 'unsent' };
+  store.enqueue(session.id, first);
+  store.enqueue(session.id, second);
+  assert.throws(() => store.enqueue(session.id, { ...first, text: 'conflict' }), /请求 ID/);
+  const fork = store.fork(randomUUID(), session.id, randomUUID(), 'fork', false, { device });
+  assert.equal(fork.messageQueue, undefined);
+  store.setMessageQueue(session.id, {
+    items: [first, second],
+    paused: false,
+    dispatching: first.id,
+  });
+  store.append(session.id, randomUUID(), {
+    type: 'message.user',
+    messageId: first.id,
+    text: first.text,
+    scenario: 'chat',
+  });
+  store.close();
+  const recovered = new SessionStore(directory);
+  let queue = recovered.get(session.id).session.messageQueue!;
+  assert.deepEqual(queue.items, [second]);
+  assert.equal(queue.paused, true);
+  assert.equal(queue.dispatching, undefined);
+  recovered.setMessageQueue(session.id, { ...queue, paused: false, dispatching: second.id });
+  recovered.close();
+  const interrupted = new SessionStore(directory);
+  queue = interrupted.get(session.id).session.messageQueue!;
+  assert.deepEqual(queue.items, [second], 'dispatch without acceptance remains pending');
+  assert.equal(queue.paused, true);
+  interrupted.close();
+});
+
+test('an idle queue starts immediately; paused queues stay paused and enforce limits', async (t) => {
+  const f = await fixture(t);
+  const client = await f.connect();
+  const sessionId = await f.create(client);
+  await client.request({ type: 'message.enqueue', sessionId, text: 'idle' });
+  await client.wait(
+    (message) =>
+      message.type === 'session.event' &&
+      message.event.payload.type === 'run.status' &&
+      message.event.payload.status === 'completed',
+  );
+  await client.request({ type: 'message.queue.pause', sessionId, paused: true });
+  for (let i = 0; i < 20; i++)
+    await client.request({ type: 'message.enqueue', sessionId, text: `pending ${i}` });
+  const rejected = await client.request({ type: 'message.enqueue', sessionId, text: 'over limit' });
+  assert.ok(rejected.type === 'response' && !rejected.ok && rejected.code === 'queue_full');
+  assert.equal(f.server.store.get(sessionId).session.activeRun, null);
+  assert.equal(f.server.store.get(sessionId).session.messageQueue?.items.length, 20);
+});

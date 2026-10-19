@@ -747,7 +747,13 @@ export class ProxyClient {
       const timer = setTimeout(
         () => {
           this.pending.delete(requestId);
-          reject(new Error('请求超时；请查看历史确认结果，未自动重发。'));
+          reject(
+            new Error(
+              command.type === 'message.enqueue'
+                ? '排队请求超时；请查看待发送队列及历史确认结果，未自动重发。'
+                : '请求超时；请查看历史确认结果，未自动重发。',
+            ),
+          );
         },
         command.type === 'session.status' ||
           command.type.startsWith('account.') ||

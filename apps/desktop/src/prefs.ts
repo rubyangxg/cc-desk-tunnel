@@ -13,6 +13,7 @@ export type ConnectionWaits = { connect: number; ssh: number; ready: number };
 export const connectionWaits: ConnectionWaits = { connect: 15, ssh: 10, ready: 45 };
 export const waitRange = { min: 5, max: 600 };
 export type Prefs = {
+  sendMode: 'direct' | 'queue';
   pinnedSessions: string[];
   // Projects are named by pathKey().
   pinnedProjects: string[];
@@ -40,6 +41,7 @@ export type Prefs = {
 
 const storageKey = 'proxy-prefs';
 const defaults: Prefs = {
+  sendMode: 'direct',
   pinnedSessions: [],
   pinnedProjects: [],
   collapsedProjects: [],
@@ -77,6 +79,7 @@ function read(saved: any = shared('prefs') ?? stored()): Prefs {
     const strings = (value: unknown) =>
       Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
     return {
+      sendMode: saved.sendMode === 'queue' ? 'queue' : 'direct',
       pinnedSessions: strings(saved.pinnedSessions),
       pinnedProjects: strings(saved.pinnedProjects),
       collapsedProjects: strings(saved.collapsedProjects),

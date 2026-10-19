@@ -3130,6 +3130,108 @@ details[open] > summary > .fold-chevron {
   height: 13px;
   fill: currentColor;
 }
+.send-mode {
+  position: relative;
+  flex-shrink: 0;
+}
+.send-mode > .icon-button {
+  width: 24px;
+}
+.send-mode-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  width: 238px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 6px 24px #0002;
+}
+.send-mode-menu.below {
+  bottom: auto;
+  top: calc(100% + 8px);
+}
+.send-mode-menu button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+.send-mode-menu button:hover,
+.send-mode-menu button[aria-checked='true'] {
+  background: var(--hover);
+}
+.send-mode-menu svg,
+.message-queue svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+.send-mode-menu kbd {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+.send-mode-menu small {
+  display: block;
+  padding: 5px 8px;
+  color: var(--faint);
+  font-size: 11px;
+}
+.message-queue {
+  max-width: 820px;
+  margin: 0 auto 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 5px 10px;
+  background: var(--surface);
+  font-size: 12px;
+}
+.message-queue header,
+.message-queue header > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.message-queue header {
+  justify-content: space-between;
+}
+.message-queue .icon-button {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+}
+.message-queue > small {
+  display: block;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.message-queue ol {
+  margin: 0;
+  padding: 0;
+  max-height: 104px;
+  overflow-y: auto;
+}
+.message-queue li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.message-queue li > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .account-page {
   display: flex;
   flex-direction: column;

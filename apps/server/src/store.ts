@@ -143,10 +143,50 @@ export class SessionStore {
           reason: '服务重启，运行未重放。',
         });
       }
+      for (const session of this.list()) {
+        const queue = session.messageQueue;
+        if (!queue) continue;
+        const items = queue.items.filter(
+          (item) => item.id !== queue.dispatching || !this.userMessage(session.id, item.id),
+        );
+        this.setMessageQueue(session.id, {
+          items,
+          paused: items.length > 0,
+          ...(items.length ? { reason: '服务已重启，请确认后继续队列。' } : {}),
+        });
+      }
     } catch (error) {
       this.database.close();
       throw error;
     }
+  }
+
+  setMessageQueue(sessionId: string, queue: NonNullable<Session['messageQueue']>) {
+    const { session } = this.get(sessionId);
+    session.messageQueue = queue;
+    this.save(session);
+  }
+
+  enqueue(sessionId: string, item: NonNullable<Session['messageQueue']>['items'][number]) {
+    const queue = this.get(sessionId).session.messageQueue ?? { items: [], paused: false };
+    const sent = this.userMessage(sessionId, item.id)?.payload;
+    const existing =
+      queue.items.find((entry) => entry.id === item.id) ??
+      (sent?.type === 'message.user' ? sent : undefined);
+    if (existing) {
+      if (existing.text !== item.text || existing.scenario !== item.scenario)
+        throw new DomainError('request_conflict', '请求 ID 已被其他内容使用。');
+      return;
+    }
+    if (
+      queue.items.length >= 20 ||
+      queue.items.reduce((size, entry) => size + entry.text.length, item.text.length) > 16000
+    )
+      throw new DomainError(
+        'queue_full',
+        '队列已满（最多 20 条、合计 16000 字），请等待或删除部分消息。',
+      );
+    this.setMessageQueue(sessionId, { ...queue, items: [...queue.items, item] });
   }
 
   private importJson() {
@@ -496,6 +536,7 @@ export class SessionStore {
     const now = new Date().toISOString();
     const session: Session = {
       ...source,
+      messageQueue: undefined,
       id,
       title,
       device: place.device,

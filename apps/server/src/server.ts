@@ -703,6 +703,9 @@ export function createProxyServer(options: ServerOptions) {
     run.decide?.(false);
     for (const decide of run.approvals.values()) decide(false);
     run.approvals.clear();
+    if (status !== 'completed' || run.cancelReason)
+      pauseQueue(run.sessionId, '任务已停止或失败，请确认后继续队列。');
+    else queueMicrotask(() => drainQueue(run.sessionId));
   }
   // A native run ends through its own adapter, which reports what is known about in-flight tools first.
   function cancel(run: Run, reason: string) {
@@ -1432,6 +1435,55 @@ export function createProxyServer(options: ServerOptions) {
           ),
     );
   }
+  function pauseQueue(sessionId: string, reason: string) {
+    const queue = store.get(sessionId).session.messageQueue;
+    if (!queue?.items.length) return;
+    store.setMessageQueue(sessionId, { ...queue, paused: true, reason });
+    updated(sessionId);
+  }
+  function drainQueue(sessionId: string) {
+    if (closing) return;
+    // Deleting a just-completed session may precede this microtask.
+    if (!store.list().some((session) => session.id === sessionId)) return;
+    const session = store.get(sessionId).session;
+    const queue = session.messageQueue;
+    if (!queue?.items.length || queue.paused || session.activeRun || runs.has(sessionId)) return;
+    const item = queue.items[0];
+    try {
+      if (terminals.has(sessionId) || mutations.has(sessionId) || updates?.installing)
+        throw new DomainError('native_busy', '会话或服务正在维护，请稍后继续队列。');
+      const candidates = [...(seats.get(session.device?.id ?? '')?.peers ?? [])];
+      const peer = candidates.find(
+        (entry) =>
+          entry.socket.readyState === WebSocket.OPEN && (!options.claude || entry.tunnel?.ssh),
+      );
+      if (!peer) throw new DomainError('device_offline', '项目所在电脑未连接，请连接后继续队列。');
+      store.setMessageQueue(sessionId, { ...queue, dispatching: item.id });
+      submit(
+        peer,
+        {
+          type: 'message.send',
+          requestId: item.id,
+          sessionId,
+          text: item.text,
+          scenario: item.scenario,
+        },
+        session,
+      );
+      store.setMessageQueue(sessionId, { items: queue.items.slice(1), paused: false });
+      updated(sessionId);
+    } catch (error) {
+      // Once accepted into history it must never be sent a second time, even if dispatch failed later.
+      const items = store.userMessage(sessionId, item.id) ? queue.items.slice(1) : queue.items;
+      store.setMessageQueue(sessionId, {
+        items,
+        paused: true,
+        reason: error instanceof Error ? error.message : '发送失败，请确认后继续队列。',
+      });
+      updated(sessionId);
+    }
+  }
+
   // Any window of any of the user's computers may stop a run or answer it. Two may do so at once: stopping
   // what has already stopped is nothing, and of two answers the first counts.
   function controlRun(
@@ -1452,6 +1504,7 @@ export function createProxyServer(options: ServerOptions) {
       return;
     }
     if (command.type === 'run.cancel') {
+      pauseQueue(run.sessionId, '已停止运行，队列暂停。');
       cancel(
         run,
         options.claude
@@ -1694,6 +1747,41 @@ export function createProxyServer(options: ServerOptions) {
     )
       throw new DomainError('service_upgrading', '服务端正在升级，重启完成后再发送。');
     switch (command.type) {
+      case 'message.enqueue':
+        target(peer, session, false);
+        store.enqueue(session.id, {
+          id: command.requestId,
+          text: command.text,
+          scenario: command.scenario,
+          createdAt: new Date().toISOString(),
+        });
+        peer.subscriptions.add(session.id);
+        updated(session.id);
+        drainQueue(session.id);
+        break;
+      case 'message.queue.remove': {
+        const queue = session.messageQueue;
+        if (queue) {
+          const items = queue.items.filter((item) => item.id !== command.messageId);
+          store.setMessageQueue(
+            session.id,
+            items.length ? { ...queue, items } : { items, paused: false },
+          );
+          updated(session.id);
+        }
+        break;
+      }
+      case 'message.queue.pause': {
+        const queue = session.messageQueue ?? { items: [], paused: false };
+        store.setMessageQueue(session.id, {
+          ...queue,
+          paused: command.paused,
+          reason: undefined,
+        });
+        updated(session.id);
+        if (!command.paused) drainQueue(session.id);
+        break;
+      }
       case 'session.configure':
         broadcast({
           type: 'session.updated',
@@ -1778,7 +1866,7 @@ export function createProxyServer(options: ServerOptions) {
       update: updates?.state,
       client: installer(),
       sessions: store.list(),
-      ...(pool ? { features: ['account-pool', 'project-quota-resume'] } : {}),
+      features: ['message-queue', ...(pool ? ['account-pool', 'project-quota-resume'] : [])],
     });
     send(peer, devices());
     // Every connection that asks has an execution channel of its own, to the computer it comes from.

@@ -301,13 +301,15 @@ export function App({ profiles }: { profiles: ProfileControls }) {
   // A run is that of the computer its session is on, whichever window of whichever computer started it; any
   // of them answers and stops it while that computer can be reached.
   const ownsRun = !!selected?.activeRun && (!away || remote);
+  const queueEnabled = state.features.includes('message-queue');
+  const sendMode = queueEnabled ? prefs.sendMode : 'direct';
   // A native run accepts follow-up messages from wherever it can be worked on.
   const inputDisabled =
     !connected ||
     rotation.working ||
     busy ||
     !!history?.loading ||
-    (!!selected?.activeRun && (!nativeMode || !ownsRun)) ||
+    (!!selected?.activeRun && ((!nativeMode && !queueEnabled) || !ownsRun)) ||
     refreshing;
   const draft = selected ? (drafts[selected.id] ?? '') : '';
   // The last turn of the session did not reach its end: it can be taken up again from the message box.
@@ -824,12 +826,17 @@ export function App({ profiles }: { profiles: ProfileControls }) {
       show(response.sessionId);
     });
   }
-  async function send(text = draft) {
+  async function send(text = draft, mode = sendMode) {
     if (!selected || !text.trim() || inputDisabled) return;
     const sessionId = selected.id;
     setSlashOpen(false);
     await act(async () => {
-      await client.request({ type: 'message.send', sessionId, text, scenario });
+      await client.request({
+        type: mode === 'queue' && queueEnabled ? 'message.enqueue' : 'message.send',
+        sessionId,
+        text,
+        scenario,
+      });
       setDraft(sessionId, '');
     });
   }
@@ -1814,8 +1821,29 @@ export function App({ profiles }: { profiles: ProfileControls }) {
                 capabilities={capabilities}
                 nativeSession={nativeSession}
                 metrics={metrics}
-                send={(text) => {
-                  void send(text);
+                queueEnabled={queueEnabled}
+                sendMode={sendMode}
+                setSendMode={(mode) => setPrefs((prefs) => ({ ...prefs, sendMode: mode }))}
+                removeQueued={(messageId) =>
+                  void act(async () => {
+                    await client.request({
+                      type: 'message.queue.remove',
+                      sessionId: selected.id,
+                      messageId,
+                    });
+                  })
+                }
+                pauseQueue={(paused) =>
+                  void act(async () => {
+                    await client.request({
+                      type: 'message.queue.pause',
+                      sessionId: selected.id,
+                      paused,
+                    });
+                  })
+                }
+                send={(text, mode) => {
+                  void send(text, mode);
                 }}
                 resume={stopped && !inputDisabled ? resume : undefined}
                 compact={() => {

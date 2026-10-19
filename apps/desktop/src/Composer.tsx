@@ -2,6 +2,10 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   ArrowUp,
+  ChevronDown,
+  ListOrdered,
+  Pause,
+  X,
   Folder,
   GitBranch,
   Play,
@@ -22,9 +26,11 @@ import type {
 import { slashCommands } from './commands.ts';
 import ComposerControls from './ComposerControls.tsx';
 import PermissionMenu from './PermissionMenu.tsx';
+import { usePopover } from './usePopover.ts';
 import { IconButton } from './ui.tsx';
 import type { MenuPosition } from './ui.tsx';
 
+export type SendMode = 'direct' | 'queue';
 export type Scenario = 'chat' | 'tool' | 'question' | 'error';
 // A draft that is only a slash and an optional command name opens the command menu.
 const slashDraft = /^[/\\][^ \n]*$/;
@@ -75,6 +81,11 @@ export default function Composer({
   metrics,
   openAccount,
   send,
+  queueEnabled,
+  sendMode,
+  setSendMode,
+  removeQueued,
+  pauseQueue,
   resume,
   compact,
   refresh,
@@ -106,7 +117,12 @@ export default function Composer({
   metrics: NativeMetrics | null;
   openAccount: () => void;
   // Sends the draft, or the text given instead of it.
-  send: (text?: string) => void;
+  send: (text?: string, mode?: SendMode) => void;
+  queueEnabled: boolean;
+  sendMode: SendMode;
+  setSendMode: (mode: SendMode) => void;
+  removeQueued: (messageId: string) => void;
+  pauseQueue: (paused: boolean) => void;
   // Present when the session's last turn was stopped or cut off: takes it up again without a message.
   resume?: () => void;
   compact: () => void;
@@ -119,6 +135,9 @@ export default function Composer({
   stop: () => void;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
+  const sendMenu = usePopover();
+  const queue = session.messageQueue;
+  const queued = queue?.items ?? [];
   const branch = useBranch(session.projectPath, !!session.activeRun);
   const [dropping, setDropping] = useState(false);
   // The command menu: this window's own actions, then Claude Code's commands that fit what follows the slash. Enter
@@ -133,7 +152,7 @@ export default function Composer({
     title: ReactNode;
     detail: ReactNode;
     disabled: boolean;
-    run: () => void;
+    run: (mode?: SendMode) => void;
     fill?: string;
   }[] = [
     ...('compact'.startsWith(typed)
@@ -175,7 +194,7 @@ export default function Composer({
       ),
       detail: command.description,
       disabled: inputDisabled,
-      run: () => send(`/${command.name}`),
+      run: (mode?: SendMode) => send(`/${command.name}`, mode),
       fill: `/${command.name} `,
     })),
   ];
@@ -267,6 +286,39 @@ export default function Composer({
             </button>
           ))}
         </div>
+      )}
+      {queued.length > 0 && (
+        <section className="message-queue" aria-label="待发送消息">
+          <header>
+            <span>
+              <ListOrdered />
+              待发送 {queued.length}
+              {queue?.paused ? ' · 已暂停' : ''}
+            </span>
+            <IconButton
+              title={queue?.paused ? '继续队列' : '暂停队列'}
+              disabled={!connected || busy}
+              onClick={() => pauseQueue(!queue?.paused)}
+            >
+              {queue?.paused ? <Play /> : <Pause />}
+            </IconButton>
+          </header>
+          {queue?.paused && queue.reason && <small role="status">{queue.reason}</small>}
+          <ol>
+            {queued.map((item) => (
+              <li key={item.id}>
+                <span title={item.text}>{item.text}</span>
+                <IconButton
+                  title={`删除排队消息：${item.text.slice(0, 30)}`}
+                  disabled={!connected || busy}
+                  onClick={() => removeQueued(item.id)}
+                >
+                  <X />
+                </IconButton>
+              </li>
+            ))}
+          </ol>
+        </section>
       )}
       <div className="composer-context">
         <button
@@ -360,8 +412,9 @@ export default function Composer({
             }
             if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
-              if (!menuShown) send();
-              else if (!items[at].disabled) items[at].run();
+              const mode = queueEnabled && !event.ctrlKey && !event.metaKey ? 'queue' : 'direct';
+              if (!menuShown) send(undefined, mode);
+              else if (!items[at].disabled) items[at].run(mode);
             }
           }}
         />
@@ -383,7 +436,7 @@ export default function Composer({
                 aria-label="模拟场景"
                 value={scenario}
                 onChange={(event) => setScenario(event.target.value as Scenario)}
-                disabled={!!session.activeRun || busy}
+                disabled={busy || (!!session.activeRun && !queueEnabled)}
               >
                 <option value="chat">对话</option>
                 <option value="tool">工具审批</option>
@@ -430,17 +483,60 @@ export default function Composer({
               <Play />
             </IconButton>
           ) : (
-            (!session.activeRun || native) && (
+            (!session.activeRun || native || queueEnabled) && (
               <button
                 type="submit"
                 className="icon-button send-button"
-                aria-label="发送消息"
-                title="发送消息"
+                aria-label={sendMode === 'queue' ? '排队发送' : '发送消息'}
+                title={sendMode === 'queue' ? '排队发送（Enter）' : '直接发送（Ctrl+Enter）'}
                 disabled={!draft.trim() || inputDisabled}
               >
-                <ArrowUp />
+                {sendMode === 'queue' ? <ListOrdered /> : <ArrowUp />}
               </button>
             )
+          )}
+          {queueEnabled && (
+            <div className="send-mode" ref={sendMenu.container}>
+              <button
+                type="button"
+                className="icon-button"
+                title="发送方式"
+                aria-label="发送方式"
+                disabled={!connected || busy}
+                aria-haspopup="menu"
+                aria-expanded={sendMenu.open}
+                onClick={() => sendMenu.setOpen(!sendMenu.open)}
+              >
+                <ChevronDown />
+              </button>
+              {sendMenu.open && (
+                <div
+                  className="send-mode-menu"
+                  role="menu"
+                  aria-label="发送方式"
+                  ref={sendMenu.card}
+                >
+                  {(['direct', 'queue'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={sendMode === mode}
+                      onClick={() => {
+                        setSendMode(mode);
+                        sendMenu.setOpen(false);
+                        input.current?.focus();
+                      }}
+                    >
+                      {mode === 'direct' ? <ArrowUp /> : <ListOrdered />}
+                      {mode === 'direct' ? '直接发送' : '排队发送'}
+                      <kbd>{mode === 'direct' ? 'Ctrl+Enter' : 'Enter'}</kbd>
+                    </button>
+                  ))}
+                  <small>Shift+Enter 换行</small>
+                </div>
+              )}
+            </div>
           )}
         </div>
       </form>
