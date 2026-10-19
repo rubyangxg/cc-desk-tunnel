@@ -12,6 +12,14 @@ export type NotifyKind = 'done' | 'failed' | 'approval' | 'question' | 'schedule
 export type ConnectionWaits = { connect: number; ssh: number; ready: number };
 export const connectionWaits: ConnectionWaits = { connect: 15, ssh: 10, ready: 45 };
 export const waitRange = { min: 5, max: 600 };
+// The colours: the system's light or dark, or always one of them. The page shows the choice as `data-theme` on
+// its root (see main.tsx and the top of style.css), and the desktop window's own parts follow it (main.cjs).
+export const themes = [
+  { theme: 'system', label: '跟随系统' },
+  { theme: 'light', label: '浅色' },
+  { theme: 'dark', label: '深色' },
+] as const;
+export type Theme = (typeof themes)[number]['theme'];
 export type Prefs = {
   sendMode: 'direct' | 'queue';
   pinnedSessions: string[];
@@ -21,6 +29,10 @@ export type Prefs = {
   collapsedProjects: string[];
   // Whether the sessions on the user's other computers are listed in the sidebar.
   elsewhereOpen: boolean;
+  // Which of the other computers, and which folders on them, are folded away: a computer by its id, a folder by
+  // the computer's id, a line break and the folder's pathKey(), and the sessions with no project by the
+  // computer's id and a line break.
+  collapsedElsewhere: string[];
   projectNames: Record<string, string>;
   notify: { enabled: boolean; sound: boolean } & Record<NotifyKind, boolean>;
   // `keys` holds only what the user changed, by action; an empty combination means none.
@@ -37,6 +49,7 @@ export type Prefs = {
   view: TranscriptView;
   // The strip under the input box with the whole session's figures; chosen the same way.
   sessionBar: { enabled: boolean; summary: Record<string, boolean> };
+  theme: Theme;
 };
 
 const storageKey = 'proxy-prefs';
@@ -46,6 +59,7 @@ const defaults: Prefs = {
   pinnedProjects: [],
   collapsedProjects: [],
   elsewhereOpen: false,
+  collapsedElsewhere: [],
   projectNames: {},
   notify: {
     enabled: true,
@@ -64,6 +78,7 @@ const defaults: Prefs = {
   quota: false,
   view: defaultView,
   sessionBar: { enabled: false, summary: {} },
+  theme: 'system',
 };
 
 function stored(): unknown {
@@ -84,6 +99,7 @@ function read(saved: any = shared('prefs') ?? stored()): Prefs {
       pinnedProjects: strings(saved.pinnedProjects),
       collapsedProjects: strings(saved.collapsedProjects),
       elsewhereOpen: saved.elsewhereOpen === true,
+      collapsedElsewhere: strings(saved.collapsedElsewhere),
       projectNames:
         saved.projectNames && typeof saved.projectNames === 'object' ? saved.projectNames : {},
       notify: { ...defaults.notify, ...(typeof saved.notify === 'object' ? saved.notify : {}) },
@@ -127,6 +143,7 @@ function read(saved: any = shared('prefs') ?? stored()): Prefs {
           ),
         ),
       },
+      theme: themes.find((entry) => entry.theme === saved.theme)?.theme ?? defaults.theme,
     };
   } catch {
     return defaults;
@@ -147,13 +164,13 @@ export function setPrefs(change: (prefs: Prefs) => Prefs) {
   saveShared('prefs', current);
 }
 onSharedChange('prefs', (value) => keep(read(value)));
-export const usePrefs = () =>
-  useSyncExternalStore((listener) => {
-    listeners.add(listener);
-    return () => {
-      listeners.delete(listener);
-    };
-  }, getPrefs);
+export function onPrefs(listener: () => void) {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+export const usePrefs = () => useSyncExternalStore(onPrefs, getPrefs);
 
 export const toggled = (list: string[], value: string) =>
   list.includes(value) ? list.filter((item) => item !== value) : [...list, value];

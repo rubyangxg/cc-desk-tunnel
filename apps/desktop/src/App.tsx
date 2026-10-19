@@ -1078,17 +1078,22 @@ export function App({ profiles }: { profiles: ProfileControls }) {
       },
     ];
   }
-  // Points a project at another folder: its sessions move there, and what this computer keeps about the
-  // project (its place in the list, its name, its pin) follows.
+  // Points a project at another folder: the service moves its sessions there with what Claude Code keeps of
+  // the project, and what this computer keeps about it (its place in the list, its name, its pin) follows.
   async function repoint(from: string, to: string) {
     const key = pathKey(from);
     const next = pathKey(to);
     if (key === next) return;
-    const members = sessions.filter((item) => pathKey(item.projectPath) === key);
-    if (members.some((item) => item.activeRun))
-      throw new Error('这个项目里有会话正在运行，结束后再更改文件夹。');
-    for (const item of members)
-      await client.request({ type: 'session.move', sessionId: item.id, projectPath: to });
+    if (state.features.includes('project-move')) {
+      await client.request({ type: 'project.move', from, to });
+    } else {
+      // Older personal servers can still move sessions and expose their upgrade controls.
+      const members = sessions.filter((item) => pathKey(item.projectPath) === key);
+      if (members.some((item) => item.activeRun))
+        throw new Error('这个项目里有会话正在运行，结束后再更改文件夹。');
+      for (const item of members)
+        await client.request({ type: 'session.move', sessionId: item.id, projectPath: to });
+    }
     setProjects((value) => [
       ...new Map(
         value
@@ -1433,7 +1438,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
                 label: '会话所在的项目',
                 heading: menuAway
                   ? '选这个会话在这台电脑上的项目；下一条消息会告诉 Claude 换了电脑'
-                  : '把会话移到另一个项目；下一条消息会告诉 Claude 项目已变更',
+                  : '把会话移到另一个项目；下一条消息会告诉 Claude，聊过的会话仍沿用原项目的记忆',
                 items: moved ? moveMenu(moved) : [],
               }
             : menu.kind === 'settings'

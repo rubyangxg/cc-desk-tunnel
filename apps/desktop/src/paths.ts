@@ -1,10 +1,6 @@
-// A path tells its own system: a Windows one begins with a drive letter or two backslashes, anything else is
-// a POSIX one. Sessions of both kinds can be in one list, each from the computer it is on.
-const isWindowsPath = (path: string) => /^[a-z]:[\\/]|^\\\\/i.test(path);
-// Windows paths compare case-insensitively and may arrive with either separator; a POSIX path is taken as
-// written, where a backslash is a character of a name like any other.
-export { projectPathKey as pathKey } from '@cc-desk-tunnel/protocol';
-import { projectPathKey as pathKey } from '@cc-desk-tunnel/protocol';
+import { isWindowsPath, pathKey } from '@cc-desk-tunnel/protocol';
+
+export { pathKey };
 export const folderName = (path: string) =>
   path
     .split(isWindowsPath(path) ? /[\\/]/ : '/')

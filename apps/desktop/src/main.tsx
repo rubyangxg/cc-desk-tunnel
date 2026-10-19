@@ -1,10 +1,17 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { App } from './Connections.tsx';
+import { getPrefs, onPrefs } from './prefs.ts';
 import './style.css';
 
 // For what the stylesheet lays out differently by system: the window buttons' side of the title bar.
 document.documentElement.dataset.platform = window.desktop?.platform ?? 'browser';
+// The colours chosen in the settings, set before the page first draws.
+const showTheme = () => {
+  document.documentElement.dataset.theme = getPrefs().theme;
+};
+showTheme();
+onPrefs(showTheme);
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

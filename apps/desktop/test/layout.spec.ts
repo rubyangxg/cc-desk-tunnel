@@ -20,6 +20,27 @@ const shot = (page: Page, name: string) =>
   page.screenshot({ path: resolve(screenshots, 'redesign', `${name}.png`) });
 const project = 'D:\\工作\\中文项目';
 
+test('a menu longer than the window scrolls inside it', async ({ page }) => {
+  await page.goto('/');
+  await login(page);
+  await createSession(page, '很多项目');
+  for (let index = 1; index <= 8; index++) {
+    await page.getByRole('button', { name: '添加项目', exact: true }).click();
+    await page.getByLabel('本机项目目录').fill(`D:\\工作\\项目${index}`);
+    await page.getByRole('button', { name: '添加', exact: true }).click();
+  }
+  await page.setViewportSize({ width: 1000, height: 420 });
+  await page.getByRole('button', { name: '会话所在的项目', exact: true }).click();
+  const menu = page.getByRole('menu', { name: '会话所在的项目', exact: true });
+  const box = (await menu.boundingBox())!;
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.y + box.height).toBeLessThanOrEqual(420);
+  expect(await menu.evaluate((node) => node.scrollHeight > node.clientHeight)).toBe(true);
+  const last = page.getByRole('menuitem', { name: '选择其他文件夹…', exact: true });
+  await last.scrollIntoViewIfNeeded();
+  await expect(last).toBeInViewport();
+});
+
 test('pages, side column, menus, pins, export, settings and the notice list', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -187,6 +208,42 @@ test('pages, side column, menus, pins, export, settings and the notice list', as
   expect(errors).toEqual([]);
 });
 
+test('a project lists its latest five sessions until it is listed in full', async ({ page }) => {
+  await page.goto('/');
+  await login(page);
+  const folder = `D:\\工作\\多会话 ${Date.now()}`;
+  await page.getByRole('button', { name: '添加项目', exact: true }).click();
+  await page.getByLabel('本机项目目录').fill(folder);
+  await page.getByRole('button', { name: '添加', exact: true }).click();
+  const group = page.locator('.project-group').filter({
+    has: page.locator(`h2[title="${folder.replaceAll('\\', '\\\\')}"]`),
+  });
+  const rows = group.locator('.session-row');
+  for (let count = 1; count <= 12; count++) {
+    await page.getByRole('button', { name: `新建会话 · ${folder}`, exact: true }).click();
+    await expect(page.getByRole('textbox', { name: '消息' })).toBeEnabled();
+    await expect(group.locator('.session-row.selected')).toHaveCount(1);
+    await expect(rows).toHaveCount(Math.min(count, 5));
+  }
+  await group.getByRole('button', { name: '展开显示（还有 7 个）', exact: true }).click();
+  await expect(rows).toHaveCount(12);
+  // The open session stays listed, in its place, when the project shows its latest five again.
+  const oldest = await rows.last().locator('strong').textContent();
+  await rows.last().locator('.session-select').click();
+  await group.getByRole('button', { name: '收起', exact: true }).click();
+  await expect(rows).toHaveCount(6);
+  await expect(rows.last()).toContainText(oldest!);
+  await expect(
+    group.getByRole('button', { name: '展开显示（还有 6 个）', exact: true }),
+  ).toBeVisible();
+  await rows.first().locator('.session-select').click();
+  await expect(rows).toHaveCount(5);
+  // A search lists every session it finds.
+  await page.getByRole('button', { name: '搜索', exact: true }).click();
+  await page.getByLabel('搜索会话').fill(folder);
+  await expect(rows).toHaveCount(12);
+  await expect(group.locator('.project-more')).toHaveCount(0);
+});
 test('a question is answered with its choices, and a session or a whole project moves to another folder', async ({
   page,
 }) => {
@@ -657,4 +714,31 @@ test('Electron: frameless window, the project branch, files by path and window s
   } finally {
     await application.close();
   }
+});
+
+test('theme follows the system, can be overridden and persists through reload', async ({
+  page,
+}) => {
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.goto('/');
+  await login(page);
+  await page.getByRole('button', { name: '设置与账号', exact: true }).click();
+  await page.getByRole('menuitem', { name: '设置', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: '设置分类' })
+    .getByRole('button', { name: '常规', exact: true })
+    .click();
+  const theme = page.getByRole('radiogroup', { name: '主题' });
+  await expect(theme.getByRole('radio', { name: '跟随系统', exact: true })).toBeChecked();
+  await expect(page.locator('html')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect(page.locator('html')).toHaveCSS('background-color', 'rgb(30, 31, 35)');
+  await theme.getByRole('radio', { name: '浅色', exact: true }).click();
+  await expect(page.locator('html')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+  await theme.getByRole('radio', { name: '深色', exact: true }).click();
+  await expect(page.locator('html')).toHaveCSS('background-color', 'rgb(30, 31, 35)');
+  await shot(page, 'theme-dark');
+  await page.reload();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(page.locator('html')).toHaveCSS('background-color', 'rgb(30, 31, 35)');
 });

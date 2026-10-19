@@ -105,10 +105,11 @@ export function remotePrompt(
   ].join('\n');
 }
 
-// Each session has its own Linux working directory; the CLI keys its native history by it. A fork shares
-// the directory of the session it came from, which is where the CLI puts a fork's history.
-export function nativeDirectory(dataDir: string, sessionId: string) {
-  return join(dataDir, 'native', sessionId);
+// The Linux working directory of a session's project, which its sessions share as they would the project's own
+// folder: the CLI keys native history, auto memory and project settings by it. A fork stays in the directory of
+// the session it came from, which is where the CLI puts a fork's history.
+export function nativeDirectory(dataDir: string, root: string) {
+  return join(dataDir, 'native', root);
 }
 
 export function prepareNativeDirectory(options: ClaudeOptions, dataDir: string, sessionId: string) {

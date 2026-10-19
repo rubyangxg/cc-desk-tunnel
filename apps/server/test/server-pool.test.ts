@@ -805,3 +805,27 @@ nativeTest(
     assert.deepEqual(messages, ['first task', 'continue', 'queued follow-up']);
   },
 );
+
+nativeTest(
+  'moving a project carries its quota-resume switch and retains the pending message queue',
+  async (t) => {
+    const f = await fixture(t);
+    const from = '/local/project';
+    const to = '/local/renamed';
+    const created = await f.request({ type: 'session.create', title: 'move', projectPath: from });
+    const sessionId = created.sessionId!;
+    await f.request({ type: 'project.quotaResume', projectPath: from, enabled: true });
+    await f.request({ type: 'message.queue.pause', sessionId, paused: true });
+    await f.request({ type: 'message.enqueue', sessionId, text: 'pending' });
+    await f.request({ type: 'project.move', from, to });
+    await f.wait(
+      (message) =>
+        message.type === 'pool.state' &&
+        !!message.quotaResumeProjects?.some((project) => project.projectPath === to),
+    );
+    const session = f.server.store.get(sessionId).session;
+    assert.equal(session.projectPath, to);
+    assert.equal(session.messageQueue?.items[0].text, 'pending');
+    assert.equal(session.messageQueue?.paused, true);
+  },
+);

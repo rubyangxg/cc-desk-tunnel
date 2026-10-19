@@ -13,6 +13,7 @@ const {
   shell,
   clipboard,
   net,
+  nativeTheme,
 } = require('electron');
 const path = require('node:path');
 const {
@@ -471,6 +472,7 @@ function takeShared() {
     if (text === seen[key]) continue;
     seen[key] = text;
     if (key === 'connections') renamed();
+    if (key === 'prefs') followTheme(value);
     for (const window of BrowserWindow.getAllWindows())
       window.webContents.send('shared:changed', key, value);
   }
@@ -491,6 +493,26 @@ handle('shared:save', (_event, key, value) => {
   if (text.length > 1 << 20) throw new Error('Shared value too large');
   connections.writeShared(base, key, value);
   seen[key] = text;
+  if (key === 'prefs') followTheme(value);
+});
+// The window's own parts, its ground before the page draws and the system's buttons over the title bar, take
+// the colours the page chose (`theme` in prefs.ts); the system's menus and dialogs follow the same choice.
+// The colours are the title bar's in style.css: `--chrome` and `--text`.
+const windowColours = () =>
+  nativeTheme.shouldUseDarkColors
+    ? { color: '#141518', symbolColor: '#e4e6ea' }
+    : { color: '#edf0f6', symbolColor: '#22262e' };
+function followTheme(prefs) {
+  const theme = prefs?.theme;
+  nativeTheme.themeSource = theme === 'light' || theme === 'dark' ? theme : 'system';
+}
+followTheme(seen.prefs && JSON.parse(seen.prefs));
+nativeTheme.on('updated', () => {
+  const colours = windowColours();
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.setBackgroundColor(colours.color);
+    if (process.platform !== 'darwin') window.setTitleBarOverlay({ ...colours, height: 40 });
+  }
 });
 // The sessions this connection has running, with their folders: see `busy` in connections.cjs.
 handle('busy:set', (_event, runs) => {
@@ -677,12 +699,12 @@ app.whenReady().then(() => {
     height: 850,
     minWidth: 380,
     minHeight: 560,
-    backgroundColor: '#edf0f6',
+    backgroundColor: windowColours().color,
     title: titled(),
     // The page draws the title bar; the system adds only its window buttons: over the bar's right end on
     // Windows, at its left end on macOS, where the page leaves them room (see `.titlebar` in style.css).
     titleBarStyle: 'hidden',
-    titleBarOverlay: { color: '#edf0f6', symbolColor: '#22262e', height: 40 },
+    titleBarOverlay: { ...windowColours(), height: 40 },
     trafficLightPosition: { x: 14, y: 13 },
     icon: path.join(__dirname, 'icon.png'),
     autoHideMenuBar: true,

@@ -1191,3 +1191,36 @@ test('an idle queue starts immediately; paused queues stay paused and enforce li
   assert.equal(f.server.store.get(sessionId).session.activeRun, null);
   assert.equal(f.server.store.get(sessionId).session.messageQueue?.items.length, 20);
 });
+
+test('a project moves to another folder of its computer with all its sessions, and every window hears of each', async (t) => {
+  const f = await fixture(t);
+  const desk = await f.connect();
+  const watcher = await f.connect();
+  const ids = [await f.create(desk), await f.create(desk)];
+  const moved = await desk.request({
+    type: 'project.move',
+    from: 'd:/工作/测试/',
+    to: 'E:\\新家\\测试',
+  });
+  assert.ok(moved.type === 'response' && moved.ok);
+  for (const id of ids) {
+    assert.equal(f.server.store.get(id).session.projectPath, 'E:\\新家\\测试');
+    await watcher.wait(
+      (message) =>
+        message.type === 'session.updated' &&
+        message.session.id === id &&
+        message.session.projectPath === 'E:\\新家\\测试',
+    );
+  }
+  // A session made in the new folder joins the project's directory.
+  const next = await desk.request({
+    type: 'session.create',
+    title: '新会话',
+    projectPath: 'E:\\新家\\测试',
+  });
+  assert.ok(next.type === 'response' && next.sessionId);
+  assert.equal(
+    f.server.store.get(next.sessionId).session.nativeRoot,
+    f.server.store.get(ids[0]!).session.nativeRoot,
+  );
+});

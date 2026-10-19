@@ -484,6 +484,31 @@ test('a session on another computer is listed apart, read, and taken over with a
       .locator('.elsewhere-project:has-text("中文项目") + .session-row')
       .filter({ hasText: title }),
   ).toHaveCount(1);
+  // The computer, and the project under it, fold away and open again as a project here does.
+  // Every test's browser is a computer named alike: the headings are told apart by their place in the list,
+  // which folding the rows under them leaves as it is.
+  const toggle = async (heading: string) =>
+    other.locator('.project-toggle').nth(
+      await row.evaluate((element, heading) => {
+        let above = element.previousElementSibling!;
+        while (!above.classList.contains(heading)) above = above.previousElementSibling!;
+        return [...document.querySelectorAll('.project-toggle')].indexOf(
+          above.querySelector('.project-toggle')!,
+        );
+      }, heading),
+    );
+  const project = await toggle('elsewhere-project');
+  const computer = await toggle('list-heading');
+  await project.click();
+  await expect(row).toHaveCount(0);
+  await expect(project).toHaveAttribute('aria-expanded', 'false');
+  await project.click();
+  await expect(row).toHaveCount(1);
+  await computer.click();
+  await expect(row).toHaveCount(0);
+  await expect(computer).toHaveAttribute('aria-expanded', 'false');
+  await computer.click();
+  await expect(row).toHaveCount(1);
   await row.click();
   await expect(other.getByText('第一台电脑上的话')).toBeVisible();
   const bar = other.locator('.elsewhere-bar');

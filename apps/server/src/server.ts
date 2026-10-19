@@ -19,6 +19,7 @@ import {
   isFragment,
   leaveSchema,
   MAX_FRAME_BYTES,
+  pathKey,
   platformOf,
   PROTOCOL_VERSION,
   TUNNEL_CLOSE,
@@ -1658,6 +1659,27 @@ export function createProxyServer(options: ServerOptions) {
         });
         return undefined;
       }
+      case 'project.move': {
+        const from = pathKey(command.from);
+        if (
+          store
+            .list()
+            .some((session) => mutations.has(session.id) && pathKey(session.projectPath) === from)
+        )
+          throw new DomainError('session_busy', '会话正在更新，请稍后重试。');
+        const device = deviceOf(peer);
+        for (const session of store.moveProject(command.from, command.to, device))
+          broadcast({ type: 'session.updated', session });
+        if (
+          pathKey(command.from) !== pathKey(command.to) &&
+          projectQuota.enabled(device.id, command.from)
+        ) {
+          projectQuota.set(device.id, command.to, true);
+          projectQuota.set(device.id, command.from, false);
+          publishPool();
+        }
+        return undefined;
+      }
       case 'session.create': {
         const session = store.create(
           command.requestId,
@@ -1866,7 +1888,11 @@ export function createProxyServer(options: ServerOptions) {
       update: updates?.state,
       client: installer(),
       sessions: store.list(),
-      features: ['message-queue', ...(pool ? ['account-pool', 'project-quota-resume'] : [])],
+      features: [
+        'message-queue',
+        'project-move',
+        ...(pool ? ['account-pool', 'project-quota-resume'] : []),
+      ],
     });
     send(peer, devices());
     // Every connection that asks has an execution channel of its own, to the computer it comes from.

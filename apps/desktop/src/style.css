@@ -1,27 +1,58 @@
-/* Every colour, corner and shadow the interface uses is named here. */
+/* Every colour, corner and shadow the interface uses is named here, each colour with its light and its dark
+   value. The page follows the system's choice unless the settings make it always one (`theme` in prefs.ts). */
 :root {
-  --chrome: #edf0f6;
-  --side: #f6f8fb;
-  --surface: #ffffff;
-  --surface-2: #f5f7fa;
-  --hover: #e8ecf2;
-  --selected: #e1e7f0;
-  --line: #dde2ea;
-  --line-soft: #e9edf2;
-  --text: #22262e;
-  --muted: #6f7886;
-  --faint: #98a0ac;
-  --accent: #2f6fde;
-  --accent-strong: #255cc0;
-  --accent-soft: #e7effd;
-  --danger: #c23b47;
-  --danger-soft: #fff1f2;
-  --warn: #b98a1f;
-  --ok: #2f9a6d;
+  color-scheme: light dark;
+  --chrome: light-dark(#edf0f6, #141518);
+  --side: light-dark(#f6f8fb, #1a1b1f);
+  --surface: light-dark(#ffffff, #1e1f23);
+  --surface-2: light-dark(#f5f7fa, #2a2c31);
+  /* What floats over the page: menus, dialogs and tips. */
+  --raised: light-dark(#ffffff, #26282d);
+  --hover: light-dark(#e8ecf2, #2f3238);
+  --selected: light-dark(#e1e7f0, #363a42);
+  --line: light-dark(#dde2ea, #34373e);
+  --line-soft: light-dark(#e9edf2, #2a2c32);
+  --line-strong: light-dark(#c5ccd6, #4a4f58);
+  --focus-line: light-dark(#b9c6dc, #56637a);
+  --text: light-dark(#22262e, #e4e6ea);
+  --text-2: light-dark(#414a56, #c3c8d0);
+  --muted: light-dark(#6f7886, #a0a6b0);
+  --faint: light-dark(#98a0ac, #6f7581);
+  /* The solid buttons: sending, and a dialog's main answer. */
+  --ink: light-dark(#22262e, #e4e6ea);
+  --ink-hover: light-dark(#3a404b, #c9ced6);
+  --ink-text: light-dark(#ffffff, #17181b);
+  --ink-off: light-dark(#9aa1ad, #5b616b);
+  --accent: light-dark(#2f6fde, #5a92f2);
+  --accent-strong: light-dark(#255cc0, #79a7f6);
+  --accent-soft: light-dark(#e7effd, #1f2f4a);
+  --danger: light-dark(#c23b47, #e5646f);
+  --danger-text: light-dark(#ac2b37, #f08a93);
+  --danger-soft: light-dark(#fff1f2, #3a2227);
+  --danger-line: light-dark(#f0d4d6, #5a2e34);
+  --warn: light-dark(#b98a1f, #d8a843);
+  --warn-text: light-dark(#87631d, #e0bd6a);
+  --warn-soft: light-dark(#fff9e9, #33291a);
+  --warn-line: light-dark(#eadbb0, #574627);
+  --ok: light-dark(#2f9a6d, #4cbb88);
+  --ok-text: light-dark(#417d65, #7cc4a4);
+  --ok-soft: light-dark(#edf3f0, #1f3229);
+  /* A step that failed, and the lines a change adds and removes. */
+  --fail: light-dark(#b4532f, #e58a63);
+  --added: light-dark(#2c8a57, #5cc98e);
+  --tool-icon: light-dark(#658077, #8fa89f);
+  --tool-text: light-dark(#56635e, #a4b0ab);
+  --selection: light-dark(#bad5ff, #2f4a75);
+  --selection-text: light-dark(#17243a, #e8eefb);
+  --match: light-dark(#fff0a8, #6b5a1c);
+  --match-current: light-dark(#f5b95c, #a8691d);
+  --match-text: light-dark(#22262e, #ffffff);
+  --backdrop: light-dark(#232d3a52, #00000099);
   --radius-s: 8px;
   --radius: 12px;
   --radius-l: 20px;
-  --shadow: 0 10px 32px #1b253324, 0 1px 3px #1b253314;
+  --shadow:
+    0 10px 32px light-dark(#1b253324, #00000080), 0 1px 3px light-dark(#1b253314, #0000004d);
   --bar: 40px;
   font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
   font-size: 14px;
@@ -479,6 +510,12 @@
     padding: 8px 12px;
   }
 }
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
 .connection-modes {
   display: flex;
   border-bottom: 1px solid var(--line);
@@ -639,12 +676,12 @@ label {
   background: var(--hover);
 }
 .button.primary {
-  background: var(--text);
-  color: white;
-  border-color: var(--text);
+  background: var(--ink);
+  color: var(--ink-text);
+  border-color: var(--ink);
 }
 .button.primary:hover:not(:disabled) {
-  background: #3a404b;
+  background: var(--ink-hover);
 }
 .button.danger {
   background: var(--danger);
@@ -680,7 +717,7 @@ label {
   padding: 0;
   border: 0;
   border-radius: 12px;
-  background: #c9d0da;
+  background: var(--line-strong);
   transition: background 0.15s;
 }
 .switch::after {
@@ -773,16 +810,16 @@ button.chip.danger:hover:not(:disabled) {
   border: 1px solid;
 }
 .simulation {
-  color: #87631d;
-  background: #fff9e9;
-  border-color: #eadbb0;
+  color: var(--warn-text);
+  background: var(--warn-soft);
+  border-color: var(--warn-line);
 }
 .muted {
   color: var(--muted);
   font-size: 13px;
 }
 .error-text {
-  color: #ac2b37;
+  color: var(--danger-text);
   font-size: 13px;
   margin-bottom: 0;
   overflow-wrap: anywhere;
@@ -1266,6 +1303,7 @@ dialog:has(.release-notes) {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   min-height: 34px;
   color: var(--faint);
   padding: 12px 8px 4px;
@@ -1299,15 +1337,14 @@ dialog:has(.release-notes) {
   color: var(--muted);
   font-size: 12.5px;
 }
-.elsewhere-project > svg {
-  flex: none;
+.list-heading > .project-toggle,
+.elsewhere-project > .project-toggle {
+  gap: 6px;
+}
+.list-heading > .project-toggle > svg,
+.elsewhere-project > .project-toggle > svg {
   width: 14px;
   height: 14px;
-}
-.elsewhere-project > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .list-heading .icon-button {
   width: 24px;
@@ -1377,6 +1414,20 @@ dialog:has(.release-notes) {
   margin: 4px 0 8px 34px;
   font-size: 12.5px;
   color: var(--faint);
+}
+.project-more {
+  display: block;
+  margin: 2px 0 6px 34px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.project-more:hover {
+  color: inherit;
 }
 .list-empty {
   margin: 20px 10px;
@@ -1458,7 +1509,7 @@ dialog:has(.release-notes) {
   padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--surface);
+  background: var(--raised);
   box-shadow: var(--shadow);
   font-size: 12.5px;
   pointer-events: none;
@@ -1508,7 +1559,7 @@ dialog:has(.release-notes) {
   padding: 6px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--surface);
+  background: var(--raised);
   box-shadow: var(--shadow);
 }
 .notice-list header {
@@ -1565,11 +1616,14 @@ dialog:has(.release-notes) {
   padding: 6px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--surface);
+  background: var(--raised);
   box-shadow: var(--shadow);
 }
+/* A long menu, such as the projects a session can move to, scrolls inside the window. */
 .menu {
   position: fixed;
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
 }
 .menu hr {
   margin: 5px 6px;
@@ -1984,16 +2038,16 @@ kbd {
   user-select: text;
 }
 .conversation ::selection {
-  background: #bad5ff;
-  color: #17243a;
+  background: var(--selection);
+  color: var(--selection-text);
 }
 ::highlight(conversation-matches) {
-  background: #fff0a8;
-  color: #22262e;
+  background: var(--match);
+  color: var(--match-text);
 }
 ::highlight(conversation-current) {
-  background: #f5b95c;
-  color: #22262e;
+  background: var(--match-current);
+  color: var(--match-text);
 }
 .message-time {
   font-size: 11px;
@@ -2241,8 +2295,8 @@ kbd {
   margin: 0;
   padding: 9px 12px;
   border-radius: var(--radius-s);
-  background: #fff6e0;
-  color: #7a5a12;
+  background: var(--warn-soft);
+  color: var(--warn-text);
   font-size: 13px;
 }
 .schedule-actions {
@@ -2278,7 +2332,7 @@ kbd {
 .turn-process > summary:hover,
 .work > summary:hover,
 .tool > summary:hover {
-  color: #2f3742;
+  color: var(--text);
 }
 .turn-process > .message {
   font-size: 14px;
@@ -2442,7 +2496,7 @@ details[open] > summary > .fold-chevron {
   padding: 12px 16px 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--surface);
+  background: var(--raised);
   box-shadow: var(--shadow);
   color: var(--muted);
 }
@@ -2590,7 +2644,7 @@ details[open] > summary > .fold-chevron {
   white-space: nowrap;
 }
 .turn-process > summary .failed {
-  color: #b4532f;
+  color: var(--fail);
 }
 .thinking-block .tool-verb {
   flex: none;
@@ -2600,17 +2654,17 @@ details[open] > summary > .fold-chevron {
   display: none;
 }
 .tool-heading > svg {
-  color: #658077;
+  color: var(--tool-icon);
 }
 .tool.failed .tool-verb {
-  color: #b4532f;
+  color: var(--fail);
 }
 .tool-subject {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #414a56;
+  color: var(--text-2);
   font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
   font-size: 11.5px;
 }
@@ -2621,11 +2675,11 @@ details[open] > summary > .fold-chevron {
   font-size: 11px;
 }
 .tool-diff ins {
-  color: #2c8a57;
+  color: var(--added);
   text-decoration: none;
 }
 .tool-diff del {
-  color: #b4532f;
+  color: var(--fail);
   text-decoration: none;
 }
 .tool-detail {
@@ -2655,7 +2709,7 @@ details[open] > summary > .fold-chevron {
 }
 .tool-output {
   border-top: 1px solid var(--line-soft);
-  color: #56635e;
+  color: var(--tool-text);
 }
 .approval-actions {
   display: flex;
@@ -2670,14 +2724,14 @@ details[open] > summary > .fold-chevron {
 }
 .run-notice {
   color: var(--faint);
-  border-left: 2px solid #c4ccd7;
+  border-left: 2px solid var(--line-strong);
   padding: 5px 12px;
   font-size: 12px;
   margin: 0 0 24px;
 }
 .run-notice.failed {
-  color: #af3e47;
-  border-color: #b95159;
+  color: var(--danger-text);
+  border-color: var(--danger);
 }
 .run-indicator {
   display: flex;
@@ -2751,11 +2805,11 @@ details[open] > summary > .fold-chevron {
   margin: 0 auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-l);
-  background: var(--surface);
+  background: var(--raised);
   box-shadow: 0 4px 18px #1b25330f;
 }
 .composer:focus-within {
-  border-color: #b9c6dc;
+  border-color: var(--focus-line);
 }
 .composer.dropping {
   border-color: var(--accent);
@@ -2845,7 +2899,7 @@ details[open] > summary > .fold-chevron {
   position: absolute;
   z-index: 5;
   border: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--raised);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
 }
@@ -3110,15 +3164,15 @@ details[open] > summary > .fold-chevron {
   margin-left: 4px;
 }
 .send-button {
-  background: var(--text);
-  color: white;
+  background: var(--ink);
+  color: var(--ink-text);
 }
 .icon-button.send-button:hover:not(:disabled) {
-  background: #3a404b;
-  color: white;
+  background: var(--ink-hover);
+  color: var(--ink-text);
 }
 .send-button:disabled {
-  background: #9aa1ad;
+  background: var(--ink-off);
   opacity: 1;
 }
 .stop-button {
@@ -3269,8 +3323,8 @@ details[open] > summary > .fold-chevron {
   height: 48px;
   flex-shrink: 0;
   border-radius: var(--radius-s);
-  background: #edf3f0;
-  color: #417d65;
+  background: var(--ok-soft);
+  color: var(--ok-text);
 }
 .account-avatar svg {
   width: 25px;
@@ -3556,7 +3610,7 @@ details[open] > summary > .fold-chevron {
   padding: 7px 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius-s);
-  background: var(--surface);
+  background: var(--raised);
   box-shadow: 0 6px 18px #272b331f;
   font-size: 12px;
   color: var(--muted);
@@ -3823,17 +3877,17 @@ details[open] > summary > .fold-chevron {
   justify-content: space-between;
   padding: 8px 20px;
   font-size: 12px;
-  background: #fff3f3;
-  color: #a83945;
-  border-bottom: 1px solid #f0d4d6;
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  border-bottom: 1px solid var(--danger-line);
 }
 .error-banner span {
   overflow-wrap: anywhere;
 }
 .connection-banner {
-  background: #fffbed;
-  color: #907533;
-  border-color: #eee3c6;
+  background: var(--warn-soft);
+  color: var(--warn-text);
+  border-color: var(--warn-line);
   justify-content: flex-start;
 }
 .elsewhere-bar {
@@ -3868,10 +3922,11 @@ dialog {
   width: min(460px, calc(100vw - 32px));
   padding: 24px;
   color: var(--text);
-  box-shadow: 0 15px 50px #1d293426;
+  background: var(--raised);
+  box-shadow: 0 15px 50px light-dark(#1d293426, #00000080);
 }
 dialog::backdrop {
-  background: #232d3a52;
+  background: var(--backdrop);
 }
 .dialog-heading {
   display: flex;
@@ -3925,7 +3980,7 @@ dialog::backdrop {
     inset: var(--bar) 0 0 44px;
     z-index: 11;
     border: 0;
-    background: #28344355;
+    background: var(--backdrop);
   }
   .workspace {
     border-radius: 14px 0 0 0;
@@ -4016,7 +4071,7 @@ dialog {
 /* Scrolling areas show a thin bar that keeps out of the way. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #c5ccd6 transparent;
+  scrollbar-color: var(--line-strong) transparent;
 }
 .account-heading {
   min-height: 0;

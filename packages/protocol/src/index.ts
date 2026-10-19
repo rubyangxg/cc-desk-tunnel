@@ -22,6 +22,22 @@ export const MAX_FRAME_BYTES = 256 * 1024;
 // The longest global instructions edited here, in characters; it keeps a frame of them within MAX_FRAME_BYTES.
 export const INSTRUCTIONS_LIMIT = 64_000;
 const id = z.uuid();
+// A path tells its own system: a Windows one begins with a drive letter or two backslashes, anything else is
+// a POSIX one. Sessions of both kinds can be in one list, each from the computer it is on.
+export const isWindowsPath = (path: string) => /^[a-z]:[\\/]|^\\\\/i.test(path);
+// Windows paths compare case-insensitively and may arrive with either separator; a POSIX path is taken as
+// written, where a backslash is a character of a name like any other.
+export const pathKey = (path: string) =>
+  isWindowsPath(path)
+    ? withoutTrailing(path.replaceAll('/', '\\'), '\\').toLowerCase()
+    : withoutTrailing(path, '/') || '/';
+// Counted off the end rather than matched: a pattern anchored at the end backtracks over every run of
+// separators in a long path.
+function withoutTrailing(path: string, separator: string) {
+  let end = path.length;
+  while (end && path[end - 1] === separator) end--;
+  return path.slice(0, end);
+}
 const timestamp = z.iso.datetime();
 // `bypassPermissions` asks about nothing at all; the client offers it only once the user allowed that.
 export const permissionModeSchema = z.enum([
@@ -151,10 +167,7 @@ export const serverPoolAccountSchema = z.object({
   busy: z.boolean(),
 });
 // Shared by project menus and the service's persisted project settings.
-export const projectPathKey = (path: string) =>
-  /^[a-z]:[\\/]|^\\\\/i.test(path)
-    ? path.replaceAll('/', '\\').replace(/\\+$/, '').toLowerCase()
-    : path.replace(/\/+$/, '') || '/';
+export const projectPathKey = pathKey;
 
 export const serverPoolStateSchema = z.object({
   nextReset: z.object({ accountId: poolAccountIdSchema, at: z.number() }).nullable().optional(),
@@ -472,7 +485,9 @@ export const sessionSchema = z.object({
   permissionMode: permissionModeSchema.default('auto'),
   model: z.string().trim().min(1).max(200).nullable().default(null),
   effort: effortSchema.nullable().default(null),
-  // A fork keeps its native history beside the session it was forked from; this names that session.
+  // The directory on the service that Claude Code works in, under its native/ folder: the one of the session's
+  // project, which all sessions of the project share. A fork keeps it from the session it was forked from.
+  // Sessions from before projects had one leave it out and work in a directory named after themselves.
   nativeRoot: id.optional(),
   // The UI session stays the same while its account and underlying native segment change.
   accountId: poolAccountIdSchema.optional(),
@@ -693,6 +708,16 @@ export const commandSchema = z.discriminatedUnion('type', [
       ...request,
       sessionId: id,
       projectPath: z.string().trim().min(1).max(2048),
+    })
+    .strict(),
+  // Points a project of the computer that asks at another directory there, with all its sessions; what Claude
+  // Code keeps of the project on the service goes along.
+  z
+    .object({
+      type: z.literal('project.move'),
+      ...request,
+      from: z.string().trim().min(1).max(2048),
+      to: z.string().trim().min(1).max(2048),
     })
     .strict(),
   z.object({ type: z.literal('session.compact'), ...request, sessionId: id }).strict(),

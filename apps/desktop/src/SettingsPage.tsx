@@ -14,7 +14,7 @@ import {
 import type { ProxyClient } from './client.ts';
 import Help from './Help.tsx';
 import type { ConnectionForm } from './LoginPage.tsx';
-import { connectionWaits, setPrefs, usePrefs, waitRange } from './prefs.ts';
+import { connectionWaits, setPrefs, themes, usePrefs, waitRange } from './prefs.ts';
 import { viewModes } from './transcriptView.ts';
 import type { ConnectionWaits, NotifyKind } from './prefs.ts';
 import { inSummary, sampleStats, statFields, summaryText } from './turnStats.ts';
@@ -111,6 +111,37 @@ const waits: { step: keyof ConnectionWaits; title: string; detail: string }[] = 
   },
 ];
 // How much of the work behind a reply is shown is a choice of this computer's window too.
+function ThemeSettings() {
+  const { theme } = usePrefs();
+  return (
+    <>
+      <h2 className="page-heading">外观</h2>
+      <div className="card">
+        <div className="setting-row stat-picks">
+          <span>
+            <strong>主题</strong>
+            <small>跟随系统时随系统的浅色或深色设置切换</small>
+          </span>
+          <div className="stat-chips" role="radiogroup" aria-label="主题">
+            {themes.map((entry) => (
+              <button
+                type="button"
+                key={entry.theme}
+                role="radio"
+                className="stat-chip"
+                aria-checked={entry.theme === theme}
+                onClick={() => setPrefs((prefs) => ({ ...prefs, theme: entry.theme }))}
+              >
+                {entry.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function TranscriptViewSettings() {
   const { view } = usePrefs();
   const set = (values: Partial<typeof view>) =>
@@ -453,6 +484,7 @@ function General({
     <section className="page" aria-label="常规">
       <div className="page-body">
         <h1 className="page-title">常规</h1>
+        <ThemeSettings />
         {!window.desktop && <p className="muted">窗口、会话和连接的设置只在桌面客户端里有。</p>}
         {window.desktop && (
           <>
