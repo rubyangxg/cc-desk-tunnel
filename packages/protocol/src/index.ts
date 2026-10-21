@@ -475,6 +475,8 @@ export const messageQueueSchema = z.object({
   reason: z.string().optional(),
   // Persisted before dispatch so restart recovery can distinguish an accepted message.
   dispatching: id.optional(),
+  // Source-side immutable backup; only the destination may dispatch these messages.
+  handoff: z.object({ paused: z.boolean() }).optional(),
 });
 export const sessionSchema = z.object({
   id,
@@ -799,7 +801,23 @@ export const commandSchema = z.discriminatedUnion('type', [
     })
     .strict(),
   z.object({ type: z.literal('run.cancel'), ...request, sessionId: id, runId: id }).strict(),
-  z.object({ type: z.literal('run.handoff'), ...request, sessionId: id, runId: id }).strict(),
+  z
+    .object({
+      type: z.literal('run.handoff'),
+      ...request,
+      sessionId: id,
+      runId: id,
+      queueIds: z.array(id).max(20).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('session.handoff'),
+      ...request,
+      sessionId: id,
+      queueIds: z.array(id).max(20),
+    })
+    .strict(),
   // Takes up a session whose last turn was stopped or cut off, without the user writing a message.
   z.object({ type: z.literal('run.continue'), ...request, sessionId: id }).strict(),
   z

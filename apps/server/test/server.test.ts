@@ -1224,3 +1224,79 @@ test('a project moves to another folder of its computer with all its sessions, a
     f.server.store.get(ids[0]!).session.nativeRoot,
   );
 });
+
+test('cross-server queue backup remains frozen after restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'cc-queue-handoff-'));
+  try {
+    const store = new SessionStore(directory);
+    const session = store.create(randomUUID(), 'backup', '/project', {
+      id: randomUUID(),
+      name: 'test',
+      platform: 'linux',
+    });
+    const item = {
+      id: randomUUID(),
+      text: 'must not replay',
+      scenario: 'chat' as const,
+      createdAt: new Date().toISOString(),
+    };
+    store.setMessageQueue(session.id, { items: [item], paused: true, handoff: { paused: false } });
+    store.close();
+    const recovered = new SessionStore(directory);
+    try {
+      const queue = recovered.get(session.id).session.messageQueue!;
+      assert.deepEqual(queue.items, [item]);
+      assert.equal(queue.paused, true);
+      assert.deepEqual(queue.handoff, { paused: false });
+      assert.match(queue.reason!, /跨服队列备份/);
+    } finally {
+      recovered.close();
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('idle handoff freezes a paused queue only for its own device and rejects unresolved tools', async (t) => {
+  const f = await fixture(t);
+  const client = await f.connect();
+  const other = new Client(f.url, undefined, { id: randomUUID(), name: 'observer' });
+  f.clients.push(other);
+  await other.open();
+  const sessionId = await f.create(client);
+  await client.request({ type: 'message.queue.pause', sessionId, paused: true });
+  await client.request({ type: 'message.enqueue', sessionId, text: 'pending' });
+  const queue = f.server.store.get(sessionId).session.messageQueue!;
+  const command = {
+    type: 'session.handoff',
+    sessionId,
+    queueIds: queue.items.map((item) => item.id),
+  };
+  const denied = await other.request(command);
+  assert.ok(denied.type === 'response' && !denied.ok && denied.code === 'handoff_device');
+  const runId = randomUUID();
+  f.server.store.append(sessionId, runId, {
+    type: 'tool.requested',
+    toolId: 'unfinished',
+    target: 'Linux',
+    name: 'Bash',
+    input: 'build',
+  });
+  const blocked = await client.request(command);
+  assert.ok(blocked.type === 'response' && !blocked.ok && blocked.code === 'handoff_blocked');
+  assert.equal(f.server.store.get(sessionId).session.messageQueue?.handoff, undefined);
+  f.server.store.append(sessionId, runId, {
+    type: 'tool.result',
+    toolId: 'unfinished',
+    status: 'completed',
+    output: 'done',
+    exitCode: 0,
+  });
+  const accepted = await client.request(command);
+  assert.ok(accepted.type === 'response' && accepted.ok);
+  const frozen = f.server.store.get(sessionId).session.messageQueue!;
+  assert.deepEqual(frozen.items, queue.items);
+  assert.deepEqual(frozen.handoff, { paused: true });
+  const duplicate = await client.request(command);
+  assert.ok(duplicate.type === 'response' && !duplicate.ok);
+});

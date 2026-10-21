@@ -293,11 +293,11 @@ export default function Composer({
             <span>
               <ListOrdered />
               待发送 {queued.length}
-              {queue?.paused ? ' · 已暂停' : ''}
+              {queue?.handoff ? ' · 跨服备份' : queue?.paused ? ' · 已暂停' : ''}
             </span>
             <IconButton
               title={queue?.paused ? '继续队列' : '暂停队列'}
-              disabled={!connected || busy}
+              disabled={!connected || busy || !!queue?.handoff}
               onClick={() => pauseQueue(!queue?.paused)}
             >
               {queue?.paused ? <Play /> : <Pause />}
@@ -310,7 +310,7 @@ export default function Composer({
                 <span title={item.text}>{item.text}</span>
                 <IconButton
                   title={`删除排队消息：${item.text.slice(0, 30)}`}
-                  disabled={!connected || busy}
+                  disabled={!connected || busy || !!queue?.handoff}
                   onClick={() => removeQueued(item.id)}
                 >
                   <X />

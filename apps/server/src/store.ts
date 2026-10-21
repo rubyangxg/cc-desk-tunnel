@@ -160,8 +160,15 @@ export class SessionStore {
         );
         this.setMessageQueue(session.id, {
           items,
+          handoff: queue.handoff,
           paused: items.length > 0,
-          ...(items.length ? { reason: '服务已重启，请确认后继续队列。' } : {}),
+          ...(items.length
+            ? {
+                reason: queue.handoff
+                  ? '跨服队列备份，请到续接会话继续。'
+                  : '服务已重启，请确认后继续队列。',
+              }
+            : {}),
         });
       }
     } catch (error) {

@@ -37,6 +37,7 @@ export function usePoolRotation(options: {
   const hasConnected = useRef(false);
   const failedConnectionHandled = useRef(false);
   const resumedSession = useRef<string | null>(null);
+  const claimedQueues = useRef(new Set<string>());
   const cancelledRuns = useRef(new Set<string>());
   const markedFailures = useRef(new Set<string>());
   const continuedFailures = useRef(new Set<string>());
@@ -44,7 +45,12 @@ export function usePoolRotation(options: {
   const [working, setWorking] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  async function prepare(session: Session, attempted: string[], manual = false) {
+  async function prepare(
+    session: Session,
+    attempted: string[],
+    manual = false,
+    allowQueueHandoff = false,
+  ) {
     if (client.state.sessions.some((item) => item.activeRun && isHere(item, client.state.device)))
       throw new Error('任务仍在运行，未切换服务器。');
     setNotice('正在读取会话历史，准备续接…');
@@ -58,7 +64,7 @@ export function usePoolRotation(options: {
     }
     const live = client.state.sessions.find((item) => item.id === session.id);
     if (!live) throw new Error('原会话已不存在。');
-    const blocked = transferBlock(live, events);
+    const blocked = transferBlock(live, events, allowQueueHandoff);
     if (blocked) throw new Error(blocked);
     if (client.state.sessions.some((item) => item.activeRun && isHere(item, client.state.device)))
       throw new Error('其他任务仍在运行，请结束后再切换服务器。');
@@ -72,6 +78,8 @@ export function usePoolRotation(options: {
       attempted,
     );
     handoff.manual = manual;
+    if (allowQueueHandoff && live.messageQueue?.handoff)
+      handoff.queue = { items: live.messageQueue.items, paused: live.messageQueue.handoff.paused };
     handoff.history = {
       prompt: handoff.prompt,
       segments: [
@@ -96,6 +104,65 @@ export function usePoolRotation(options: {
     return handoff;
   }
 
+  async function freezeQueue(session: Session) {
+    const live = client.state.sessions.find((item) => item.id === session.id);
+    if (!live?.messageQueue?.items.length) return;
+    if (live.messageQueue.handoff && claimedQueues.current.has(session.id)) return;
+    if (!client.state.features.includes('cross-server-queue-handoff'))
+      throw new Error('当前服务端不支持携带排队消息接力，请先升级服务端。');
+    await client.request({
+      type: 'session.handoff',
+      sessionId: session.id,
+      queueIds: live.messageQueue.items.map((item) => item.id),
+    });
+    claimedQueues.current.add(session.id);
+  }
+
+  async function sendAfterQuota(
+    session: Session,
+    text: string,
+    scenario: NonNullable<Session['messageQueue']>['items'][number]['scenario'],
+  ) {
+    if (text.length > 14500)
+      throw new Error('这条消息过长，无法同时携带续接上下文；请缩短后重试，原文保留在草稿中。');
+    if (!pool.config.enabled) throw new Error('本服务器额度已耗尽，请开启自动接力或手动续接。');
+    if (!isHere(session, client.state.device))
+      throw new Error(
+        `请在项目所在设备 ${session.device?.name ?? ''} 上发送或续接；当前窗口不能代替该设备跨服交接。`,
+      );
+    if (rotating.current || working) throw new Error('正在交接，请稍后再试。');
+    rotating.current = true;
+    setWorking(true);
+    try {
+      const quotas = await pool.refresh();
+      const next = poolCandidates(
+        current.current.profiles.profiles,
+        quotas,
+        current.current.profiles.pool.config,
+        [id],
+      )[0];
+      if (!next) throw new Error('暂无可用的其他服务器，消息保留在草稿中。');
+      await freezeQueue(session);
+      const handoff = await prepare(session, [id], true, true);
+      const suffix = `\n\n用户本次新消息：\n${text}`;
+      handoff.prompt = handoff.prompt.slice(0, 16000 - suffix.length) + suffix;
+      handoff.sourceDraftSessionId = session.id;
+      handoff.scenario = scenario;
+      if (handoff.history) {
+        handoff.history.prompt = handoff.prompt;
+        await saveSharedHistory(
+          `pending:${historyKey(profiles.initial, session.id)}`,
+          handoff.history,
+        );
+      }
+      await current.current.close();
+      await current.current.profiles.select(next.id, true, handoff);
+    } finally {
+      rotating.current = false;
+      setWorking(false);
+    }
+  }
+
   async function transfer(targetId: string, session: Session) {
     if (rotating.current || working || options.busy || options.terminalOpen) return;
     rotating.current = true;
@@ -103,7 +170,8 @@ export function usePoolRotation(options: {
     try {
       const target = profiles.profiles.find((profile) => profile.id === targetId);
       if (!target || target.id === id) throw new Error('请选择另一台服务器。');
-      const handoff = await prepare(session, [id], true);
+      await freezeQueue(session);
+      const handoff = await prepare(session, [id], true, true);
       if (
         client.state.status !== 'connected' ||
         client.state.sessions.some((item) => item.activeRun && isHere(item, client.state.device))
@@ -151,8 +219,19 @@ export function usePoolRotation(options: {
             [id],
           )[0];
           if (!next || !current.current.profiles.pool.config.enabled) return;
+          const queued = client.state.sessions.find((item) => item.id === session.id)?.messageQueue;
+          if (queued?.items.length && !client.state.features.includes('cross-server-queue-handoff'))
+            throw new Error('当前服务端不支持携带排队消息接力，请先升级服务端。');
+          await client.request({
+            type: 'run.handoff',
+            sessionId: session.id,
+            runId,
+            ...(client.state.features.includes('cross-server-queue-handoff')
+              ? { queueIds: queued?.items.map((item) => item.id) ?? [] }
+              : {}),
+          });
           cancelledRuns.current.add(runId);
-          await client.request({ type: 'run.handoff', sessionId: session.id, runId });
+          if (queued?.items.length) claimedQueues.current.add(session.id);
           // A response confirms acceptance, not process termination. Await the terminal run event too.
           const deadline = Date.now() + 30_000;
           while (client.state.sessions.find((item) => item.id === session.id)?.activeRun) {
@@ -160,7 +239,7 @@ export function usePoolRotation(options: {
               throw new Error('尚未确认旧任务结束，未切换服务器。');
             await new Promise((resolve) => setTimeout(resolve, 50));
           }
-          const handoff = await prepare(session, [id]);
+          const handoff = await prepare(session, [id], false, true);
           if (!current.current.profiles.pool.config.enabled) return;
           await current.current.close();
           await current.current.profiles.select(next.id, true, handoff);
@@ -262,6 +341,8 @@ export function usePoolRotation(options: {
     setNotice(`已切换到 ${profiles.initial.name}，正在续接 ${handoff.session.title}…`);
     void (async () => {
       try {
+        if (handoff.queue?.items.length && !client.state.features.includes('message-queue'))
+          throw new Error('目标服务端不支持消息队列，请升级后恢复；原队列备份仍在来源会话。');
         const result = await client.request({
           type: 'session.create',
           title: handoff.session.title,
@@ -283,15 +364,35 @@ export function usePoolRotation(options: {
           model: handoff.session.model,
           effort: handoff.session.effort,
         });
+        if (handoff.queue?.items.length) {
+          // Restore while paused so no queued message can race ahead of continue.
+          await client.request({ type: 'message.queue.pause', sessionId, paused: true });
+          for (const item of handoff.queue.items)
+            await client.request({
+              type: 'message.enqueue',
+              sessionId,
+              text: item.text,
+              scenario: item.scenario,
+            });
+        }
         if (!handoff.manual && !current.current.profiles.pool.config.enabled)
           throw new Error('账号池自动切换已关闭');
         await client.request({
           type: 'message.send',
           sessionId,
           text: handoff.prompt,
-          scenario: 'chat',
+          scenario: handoff.scenario ?? 'chat',
         });
+        const ended = client
+          .shown(sessionId)
+          .findLast((event) => event.payload.type === 'run.status');
+        const failed =
+          ended?.payload.type === 'run.status' &&
+          ['failed', 'cancelled'].includes(ended.payload.status);
+        if (handoff.queue?.items.length && !handoff.queue.paused && !failed)
+          await client.request({ type: 'message.queue.pause', sessionId, paused: false });
         current.current.draft(sessionId, '');
+        if (handoff.sourceDraftSessionId) current.current.draft(handoff.sourceDraftSessionId, '');
         current.current.profiles.completeHandoff();
         setNotice(
           `已从 ${handoff.source} 切换到 ${profiles.initial.name}，携带最近上下文继续任务。`,
@@ -308,7 +409,7 @@ export function usePoolRotation(options: {
 
   useEffect(() => {
     const sessionId = resumedSession.current;
-    if (!sessionId || !profiles.handoff) return;
+    if (!sessionId || !profiles.handoff || profiles.handoff.queue?.items.length) return;
     const event = client.shown(sessionId).findLast((event) => event.payload.type === 'run.status');
     if (event?.payload.type === 'run.status' && event.payload.status === 'completed')
       profiles.completeHandoff();
@@ -461,6 +562,7 @@ export function usePoolRotation(options: {
   }, [state, pool.quotas, pool.config, options.busy, options.terminalOpen]);
   return {
     transfer,
+    sendAfterQuota,
     working:
       working ||
       (!!profiles.handoff &&

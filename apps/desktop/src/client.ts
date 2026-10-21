@@ -56,6 +56,13 @@ type NewCommand = Command extends infer C
   : never;
 // Losing a reply says nothing about whether the operation reached the service. Keep that uncertainty
 // separate from the current connection state, which can recover while the warning is still displayed.
+export class RequestRejectedError extends Error {
+  readonly code: string | undefined;
+  constructor(code: string | undefined, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
 export class RequestInterruptedError extends Error {
   readonly readOnly: boolean;
   constructor(type: Command['type']) {
@@ -372,7 +379,7 @@ export class ProxyClient {
         if (message.ok) request.resolve(message);
         else {
           this.results.delete(message.requestId);
-          request.reject(new Error(message.message ?? '请求失败。'));
+          request.reject(new RequestRejectedError(message.code, message.message ?? '请求失败。'));
         }
       } else if (message.type === 'connection.error') {
         // Retry authentication once, before any session command can be sent. A new

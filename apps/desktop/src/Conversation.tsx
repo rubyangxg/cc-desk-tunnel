@@ -464,6 +464,7 @@ export default function Conversation({
   connected,
   native,
   ownsRun,
+  quotaWait,
   clock,
   progress,
   busy,
@@ -481,6 +482,7 @@ export default function Conversation({
   connected: boolean;
   native: boolean;
   ownsRun: boolean;
+  quotaWait?: string;
   busy: boolean;
   newSession: () => void;
   loadEarlier: () => Promise<void>;
@@ -853,6 +855,7 @@ export default function Conversation({
               !background &&
               (session.activeRun.status !== 'awaiting_approval' ? (
                 <RunStatus
+                  waiting={quotaWait}
                   tool={toolAtWork}
                   since={Math.max(
                     clock.activityAt(session.id),

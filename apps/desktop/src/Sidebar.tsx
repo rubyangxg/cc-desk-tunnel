@@ -23,9 +23,10 @@ import { useConnectionName } from './shared.ts';
 import { IconButton } from './ui.tsx';
 import type { MenuPosition } from './ui.tsx';
 
-function activity(session: Session, connected: boolean) {
+function activity(session: Session, connected: boolean, quotaWaiting = false) {
   if (!session.activeRun) return ago(Date.parse(session.updatedAt));
   if (!connected) return '状态待确认';
+  if (quotaWaiting) return '等待额度';
   if (session.activeRun.surface === 'terminal') return '原生终端';
   if (session.activeRun.waiting === 'background') return '后台任务';
   if (session.activeRun.status !== 'awaiting_approval') return '运行中';
@@ -57,6 +58,7 @@ export default function Sidebar({
   projects,
   workspaceRoots,
   connected,
+  quotaWaits = [],
   busy,
   refreshing,
   terminalOpen,
@@ -83,6 +85,7 @@ export default function Sidebar({
   // Sessions whose directory lies under one of these belong to no project and are listed on their own.
   workspaceRoots: string[];
   connected: boolean;
+  quotaWaits?: string[];
   busy: boolean;
   refreshing: boolean;
   // This window's native terminal is open: it has the window until it is closed.
@@ -282,11 +285,11 @@ export default function Sidebar({
           <strong>{session.title}</strong>
           {session.activeRun && (
             <span
-              className={`running-dot${connected && session.activeRun.status !== 'awaiting_approval' ? ' breathing' : ''}`}
+              className={`running-dot${connected && !quotaWaits.includes(session.id) && session.activeRun.status !== 'awaiting_approval' ? ' breathing' : ''}`}
             />
           )}
           <small title={sources[session.id]}>
-            {sources[session.id] ?? activity(session, connected)}
+            {sources[session.id] ?? activity(session, connected, quotaWaits.includes(session.id))}
           </small>
         </button>
         {!sources[session.id] && (
@@ -546,7 +549,7 @@ export default function Sidebar({
               : card.session.projectPath}
           </span>
           <small>
-            {activity(card.session, connected)} ·{' '}
+            {activity(card.session, connected, quotaWaits.includes(card.session.id))} ·{' '}
             {new Date(card.session.updatedAt).toLocaleString('zh-CN')}
           </small>
         </div>

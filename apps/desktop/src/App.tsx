@@ -1,3 +1,4 @@
+import { RequestRejectedError } from './client.ts';
 import {
   lazy,
   Suspense,
@@ -893,13 +894,22 @@ export function App({ profiles }: { profiles: ProfileControls }) {
     const sessionId = selected.id;
     setSlashOpen(false);
     await act(async () => {
-      await client.request({
-        type: mode === 'queue' && queueEnabled ? 'message.enqueue' : 'message.send',
-        sessionId,
-        text,
-        scenario,
-      });
-      setDraft(sessionId, '');
+      try {
+        await client.request({
+          type: mode === 'queue' && queueEnabled ? 'message.enqueue' : 'message.send',
+          sessionId,
+          text,
+          scenario,
+        });
+        setDraft(sessionId, '');
+      } catch (error) {
+        // Only a definitive rejection before acceptance may move this new message to another server.
+        if (error instanceof RequestRejectedError && error.code === 'pool_unavailable') {
+          await rotation.sendAfterQuota(selected, text, scenario);
+          return;
+        }
+        throw error;
+      }
     });
   }
   // Takes up the last turn, which was stopped or cut off, without the user writing anything.
@@ -1636,6 +1646,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
       ) : (
         <>
           <Sidebar
+            quotaWaits={state.pool?.quotaWaits?.map((wait) => wait.sessionId)}
             serviceName={serverPool || profiles.profiles.length > 1 ? form.name : undefined}
             unifiedHistory={serverPool}
             sources={Object.fromEntries(
@@ -1826,6 +1837,14 @@ export function App({ profiles }: { profiles: ProfileControls }) {
               events={visibleEvents}
               history={history}
               connected={connected}
+              quotaWait={
+                selected && state.pool?.quotaWaits?.some((wait) => wait.sessionId === selected.id)
+                  ? away
+                    ? `额度等待中；跨服接力需由 ${selected.device?.name ?? '项目所在电脑'} 的客户端执行，并开启自动接力。`
+                    : (rotation.notice ??
+                      '额度等待中；正在检查跨服接力条件，无可用服务时等待重置。')
+                  : undefined
+              }
               native={nativeMode}
               ownsRun={ownsRun}
               clock={clock}

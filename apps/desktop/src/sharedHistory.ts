@@ -141,9 +141,14 @@ export function joinedHistory(archive: SharedHistory | null, current: SessionEve
   return [...earlier, ...live].map((event, index) => ({ ...event, sequence: index + 1 }));
 }
 
-export function transferBlock(session: Session, events: SessionEvent[]): string | null {
+export function transferBlock(
+  session: Session,
+  events: SessionEvent[],
+  allowQueueHandoff = false,
+): string | null {
   if (session.activeRun) return '请先等待当前任务结束，再续接到另一台服务器。';
-  if (session.messageQueue?.items.length) return '请先处理当前会话的排队消息。';
+  if (session.messageQueue?.items.length && !(allowQueueHandoff && session.messageQueue.handoff))
+    return '请先处理当前会话的排队消息。';
   const run = events.findLast((event) => event.payload.type === 'run.status');
   if (!run) return null;
   const current = events.filter((event) => event.runId === run.runId);

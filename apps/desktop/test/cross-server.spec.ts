@@ -3,14 +3,30 @@ import { randomUUID } from 'node:crypto';
 import { PROTOCOL_VERSION } from '@cc-desk-tunnel/protocol';
 import type { Session, SessionEvent, EventPayload } from '@cc-desk-tunnel/protocol';
 
-for (const { manual, loseAck, localAvailable = false, paginated = false } of [
+for (const {
+  manual,
+  loseAck,
+  localAvailable = false,
+  paginated = false,
+  queued = false,
+  paused = false,
+  stoppedSend = false,
+  away = false,
+  loseQueueAck = false,
+} of [
   { manual: false, loseAck: false },
   { manual: true, loseAck: false },
   { manual: false, loseAck: true },
   { manual: false, loseAck: false, paginated: true },
   { manual: false, loseAck: false, localAvailable: true },
+  { manual: false, loseAck: false, queued: true },
+  { manual: false, loseAck: true, queued: true },
+  { manual: false, loseAck: false, queued: true, paused: true },
+  { manual: false, loseAck: false, queued: true, stoppedSend: true },
+  { manual: false, loseAck: false, away: true },
+  { manual: false, loseAck: false, queued: true, loseQueueAck: true },
 ])
-  test(`cross-server ${manual ? 'manual' : 'quota'}${loseAck ? ' lost acknowledgement' : ''}${paginated ? ' paginated' : ''}${localAvailable ? ' available local account' : ''} handoff retains history, submits once and survives reload`, async ({
+  test(`cross-server ${manual ? 'manual' : 'quota'}${loseAck ? ' lost acknowledgement' : ''}${paginated ? ' paginated' : ''}${localAvailable ? ' available local account' : ''}${queued ? ' queued' : ''}${paused ? ' paused' : ''}${stoppedSend ? ' stopped resend' : ''}${away ? ' other device' : ''}${loseQueueAck ? ' lost queue acknowledgement' : ''} handoff retains history, submits once and survives reload`, async ({
     page,
   }) => {
     const device = { id: randomUUID(), name: 'test computer', platform: 'linux' as const };
@@ -27,9 +43,20 @@ for (const { manual, loseAck, localAvailable = false, paginated = false } of [
       permissionMode: 'default',
       model: null,
       effort: null,
-      device,
+      device: away ? { ...device, id: randomUUID(), name: 'home-win11' } : device,
+      messageQueue: queued
+        ? {
+            items: [1, 2].map((n) => ({
+              id: randomUUID(),
+              text: `后续任务${n}`,
+              scenario: 'chat' as const,
+              createdAt: now,
+            })),
+            paused: paused || stoppedSend,
+          }
+        : undefined,
       activeRun:
-        manual || localAvailable
+        manual || localAvailable || stoppedSend
           ? null
           : { id: runId, connectionId, status: 'running', surface: 'chat' },
     };
@@ -68,7 +95,13 @@ for (const { manual, loseAck, localAvailable = false, paginated = false } of [
       source,
       {
         type: 'run.status',
-        status: localAvailable ? 'failed' : manual ? 'completed' : 'running',
+        status: localAvailable
+          ? 'failed'
+          : stoppedSend
+            ? 'cancelled'
+            : manual
+              ? 'completed'
+              : 'running',
         connectionId,
       },
       old,
@@ -95,7 +128,12 @@ for (const { manual, loseAck, localAvailable = false, paginated = false } of [
               connectionId,
               adapter: 'claude-code',
               sessions: current ? [current] : [],
-              features: ['account-pool', 'cross-server-handoff'],
+              features: [
+                'account-pool',
+                'cross-server-handoff',
+                'cross-server-queue-handoff',
+                'message-queue',
+              ],
             });
             return;
           }
@@ -153,8 +191,16 @@ for (const { manual, loseAck, localAvailable = false, paginated = false } of [
               events: page,
             });
           }
-          if (m.type === 'run.handoff') {
+          if (m.type === 'run.handoff' || m.type === 'session.handoff') {
             expect(server).toBe(1);
+            if (queued) {
+              expect(m.queueIds).toEqual(source.messageQueue!.items.map((item) => item.id));
+              source.messageQueue = {
+                ...source.messageQueue!,
+                paused: true,
+                handoff: { paused: source.messageQueue!.paused },
+              };
+            }
             source.activeRun = null;
             send({
               type: 'session.event',
@@ -163,10 +209,41 @@ for (const { manual, loseAck, localAvailable = false, paginated = false } of [
             send({ type: 'session.updated', session: source });
           }
           if (m.type === 'session.create') {
-            target = { ...source, id: randomUUID(), activeRun: null, title: m.title };
+            target = {
+              ...source,
+              id: randomUUID(),
+              activeRun: null,
+              messageQueue: undefined,
+              device,
+              title: m.title,
+            };
             send({ type: 'session.updated', session: target });
           }
-          if (m.type === 'message.send' && target) {
+          if (m.type === 'message.send' && server === 1 && stoppedSend) {
+            send({
+              type: 'response',
+              requestId: m.requestId,
+              ok: false,
+              code: 'pool_unavailable',
+              message: '账号池暂无可用额度',
+            });
+            return;
+          }
+          if (m.type === 'message.queue.pause' && target) {
+            target.messageQueue = { ...(target.messageQueue ?? { items: [] }), paused: m.paused };
+            send({ type: 'session.updated', session: target });
+          }
+          if (m.type === 'message.enqueue' && target) {
+            expect(target.messageQueue?.paused).toBe(true);
+            target.messageQueue!.items.push({
+              id: m.requestId,
+              text: m.text,
+              scenario: m.scenario,
+              createdAt: now,
+            });
+            send({ type: 'session.updated', session: target });
+          }
+          if (m.type === 'message.send' && target && server === 2) {
             expect(source.activeRun).toBeNull();
             send({
               type: 'session.event',
@@ -190,6 +267,7 @@ for (const { manual, loseAck, localAvailable = false, paginated = false } of [
             });
           }
           if (loseAck && m.type === 'message.send') return;
+          if (loseQueueAck && m.type === 'message.enqueue') return;
           send({
             type: 'response',
             requestId: m.requestId,
@@ -267,6 +345,23 @@ for (const { manual, loseAck, localAvailable = false, paginated = false } of [
       { device, manual },
     );
     await page.goto('/');
+    if (away) {
+      await page.getByRole('button', { name: '展开其他设备的会话', exact: true }).click();
+      await page
+        .getByRole('button', { name: /同一个任务/ })
+        .first()
+        .click();
+      await expect(page.getByText(/额度等待中；跨服接力需由 home-win11/)).toBeVisible();
+      expect(
+        sent.some((m) => ['run.handoff', 'session.handoff', 'message.send'].includes(m.type)),
+      ).toBe(false);
+      return;
+    }
+    if (stoppedSend) {
+      await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
+      await page.getByRole('textbox', { name: '消息', exact: true }).fill('停止后新的指令');
+      await page.getByRole('textbox', { name: '消息', exact: true }).press('Control+Enter');
+    }
     if (localAvailable) {
       await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
       await expect(page.locator('.message.user')).toContainText('保留原来的任务和对话');
@@ -286,12 +381,45 @@ for (const { manual, loseAck, localAvailable = false, paginated = false } of [
       await page.getByLabel('续接到服务器', { exact: true }).selectOption('second');
     }
     await expect(page.getByText('当前服务器：服务器2', { exact: true })).toBeVisible();
+    if (loseQueueAck) {
+      await expect(page.getByText(/自动续接已暂停：排队请求超时/)).toBeVisible({ timeout: 15000 });
+      expect(target?.messageQueue?.items.map((item) => item.text)).toEqual(['后续任务1']);
+      expect(target?.messageQueue?.paused).toBe(true);
+      expect(source.messageQueue?.items).toHaveLength(2);
+      expect(source.messageQueue?.handoff).toBeDefined();
+      expect(sent.filter((m) => m.type === 'message.send')).toHaveLength(0);
+      await page.reload();
+      await page.getByRole('button', { name: '同一个任务 · 服务器2', exact: true }).click();
+      await expect(page.getByRole('region', { name: '待发送消息' })).toContainText('已暂停');
+      expect(sent.filter((m) => m.type === 'message.enqueue')).toHaveLength(1);
+      expect(sent.filter((m) => m.type === 'message.send')).toHaveLength(0);
+      return;
+    }
     await expect(page.locator('.message.user')).toContainText('保留原来的任务和对话');
     await expect(page.getByText('已经完成第一步', { exact: true })).toBeVisible();
     await expect(page.getByText('服务器2继续完成第二步', { exact: true })).toBeVisible();
-    expect(sent.filter((m) => m.type === 'run.handoff')).toHaveLength(manual ? 0 : 1);
-    expect(sent.filter((m) => m.type === 'message.send')).toHaveLength(1);
-    expect(sent.find((m) => m.type === 'message.send')?.text).toContain('保留原来的任务和对话');
+    expect(sent.filter((m) => m.type === 'run.handoff')).toHaveLength(
+      manual || stoppedSend ? 0 : 1,
+    );
+    expect(sent.filter((m) => m.type === 'message.send' && m.server === 2)).toHaveLength(1);
+    expect(sent.find((m) => m.type === 'message.send' && m.server === 2)?.text).toContain(
+      '保留原来的任务和对话',
+    );
+    if (queued) {
+      await expect.poll(() => target?.messageQueue?.items.length).toBe(2);
+      expect(target!.messageQueue!.items.map((item) => item.text)).toEqual([
+        '后续任务1',
+        '后续任务2',
+      ]);
+      if (!loseAck)
+        await expect.poll(() => target!.messageQueue!.paused).toBe(paused || stoppedSend);
+      else expect(target!.messageQueue!.paused).toBe(true);
+      expect(source.messageQueue?.handoff).toBeDefined();
+      if (stoppedSend)
+        expect(sent.find((m) => m.type === 'message.send' && m.server === 2)?.text).toContain(
+          '停止后新的指令',
+        );
+    }
     if (paginated)
       expect(sent.filter((message) => message.type === 'session.history').length).toBeGreaterThan(
         1,
@@ -300,7 +428,7 @@ for (const { manual, loseAck, localAvailable = false, paginated = false } of [
     await page.getByRole('button', { name: '同一个任务 · 服务器2', exact: true }).click();
     await expect(page.locator('.message.user')).toContainText('保留原来的任务和对话');
     await expect(page.getByText('服务器2继续完成第二步', { exact: true })).toBeVisible();
-    expect(sent.filter((m) => m.type === 'message.send')).toHaveLength(1);
+    expect(sent.filter((m) => m.type === 'message.send' && m.server === 2)).toHaveLength(1);
     await page.getByRole('button', { name: '设置与账号', exact: true }).click();
     await page.getByRole('menuitem', { name: '切换代理服务 · 服务器1', exact: true }).click();
     await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
@@ -308,6 +436,6 @@ for (const { manual, loseAck, localAvailable = false, paginated = false } of [
     await page.getByRole('button', { name: '前往当前会话', exact: true }).click();
     await expect(page.getByText('当前服务器：服务器2', { exact: true })).toBeVisible();
     await expect(page.locator('.message.user')).toContainText('保留原来的任务和对话');
-    expect(sent.filter((m) => m.type === 'message.send')).toHaveLength(1);
+    expect(sent.filter((m) => m.type === 'message.send' && m.server === 2)).toHaveLength(1);
     expect(errors).toEqual([]);
   });

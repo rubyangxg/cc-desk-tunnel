@@ -1442,7 +1442,7 @@ export function createProxyServer(options: ServerOptions) {
   }
   function pauseQueue(sessionId: string, reason: string) {
     const queue = store.get(sessionId).session.messageQueue;
-    if (!queue?.items.length) return;
+    if (!queue?.items.length || queue.handoff) return;
     store.setMessageQueue(sessionId, { ...queue, paused: true, reason });
     updated(sessionId);
   }
@@ -1452,7 +1452,14 @@ export function createProxyServer(options: ServerOptions) {
     if (!store.list().some((session) => session.id === sessionId)) return;
     const session = store.get(sessionId).session;
     const queue = session.messageQueue;
-    if (!queue?.items.length || queue.paused || session.activeRun || runs.has(sessionId)) return;
+    if (
+      !queue?.items.length ||
+      queue.paused ||
+      queue.handoff ||
+      session.activeRun ||
+      runs.has(sessionId)
+    )
+      return;
     const item = queue.items[0];
     try {
       if (terminals.has(sessionId) || mutations.has(sessionId) || updates?.installing)
@@ -1700,6 +1707,21 @@ export function createProxyServer(options: ServerOptions) {
     const { session } = store.get(command.sessionId);
     if (mutations.has(command.sessionId))
       throw new DomainError('session_busy', '会话正在更新，请稍后重试。');
+    if (
+      session.messageQueue?.handoff &&
+      [
+        'message.enqueue',
+        'message.queue.remove',
+        'message.queue.pause',
+        'message.send',
+        'run.continue',
+        'session.compact',
+      ].includes(command.type)
+    )
+      throw new DomainError(
+        'queue_handed_off',
+        '队列已冻结用于跨服续接，请到续接会话继续；原消息保留在此处备查。',
+      );
     switch (command.type) {
       case 'session.account': {
         if (!pool) throw new DomainError('native_unavailable', '此服务不支持账号池。');
@@ -1764,22 +1786,51 @@ export function createProxyServer(options: ServerOptions) {
       case 'approval.reply':
         controlRun(peer, command);
         return command.sessionId;
+      case 'session.handoff':
       case 'run.handoff': {
         // Atomic check before abort: a stale client must never stop a run which already resumed.
         const run = runs.get(command.sessionId);
-        if (!run || run.id !== command.runId || !run.quotaWaiting || run.controller.signal.aborted)
+        if (
+          command.type === 'run.handoff' &&
+          (!run || run.id !== command.runId || !run.quotaWaiting || run.controller.signal.aborted)
+        )
           throw new DomainError(
             'handoff_unavailable',
             '任务已恢复或不在额度等待中，请刷新后重试。',
           );
         const session = store.get(command.sessionId).session;
+        if (
+          command.type === 'session.handoff' &&
+          (run || session.activeRun || terminals.has(session.id))
+        )
+          throw new DomainError('handoff_unavailable', '任务仍在运行，不能交接。');
         if (session.device?.id !== deviceOf(peer).id)
           throw new DomainError('handoff_device', '只能从项目所在电脑交接任务。');
-        const blocked = handoffBlockReason(store.runEvents(run.sessionId, run.id), run.id);
-        if (blocked || session.messageQueue?.items.length)
-          throw new DomainError('handoff_blocked', blocked ?? '请先处理排队消息。');
-        pauseQueue(run.sessionId, '跨服务器交接，队列暂停。');
-        cancel(run, '已确认额度等待结束，交接到其他服务器。');
+        const lastRun =
+          run?.id ?? store.history(session.id, command.requestId, 0).events.at(-1)?.runId;
+        const blocked = lastRun
+          ? handoffBlockReason(store.runEvents(session.id, lastRun), lastRun)
+          : null;
+        if (blocked) throw new DomainError('handoff_blocked', blocked);
+        const queue = session.messageQueue;
+        const ids = queue?.items.map((item) => item.id) ?? [];
+        if (command.queueIds && JSON.stringify(command.queueIds) !== JSON.stringify(ids))
+          throw new DomainError('handoff_blocked', '排队消息已改变，请重新交接。');
+        if (ids.length && (!command.queueIds || queue?.dispatching || queue?.handoff))
+          throw new DomainError(
+            'handoff_blocked',
+            '当前队列无法交接，请升级客户端或检查消息状态。',
+          );
+        if (queue?.items.length) {
+          store.setMessageQueue(session.id, {
+            ...queue,
+            paused: true,
+            handoff: queue.handoff ?? { paused: queue.paused },
+            reason: '跨服队列备份，请到续接会话继续。',
+          });
+          updated(session.id);
+        }
+        if (run) cancel(run, '已确认额度等待结束，交接到其他服务器。');
         return command.sessionId;
       }
     }
@@ -1913,7 +1964,14 @@ export function createProxyServer(options: ServerOptions) {
       features: [
         'message-queue',
         'project-move',
-        ...(pool ? ['account-pool', 'project-quota-resume', 'cross-server-handoff'] : []),
+        ...(pool
+          ? [
+              'account-pool',
+              'project-quota-resume',
+              'cross-server-handoff',
+              'cross-server-queue-handoff',
+            ]
+          : []),
       ],
     });
     send(peer, devices());
