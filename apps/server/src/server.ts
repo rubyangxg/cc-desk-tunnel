@@ -640,6 +640,10 @@ export function createProxyServer(options: ServerOptions) {
       return;
     }
     settle(run);
+    if (payload.type === 'native.session' && pool) {
+      const account = pool.get(store.get(run.sessionId).session.accountId ?? 'default');
+      payload = { ...payload, accountId: account.id, accountName: account.name };
+    }
     record(run.sessionId, run.id, payload);
     if (payload.type === 'native.session') store.handoffSubmitted(run.sessionId);
     if (payload.type === 'native.title' && store.get(run.sessionId).session.autoTitle)
@@ -1760,6 +1764,24 @@ export function createProxyServer(options: ServerOptions) {
       case 'approval.reply':
         controlRun(peer, command);
         return command.sessionId;
+      case 'run.handoff': {
+        // Atomic check before abort: a stale client must never stop a run which already resumed.
+        const run = runs.get(command.sessionId);
+        if (!run || run.id !== command.runId || !run.quotaWaiting || run.controller.signal.aborted)
+          throw new DomainError(
+            'handoff_unavailable',
+            '任务已恢复或不在额度等待中，请刷新后重试。',
+          );
+        const session = store.get(command.sessionId).session;
+        if (session.device?.id !== deviceOf(peer).id)
+          throw new DomainError('handoff_device', '只能从项目所在电脑交接任务。');
+        const blocked = handoffBlockReason(store.runEvents(run.sessionId, run.id), run.id);
+        if (blocked || session.messageQueue?.items.length)
+          throw new DomainError('handoff_blocked', blocked ?? '请先处理排队消息。');
+        pauseQueue(run.sessionId, '跨服务器交接，队列暂停。');
+        cancel(run, '已确认额度等待结束，交接到其他服务器。');
+        return command.sessionId;
+      }
     }
     if (terminals.has(command.sessionId))
       throw new DomainError('native_busy', '这个会话的原生终端开着，请先关闭终端再操作它。');
@@ -1891,7 +1913,7 @@ export function createProxyServer(options: ServerOptions) {
       features: [
         'message-queue',
         'project-move',
-        ...(pool ? ['account-pool', 'project-quota-resume'] : []),
+        ...(pool ? ['account-pool', 'project-quota-resume', 'cross-server-handoff'] : []),
       ],
     });
     send(peer, devices());

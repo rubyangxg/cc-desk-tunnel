@@ -1,5 +1,7 @@
 import type { Session, SessionEvent } from '@cc-desk-tunnel/protocol';
 import type { ProxyClient } from './client.ts';
+import type { ConnectionProfile } from './connections.ts';
+import { historyKey, joinedHistory, sharedHistory } from './sharedHistory.ts';
 import { conversation } from './transcript.ts';
 import type { Step } from './transcript.ts';
 
@@ -41,7 +43,11 @@ export function markdown(session: Session, events: SessionEvent[]) {
 }
 
 // Only part of a long session is in memory; the rest is fetched page by page before writing.
-export async function exportSession(client: ProxyClient, session: Session) {
+export async function exportSession(
+  client: ProxyClient,
+  session: Session,
+  profile?: ConnectionProfile,
+) {
   if (client.state.selectedId !== session.id) client.select(session.id);
   const settled = () =>
     new Promise<void>((resolve, reject) => {
@@ -59,7 +65,8 @@ export async function exportSession(client: ProxyClient, session: Session) {
     await client.loadEarlier(session.id);
     await settled();
   }
-  const text = markdown(session, client.shown(session.id));
+  const archive = profile ? await sharedHistory(historyKey(profile, session.id)) : null;
+  const text = markdown(session, joinedHistory(archive, client.shown(session.id)));
   const name = `${session.title.replace(/[\\/:*?"<>|\r\n]+/g, ' ').trim() || '会话'}.md`;
   if (window.desktop) return window.desktop.saveFile(name, text);
   const link = document.createElement('a');

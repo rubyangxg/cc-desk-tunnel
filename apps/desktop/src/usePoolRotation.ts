@@ -4,6 +4,16 @@ import type { ProxyClient } from './client.ts';
 import { exhausted, fiveHour, handoffFor, poolCandidates, quotaFailure } from './accountPool.ts';
 import { isHere } from './device.ts';
 import { transcript } from './transcript.ts';
+import type { Session } from '@cc-desk-tunnel/protocol';
+import {
+  attachSharedHistory,
+  completeHistory,
+  historyKey,
+  joinedHistory,
+  saveSharedHistory,
+  sharedHistory,
+  transferBlock,
+} from './sharedHistory.ts';
 
 export function usePoolRotation(options: {
   client: ProxyClient;
@@ -33,6 +43,128 @@ export function usePoolRotation(options: {
   const nextAttempt = useRef(0);
   const [working, setWorking] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+
+  async function prepare(session: Session, attempted: string[], manual = false) {
+    const events = await completeHistory(client, session.id);
+    const live = client.state.sessions.find((item) => item.id === session.id);
+    if (!live) throw new Error('原会话已不存在。');
+    const blocked = transferBlock(live, events);
+    if (blocked) throw new Error(blocked);
+    if (client.state.sessions.some((item) => item.activeRun && isHere(item, client.state.device)))
+      throw new Error('其他任务仍在运行，请结束后再切换服务器。');
+    const key = historyKey(profiles.initial, session.id);
+    const archive = await sharedHistory(key);
+    if (archive?.forward) throw new Error('此任务已在其他服务器续接，请前往当前会话。');
+    const handoff = handoffFor(
+      live,
+      joinedHistory(archive, events),
+      profiles.initial.name,
+      attempted,
+    );
+    handoff.manual = manual;
+    handoff.history = {
+      prompt: handoff.prompt,
+      segments: [
+        ...(archive?.segments ?? []),
+        {
+          key,
+          service: profiles.initial.name,
+          account: client.state.pool?.accounts.find((account) => account.id === live.accountId)
+            ?.name,
+          session: live,
+          events: joinedHistory(archive ? { ...archive, segments: [] } : null, events),
+        },
+      ],
+    };
+    // Write the entire transcript before closing the only live connection to the source.
+    await saveSharedHistory(`pending:${key}`, handoff.history);
+    if (
+      client.state.sessions.find((item) => item.id === session.id)?.updatedAt !== live.updatedAt ||
+      client.state.sessions.some((item) => item.activeRun && isHere(item, client.state.device))
+    )
+      throw new Error('保存历史期间任务状态已改变，未交接。');
+    return handoff;
+  }
+
+  async function transfer(targetId: string, session: Session) {
+    if (rotating.current || working || options.busy || options.terminalOpen) return;
+    rotating.current = true;
+    setWorking(true);
+    try {
+      const target = profiles.profiles.find((profile) => profile.id === targetId);
+      if (!target || target.id === id) throw new Error('请选择另一台服务器。');
+      const handoff = await prepare(session, [id], true);
+      if (
+        client.state.status !== 'connected' ||
+        client.state.sessions.some((item) => item.activeRun && isHere(item, client.state.device))
+      )
+        throw new Error('任务状态已改变，未切换服务器。');
+      await current.current.close();
+      await current.current.profiles.select(targetId, true, handoff);
+    } catch (error) {
+      current.current.error(error instanceof Error ? error.message : '交接失败。');
+    } finally {
+      rotating.current = false;
+      setWorking(false);
+    }
+  }
+
+  // New services rotate inside their own pool first. Only an explicit quota-wait can be released.
+  useEffect(() => {
+    if (
+      !state.features.includes('cross-server-handoff') ||
+      !pool.config.enabled ||
+      state.status !== 'connected' ||
+      working ||
+      options.busy ||
+      options.terminalOpen
+    )
+      return;
+    const waits = state.pool?.quotaWaits ?? [];
+    const active = state.sessions.filter(
+      (session) => session.activeRun && isHere(session, state.device),
+    );
+    if (active.length !== 1 || !waits.some((wait) => wait.sessionId === active[0]!.id)) return;
+    const session = active[0]!;
+    const runId = session.activeRun!.id;
+    if (cancelledRuns.current.has(runId) || Date.now() < nextAttempt.current) return;
+    const timer = setTimeout(() => {
+      nextAttempt.current = Date.now() + 55_000;
+      setWorking(true);
+      void (async () => {
+        try {
+          const quotas = await pool.refresh();
+          const next = poolCandidates(
+            current.current.profiles.profiles,
+            quotas,
+            current.current.profiles.pool.config,
+            [id],
+          )[0];
+          if (!next || !current.current.profiles.pool.config.enabled) return;
+          cancelledRuns.current.add(runId);
+          await client.request({ type: 'run.handoff', sessionId: session.id, runId });
+          // A response confirms acceptance, not process termination. Await the terminal run event too.
+          const deadline = Date.now() + 30_000;
+          while (client.state.sessions.find((item) => item.id === session.id)?.activeRun) {
+            if (client.state.status !== 'connected' || Date.now() > deadline)
+              throw new Error('尚未确认旧任务结束，未切换服务器。');
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+          const handoff = await prepare(session, [id]);
+          if (!current.current.profiles.pool.config.enabled) return;
+          await current.current.close();
+          await current.current.profiles.select(next.id, true, handoff);
+        } catch (error) {
+          current.current.error(
+            `跨服务器接力已暂停：${error instanceof Error ? error.message : '请求失败'}`,
+          );
+        } finally {
+          setWorking(false);
+        }
+      })();
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [state, pool.config.enabled, options.busy, options.terminalOpen]);
 
   useEffect(() => {
     if (state.status === 'connected') {
@@ -107,7 +239,12 @@ export function usePoolRotation(options: {
 
   useEffect(() => {
     const handoff = profiles.handoff;
-    if (!handoff || !pool.config.enabled || state.status !== 'connected' || resuming.current)
+    if (
+      !handoff ||
+      (!handoff.manual && !pool.config.enabled) ||
+      state.status !== 'connected' ||
+      resuming.current
+    )
       return;
     resuming.current = true;
     setWorking(true);
@@ -116,12 +253,16 @@ export function usePoolRotation(options: {
       try {
         const result = await client.request({
           type: 'session.create',
-          title: `${handoff.session.title.slice(0, 110)} · 续接`,
+          title: handoff.session.title,
           projectPath: handoff.session.projectPath,
         });
         if (!result.sessionId) throw new Error('续接会话创建失败。');
         const sessionId = result.sessionId;
         resumedSession.current = sessionId;
+        if (handoff.history) {
+          await attachSharedHistory(profiles.initial, sessionId, handoff.history);
+          window.dispatchEvent(new Event('shared-history-changed'));
+        }
         current.current.draft(sessionId, handoff.prompt);
         current.current.show(sessionId);
         await client.request({
@@ -131,7 +272,8 @@ export function usePoolRotation(options: {
           model: handoff.session.model,
           effort: handoff.session.effort,
         });
-        if (!current.current.profiles.pool.config.enabled) throw new Error('账号池自动切换已关闭');
+        if (!handoff.manual && !current.current.profiles.pool.config.enabled)
+          throw new Error('账号池自动切换已关闭');
         await client.request({
           type: 'message.send',
           sessionId,
@@ -139,6 +281,7 @@ export function usePoolRotation(options: {
           scenario: 'chat',
         });
         current.current.draft(sessionId, '');
+        current.current.profiles.completeHandoff();
         setNotice(
           `已从 ${handoff.source} 切换到 ${profiles.initial.name}，携带最近上下文继续任务。`,
         );
@@ -201,7 +344,6 @@ export function usePoolRotation(options: {
 
   useEffect(() => {
     if (
-      state.features.includes('account-pool') ||
       !pool.config.enabled ||
       state.status !== 'connected' ||
       options.busy ||
@@ -234,6 +376,7 @@ export function usePoolRotation(options: {
       return;
     }
     const failed = failures[0];
+    if (state.features.includes('account-pool') && !failed) return;
     const failureKey = failed?.event ? `${failed.session.id}:${failed.event.runId}` : null;
     if (failureKey && continuedFailures.current.has(failureKey)) return;
     if (!failed && !exhausted(pool.quotas[id])) return;
@@ -289,14 +432,7 @@ export function usePoolRotation(options: {
             return;
           }
           if (failed && failureKey) continuedFailures.current.add(failureKey);
-          const handoff = failed
-            ? handoffFor(
-                failed.session,
-                client.shown(failed.session.id),
-                profiles.initial.name,
-                attempted,
-              )
-            : undefined;
+          const handoff = failed ? await prepare(failed.session, attempted) : undefined;
           await live.close();
           await live.profiles.select(next.id, true, handoff);
         } catch (error) {
@@ -312,7 +448,12 @@ export function usePoolRotation(options: {
     return () => clearTimeout(timer);
   }, [state, pool.quotas, pool.config, options.busy, options.terminalOpen]);
   return {
-    working: working || (!!profiles.handoff && pool.config.enabled && !resuming.current),
+    transfer,
+    working:
+      working ||
+      (!!profiles.handoff &&
+        (pool.config.enabled || profiles.handoff.manual === true) &&
+        !resuming.current),
     notice,
   };
 }

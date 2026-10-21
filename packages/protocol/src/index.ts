@@ -302,6 +302,8 @@ export const eventPayloadSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('native.session'),
     nativeSessionId: id,
+    accountId: poolAccountIdSchema.optional(),
+    accountName: z.string().optional(),
     model: z.string(),
     version: z.string(),
     requestedPermissionMode: permissionModeSchema.optional(),
@@ -797,6 +799,7 @@ export const commandSchema = z.discriminatedUnion('type', [
     })
     .strict(),
   z.object({ type: z.literal('run.cancel'), ...request, sessionId: id, runId: id }).strict(),
+  z.object({ type: z.literal('run.handoff'), ...request, sessionId: id, runId: id }).strict(),
   // Takes up a session whose last turn was stopped or cut off, without the user writing a message.
   z.object({ type: z.literal('run.continue'), ...request, sessionId: id }).strict(),
   z

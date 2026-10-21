@@ -29,6 +29,46 @@ export async function probeQuota(config, resolveProxy, timeoutMs = 25000) {
   }
 }
 
+// A service represents its schedulable pool, not whichever account last emitted telemetry.
+export function poolQuota(state) {
+  const now = state.serverTime ?? Date.now();
+  const order = [...new Set([...state.settings.order, ...state.accounts.map((a) => a.id)])];
+  const eligible = state.accounts.filter(
+    (account) =>
+      account.enabled &&
+      account.loggedIn === true &&
+      !account.login &&
+      !account.error &&
+      account.checkedAt !== null &&
+      now - account.checkedAt < 120000 &&
+      account.limits?.available &&
+      (state.settings.enabled || account.id === state.settings.preferredId),
+  );
+  const ready = eligible.filter(
+    (account) =>
+      !(account.blockedUntil > now) &&
+      account.limits.windows.some(
+        (window) =>
+          window.name === 'five_hour' &&
+          typeof window.utilization === 'number' &&
+          window.utilization < 100,
+      ) &&
+      !account.limits.windows.some(
+        (window) => ['five_hour', 'seven_day'].includes(window.name) && window.utilization >= 100,
+      ),
+  );
+  const reset = (account) =>
+    Date.parse(
+      account.limits.windows.find((window) => window.name === 'five_hour')?.resetsAt ?? '',
+    ) || Infinity;
+  ready.sort(
+    (a, b) =>
+      (state.settings.strategy === 'reset' ? reset(a) - reset(b) : 0) ||
+      order.indexOf(a.id) - order.indexOf(b.id),
+  );
+  return ready[0]?.limits ?? null;
+}
+
 class LegacyProtocolError extends Error {
   constructor(protocolVersion) {
     super('Older service protocol');
@@ -42,6 +82,8 @@ function queryQuota(config, address, resolveProxy, timeoutMs, protocolVersion) {
     let ready = false;
     let quota = null;
     let sessionId;
+    let poolMode = false;
+    let refreshingPool = false;
     const subscriptionId = randomUUID();
     const requestId = randomUUID();
     const socket = new WebSocket(address, {
@@ -109,6 +151,11 @@ function queryQuota(config, address, resolveProxy, timeoutMs, protocolVersion) {
           finish(new Error('模拟服务没有 Claude 订阅额度。'));
           return;
         }
+        if (message.features?.includes('account-pool')) {
+          poolMode = true;
+          socket.send(JSON.stringify({ type: 'pool.status', requestId, refresh: true }));
+          return;
+        }
         const session =
           message.sessions.find(
             (item) => item.activeRun?.surface !== 'terminal' && item.activeRun,
@@ -124,6 +171,18 @@ function queryQuota(config, address, resolveProxy, timeoutMs, protocolVersion) {
         socket.send(
           JSON.stringify({ type: 'session.subscribe', requestId: subscriptionId, sessionId }),
         );
+      }
+      if (poolMode) {
+        if (message.type === 'pool.state') {
+          if (message.refreshing) refreshingPool = true;
+          else if (refreshingPool) {
+            quota = poolQuota(message);
+            finish();
+          }
+        }
+        if (message.type === 'response' && message.requestId === requestId && !message.ok)
+          finish(new Error(message.message ?? '账号池额度查询失败。'));
+        return;
       }
       if (message.type === 'session.event' && message.event.payload.type === 'native.metrics')
         quota = message.event.payload.rateLimits;

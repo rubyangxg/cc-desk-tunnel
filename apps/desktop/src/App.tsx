@@ -60,6 +60,8 @@ import type { ConnectionProfile } from './connections.ts';
 import AccountPoolPanel from './AccountPoolPanel.tsx';
 import { usePoolRotation } from './usePoolRotation.ts';
 import { exportSession } from './exportSession.ts';
+import { historyKey, joinedHistory, sharedHistory } from './sharedHistory.ts';
+import type { SharedHistory } from './sharedHistory.ts';
 import { onSharedChange, saveShared, shared, useShared } from './shared.ts';
 import { useNotifications } from './notifications.ts';
 import { folderName, isInside, isNewer, pathKey, withProject } from './paths.ts';
@@ -253,6 +255,37 @@ export function App({ profiles }: { profiles: ProfileControls }) {
     // What is shown changes with these two.
     [selected?.id, recorded, unfinished],
   );
+  const [archive, setArchive] = useState<{ key: string; value: SharedHistory | null } | null>(null);
+  const archiveKey = selected ? historyKey(profiles.initial, selected.id) : '';
+  useEffect(() => {
+    let active = true;
+    const load = () => {
+      if (!archiveKey) return;
+      void sharedHistory(archiveKey).then(
+        (value) => {
+          if (active) setArchive({ key: archiveKey, value });
+        },
+        (error: Error) => {
+          if (active) setError(error.message);
+        },
+      );
+    };
+    load();
+    window.addEventListener('shared-history-changed', load);
+    const channel =
+      typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('cc-shared-history');
+    if (channel) channel.onmessage = load;
+    return () => {
+      active = false;
+      window.removeEventListener('shared-history-changed', load);
+      channel?.close();
+    };
+  }, [archiveKey]);
+  const linkedHistory = archive?.key === archiveKey ? archive.value : null;
+  const visibleEvents = useMemo(
+    () => joinedHistory(linkedHistory, events),
+    [linkedHistory, events],
+  );
   const history = selected ? state.history[selected.id] : undefined;
   const nativeSession = latest(events, 'native.session');
   // Each turn's report is a reason to ask for the session's figures again.
@@ -286,11 +319,23 @@ export function App({ profiles }: { profiles: ProfileControls }) {
     draft: setDraft,
     error: setError,
   });
+  useEffect(() => {
+    if (
+      connected &&
+      profiles.focusSession &&
+      state.sessions.some((session) => session.id === profiles.focusSession)
+    ) {
+      show(profiles.focusSession);
+      profiles.completeFocus();
+    }
+  }, [connected, profiles.focusSession, state.sessions]);
   const canCompact = !!latest(events, 'native.context')?.persisted;
   // A native terminal anywhere keeps what the CLI holds for all sessions, the account and its status, from
   // being read or changed; this window's own terminal, `terminalSessionId`, also takes the window.
   const anyTerminal = state.sessions.some((session) => session.activeRun?.surface === 'terminal');
   const controlsDisabled =
+    (!!selected && archive?.key !== archiveKey) ||
+    !!linkedHistory?.forward ||
     !connected ||
     rotation.working ||
     busy ||
@@ -305,6 +350,8 @@ export function App({ profiles }: { profiles: ProfileControls }) {
   const sendMode = queueEnabled ? prefs.sendMode : 'direct';
   // A native run accepts follow-up messages from wherever it can be worked on.
   const inputDisabled =
+    (!!selected && archive?.key !== archiveKey) ||
+    !!linkedHistory?.forward ||
     !connected ||
     rotation.working ||
     busy ||
@@ -598,14 +645,17 @@ export function App({ profiles }: { profiles: ProfileControls }) {
     setForm((current) => (current.remember ? current : { ...current, token: '' }));
     void window.desktop?.disconnectProxy();
   }
-  async function switchProfile(id: string, connect: boolean) {
-    if (id === profileId) return;
+  async function switchProfile(id: string, connect: boolean, sessionId?: string) {
+    if (id === profileId) {
+      if (sessionId) show(sessionId);
+      return;
+    }
     if (!confirmSwitch()) return;
     await act(async () => {
       signedIn.current = false;
       client.disconnect();
       await window.desktop?.disconnectProxy();
-      await profiles.select(id, connect);
+      await profiles.select(id, connect, undefined, sessionId);
     });
   }
   function confirmSwitch() {
@@ -842,7 +892,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
   }
   // Takes up the last turn, which was stopped or cut off, without the user writing anything.
   function resume() {
-    if (!selected) return;
+    if (!selected || linkedHistory?.forward) return;
     const sessionId = selected.id;
     void act(async () => {
       await client.request({ type: 'run.continue', sessionId });
@@ -909,7 +959,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
         disabled: !connected || !!terminalSessionId,
         run: () => {
           void act(async () => {
-            await exportSession(client, session);
+            await exportSession(client, session, profiles.initial);
           });
         },
       },
@@ -1230,7 +1280,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
           separated: true,
           run: () => {
             void act(async () => {
-              await exportSession(client, selected!);
+              await exportSession(client, selected!, profiles.initial);
             });
           },
         },
@@ -1518,12 +1568,22 @@ export function App({ profiles }: { profiles: ProfileControls }) {
           showNotes={setNotes}
           account={
             serverPool ? (
-              <ServerAccountPool
-                client={client}
-                pool={state.pool}
-                connected={connected}
-                serviceName={form.name}
-              />
+              <>
+                {profiles.profiles.length > 1 && (
+                  <AccountPoolPanel
+                    pool={profiles.pool}
+                    profiles={profiles.profiles}
+                    activeId={profileId}
+                    connected={connected}
+                  />
+                )}
+                <ServerAccountPool
+                  client={client}
+                  pool={state.pool}
+                  connected={connected}
+                  serviceName={form.name}
+                />
+              </>
             ) : (
               <AccountPanel
                 pool={
@@ -1594,6 +1654,57 @@ export function App({ profiles }: { profiles: ProfileControls }) {
             projectMenu={(path, position) => setMenu({ kind: 'project', path, ...position })}
           />
           <main className="workspace">
+            {linkedHistory?.forward && (
+              <div className="session-account-strip" role="status">
+                <span>此任务已在其他服务器续接</span>
+                <button
+                  className="button secondary"
+                  onClick={() => {
+                    const next = linkedHistory.forward!;
+                    const profile = profiles.profiles.find(
+                      (item) => item.id === next.profileId && item.url === next.url,
+                    );
+                    if (!profile) {
+                      setError('目标服务器配置已删除或地址已更改，请恢复原配置后打开会话。');
+                      return;
+                    }
+                    void switchProfile(profile.id, true, next.sessionId);
+                  }}
+                >
+                  前往当前会话
+                </button>
+              </div>
+            )}
+            {selected && profiles.profiles.length > 1 && !terminalSessionId && (
+              <div className="session-account-strip">
+                <span>当前服务器：{form.name}</span>
+                <select
+                  aria-label="续接到服务器"
+                  value=""
+                  disabled={
+                    controlsDisabled || away || sessions.some((session) => !!session.activeRun)
+                  }
+                  onChange={(event) => {
+                    if (draft.trim()) {
+                      setError('请先发送或清空草稿，再切换服务器。');
+                      return;
+                    }
+                    void rotation.transfer(event.target.value, selected);
+                  }}
+                >
+                  <option value="" disabled>
+                    续接到其他服务器…
+                  </option>
+                  {profiles.profiles
+                    .filter((profile) => profile.id !== profileId)
+                    .map((profile) => (
+                      <option key={profile.id} value={profile.id}>
+                        {profile.name}
+                      </option>
+                    ))}
+                </select>
+              </div>
+            )}
             {serverPool && !terminalSessionId && (
               <div className="session-account-strip">
                 <div>
@@ -1679,7 +1790,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
             <Conversation
               findRequest={findRequest}
               session={selected}
-              events={events}
+              events={visibleEvents}
               history={history}
               connected={connected}
               native={nativeMode}
@@ -1692,7 +1803,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
               }}
               loadEarlier={() => client.loadEarlier(selected!.id)}
               edit={
-                controlsDisabled || away
+                controlsDisabled || away || !!linkedHistory
                   ? undefined
                   : (id, text) => {
                       void fork(selected!, { id, text });

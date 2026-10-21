@@ -829,3 +829,49 @@ nativeTest(
     assert.equal(session.messageQueue?.paused, true);
   },
 );
+
+nativeTest(
+  'cross-server handoff releases only an acknowledged quota wait and rejects a duplicate or stale run',
+  { timeout: 30000 },
+  async (t) => {
+    const f = await fixture(t);
+    writeFileSync(
+      join(f.dir, 'accounts', f.id, 'config', 'fixture.json'),
+      JSON.stringify({ loggedIn: true, email: 'b@example.test', blocked: true }),
+    );
+    const { sessionId } = await f.request({
+      type: 'session.create',
+      title: 'cross server',
+      projectPath: '/local/transfer',
+    });
+    await f.request({ type: 'message.send', sessionId, text: 'unfinished task' });
+    await f.wait(
+      (m) =>
+        m.type === 'pool.state' && !!m.quotaWaits?.some((wait) => wait.sessionId === sessionId),
+    );
+    const runId = f.server.store.get(sessionId!).session.activeRun!.id;
+    const wrong = randomUUID();
+    f.socket.send(
+      JSON.stringify({ type: 'run.handoff', sessionId, runId: randomUUID(), requestId: wrong }),
+    );
+    const rejected = await f.wait((m) => m.type === 'response' && m.requestId === wrong);
+    assert.ok(
+      rejected.type === 'response' && !rejected.ok && rejected.code === 'handoff_unavailable',
+    );
+    assert.equal(f.server.store.get(sessionId!).session.activeRun?.id, runId);
+    await f.request({ type: 'run.handoff', sessionId, runId });
+    await f.wait(
+      (m) =>
+        m.type === 'session.event' &&
+        m.event.sessionId === sessionId &&
+        m.event.payload.type === 'run.status' &&
+        m.event.payload.status === 'cancelled',
+    );
+    assert.equal(f.server.store.get(sessionId!).session.activeRun, null);
+    const duplicate = randomUUID();
+    f.socket.send(JSON.stringify({ type: 'run.handoff', sessionId, runId, requestId: duplicate }));
+    const reply = await f.wait((m) => m.type === 'response' && m.requestId === duplicate);
+    assert.ok(reply.type === 'response' && !reply.ok);
+    assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 1);
+  },
+);

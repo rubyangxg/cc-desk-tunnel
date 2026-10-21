@@ -25,7 +25,9 @@ export type ProfileControls = {
   initial: ConnectionProfile;
   autoConnect: boolean;
   save: (profile: ConnectionProfile) => Promise<void>;
-  select: (id: string, connect: boolean, handoff?: Handoff) => Promise<void>;
+  select: (id: string, connect: boolean, handoff?: Handoff, sessionId?: string) => Promise<void>;
+  focusSession: string | null;
+  completeFocus: () => void;
   add: () => Promise<void>;
   remove: () => Promise<void>;
   pool: AccountPool;
@@ -39,6 +41,7 @@ export function App() {
   const [autoConnect, setAutoConnect] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [handoff, setHandoff] = useState<Handoff | null>(null);
+  const [focusSession, setFocusSession] = useState<string | null>(null);
   const pool = useAccountPool(collection?.profiles ?? []);
   useEffect(() => {
     let cancelled = false;
@@ -105,6 +108,8 @@ export function App() {
     autoConnect,
     pool,
     handoff,
+    focusSession,
+    completeFocus: () => setFocusSession(null),
     completeHandoff: () => setHandoff(null),
     save: async (profile) => {
       await persist({
@@ -112,10 +117,11 @@ export function App() {
         profiles: collection.profiles.map((item) => (item.id === profile.id ? profile : item)),
       });
     },
-    select: async (id, connect, nextHandoff) => {
+    select: async (id, connect, nextHandoff, sessionId) => {
       await persist({ ...collection, activeId: id });
       setAutoConnect(connect);
       setHandoff(nextHandoff ?? null);
+      setFocusSession(sessionId ?? null);
     },
     add: async () => {
       const profile = blankProfile(

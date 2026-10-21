@@ -320,7 +320,8 @@ for (const { recovery, failedService } of [
         return;
       }
       await expect(page.locator('.connection-status')).toContainText('个人账号');
-      await expect(page.locator('.message.user')).toContainText('账号池续接');
+      await expect(page.locator('.message.user')).not.toContainText('跨服务器续接');
+      await expect(page.getByText('执行来源：工作账号', { exact: true })).toBeVisible();
       await expect(page.locator('.message.user')).toContainText('完成这个尚未完成的功能');
       await expect(page.locator('.message.user')).toHaveCount(1);
       await settled(page);
@@ -337,6 +338,13 @@ for (const { recovery, failedService } of [
         ...(failedService ? ['connect:offline'] : []),
         'connect:personal',
       ]);
+      if (!failedService) {
+        await page.reload();
+        await expect(page.locator('.connection-status')).toContainText('个人账号');
+        await page.locator('.session-row').first().click();
+        await expect(page.locator('.message.user')).toContainText('完成这个尚未完成的功能');
+        await expect(page.getByText('执行来源：工作账号', { exact: true })).toBeVisible();
+      }
       if (failedService) {
         expect(
           await page.evaluate(

@@ -1,6 +1,7 @@
 import type { NativeMetrics, Session, SessionEvent } from '@cc-desk-tunnel/protocol';
 import type { ConnectionProfile } from './connections.ts';
 import { transcript } from './transcript.ts';
+import type { SharedHistory } from './sharedHistory.ts';
 
 export type PoolSettings = {
   enabled: boolean;
@@ -21,6 +22,8 @@ export type Handoff = {
   session: Pick<Session, 'title' | 'projectPath' | 'permissionMode' | 'model' | 'effort'>;
   prompt: string;
   attempted: string[];
+  history?: SharedHistory;
+  manual?: boolean;
 };
 export const quotaFreshMs = 120_000;
 
@@ -109,7 +112,7 @@ export function handoffFor(
   attempted: string[],
 ): Handoff {
   const items = transcript(events).filter((item) => item.kind !== 'thinking');
-  const lastQuestion = items.findLast((item) => item.kind === 'user');
+  const lastQuestion = items.findLast((item) => item.kind === 'user' && !item.continued);
   const recent = items
     .map((item) =>
       item.kind === 'tool'
@@ -119,7 +122,8 @@ export function handoffFor(
     .join('\n\n')
     .slice(-10500);
   const prompt = [
-    '账号池续接：上一台服务器的 Claude 5 小时额度已耗尽。这是在同一本机项目上的新会话，下面是最近上下文的文本摘录，不是原生会话恢复。',
+    'continue',
+    '跨服务器续接：这是同一本机项目的新原生会话，下面是最近上下文的文本摘录，不是原生会话恢复。',
     '继续用户原任务。先检查项目当前状态；已完成的修改和命令不要重复执行。标为未知或结果未确认的操作先核实结果。若摘录缺少必要信息，请询问用户。',
     `最近用户任务：\n${lastQuestion && 'text' in lastQuestion ? lastQuestion.text.slice(0, 2500) : '根据以下上下文继续未完成的任务。'}`,
     `最近对话与执行进度（长记录只保留末尾）：\n${recent}`,

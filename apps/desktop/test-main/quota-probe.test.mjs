@@ -50,6 +50,8 @@ test(
     const protocols = [];
     let serviceProtocol = PROTOCOL_VERSION;
     let refuseAllVersions = false;
+    let multiAccount = false;
+    const backupId = randomUUID();
     const sessionId = randomUUID();
     const limits = {
       available: true,
@@ -88,6 +90,7 @@ test(
               version: '0.3.1',
               connectionId: randomUUID(),
               adapter: 'claude-code',
+              features: multiAccount ? ['account-pool'] : [],
               sessions: [
                 {
                   id: randomUUID(),
@@ -113,6 +116,37 @@ test(
               ],
             }),
           );
+        } else if (message.type === 'pool.status') {
+          const pool = {
+            type: 'pool.state',
+            settings: {
+              enabled: true,
+              strategy: 'order',
+              order: ['default', backupId],
+              preferredId: 'default',
+            },
+            accounts: ['default', backupId].map((id) => ({
+              id,
+              name: id,
+              enabled: true,
+              loggedIn: true,
+              login: null,
+              busy: false,
+              checkedAt: Date.now(),
+              blockedUntil: null,
+              limits:
+                id === backupId
+                  ? limits
+                  : {
+                      ...limits,
+                      windows: [{ name: 'five_hour', utilization: 100, resetsAt: null }],
+                    },
+            })),
+          };
+          socket.send(JSON.stringify({ ...pool, refreshing: false }));
+          socket.send(JSON.stringify({ ...pool, refreshing: true }));
+          socket.send(JSON.stringify({ type: 'response', requestId: message.requestId, ok: true }));
+          socket.send(JSON.stringify({ ...pool, refreshing: false }));
         } else if (message.type === 'session.subscribe') {
           assert.equal(
             message.sessionId,
@@ -159,6 +193,11 @@ test(
     assert.deepEqual(seen, []);
     assert.deepEqual(await probeQuota(config), limits);
     assert.deepEqual(seen, ['auth', 'session.subscribe', 'session.status']);
+    multiAccount = true;
+    seen.length = 0;
+    assert.deepEqual(await probeQuota(config), limits);
+    assert.deepEqual(seen, ['auth', 'pool.status']);
+    multiAccount = false;
     serviceProtocol = 16;
     seen.length = 0;
     protocols.length = 0;

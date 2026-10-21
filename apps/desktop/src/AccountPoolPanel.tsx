@@ -32,7 +32,7 @@ export default function AccountPoolPanel({
   return (
     <section className="account-pool" aria-label="账号池">
       <div className="pool-heading">
-        <h2>账号池</h2>
+        <h2>跨服务器接力</h2>
         <Switch
           label="启用账号池自动切换"
           checked={pool.config.enabled}
@@ -41,8 +41,7 @@ export default function AccountPoolPanel({
         />
       </div>
       <p className="profile-hint">
-        5 小时额度耗尽后，自动连接下一个可用代理服务，使用该服务的 Claude
-        账号，在同一项目新建会话并携带最近上下文继续。每个服务需保存凭据。没有可调度服务时暂停。
+        本服务器额度耗尽后，连接可用服务器自动继续；聊天历史保留在本机。各服务需保存凭据。
       </p>
       {legacyService && (
         <p role="status" className="profile-hint">
