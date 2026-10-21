@@ -23,8 +23,9 @@ import { useConnectionName } from './shared.ts';
 import { IconButton } from './ui.tsx';
 import type { MenuPosition } from './ui.tsx';
 
-function activity(session: Session) {
+function activity(session: Session, connected: boolean) {
   if (!session.activeRun) return ago(Date.parse(session.updatedAt));
+  if (!connected) return '状态待确认';
   if (session.activeRun.surface === 'terminal') return '原生终端';
   if (session.activeRun.waiting === 'background') return '后台任务';
   if (session.activeRun.status !== 'awaiting_approval') return '运行中';
@@ -281,10 +282,12 @@ export default function Sidebar({
           <strong>{session.title}</strong>
           {session.activeRun && (
             <span
-              className={`running-dot${session.activeRun.status === 'awaiting_approval' ? '' : ' breathing'}`}
+              className={`running-dot${connected && session.activeRun.status !== 'awaiting_approval' ? ' breathing' : ''}`}
             />
           )}
-          <small title={sources[session.id]}>{sources[session.id] ?? activity(session)}</small>
+          <small title={sources[session.id]}>
+            {sources[session.id] ?? activity(session, connected)}
+          </small>
         </button>
         {!sources[session.id] && (
           <>
@@ -543,7 +546,8 @@ export default function Sidebar({
               : card.session.projectPath}
           </span>
           <small>
-            {activity(card.session)} · {new Date(card.session.updatedAt).toLocaleString('zh-CN')}
+            {activity(card.session, connected)} ·{' '}
+            {new Date(card.session.updatedAt).toLocaleString('zh-CN')}
           </small>
         </div>
       )}

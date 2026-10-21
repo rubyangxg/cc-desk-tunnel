@@ -43,7 +43,7 @@ test('a lost acknowledgement is described as a past interruption after reconnect
   await login(page);
   await createSession(page, '确认丢失');
   await send(page, '这条消息只能发送一次');
-  await expect(page.getByText('连接中断，等待恢复', { exact: true })).toBeVisible();
+  await expect(page.getByText('连接中断，正在自动重连', { exact: true })).toBeVisible();
   await expect(page.locator('.connection-status')).toContainText('已连接');
   await expect(page.locator('.error-banner')).toContainText('连接已恢复');
   await expect(page.locator('.error-banner')).toContainText('上次请求');

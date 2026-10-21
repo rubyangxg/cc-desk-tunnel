@@ -27,7 +27,6 @@ import {
   Settings,
   SquareTerminal,
   Trash2,
-  Unplug,
   UserRound,
   X,
 } from 'lucide-react';
@@ -51,6 +50,7 @@ import SchedulePanel from './SchedulePanel.tsx';
 import { taskMessage, useSchedules } from './schedules.ts';
 import type { Scenario } from './Composer.tsx';
 import Conversation from './Conversation.tsx';
+import ReconnectNotice from './ReconnectNotice.tsx';
 import LoginPage from './LoginPage.tsx';
 import type { ConnectionForm } from './LoginPage.tsx';
 import type { ProfileControls } from './Connections.tsx';
@@ -436,7 +436,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
           run: () => {
             if (
               window.confirm(
-                `服务端将升级到 ${update.latest} 并重启，需要几分钟，期间不能发送消息；重启后需重新连接。继续？`,
+                `服务端将升级到 ${update.latest} 并重启，需要几分钟，期间不能发送消息；客户端会自动重连并同步会话。继续？`,
               )
             )
               void act(async () => {
@@ -1797,7 +1797,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
                 />
               </Suspense>
             )}
-            {currentError && (
+            {currentError && (state.status !== 'reconnecting' || actionError) && (
               <div className="error-banner" role="alert">
                 <span>{currentError}</span>
                 <IconButton
@@ -1811,11 +1811,14 @@ export function App({ profiles }: { profiles: ProfileControls }) {
                 </IconButton>
               </div>
             )}
-            {!connected && (
-              <div className="connection-banner" role="status">
-                <Unplug />
-                连接中断，等待恢复
-              </div>
+            {state.status === 'reconnecting' && (
+              <ReconnectNotice
+                retry={state.retry}
+                restarting={state.update?.state === 'restarting'}
+                error={state.error}
+                retryNow={() => client.retryNow()}
+                disconnect={disconnect}
+              />
             )}
             <Conversation
               findRequest={findRequest}
@@ -1866,18 +1869,6 @@ export function App({ profiles }: { profiles: ProfileControls }) {
                 return sent;
               }}
             />
-            {state.status === 'reconnecting' && (
-              <div className="elsewhere-bar" role="status">
-                <Unplug />
-                <p>
-                  与服务端的连接断开了，正在重新连接。运行中的任务仍在服务端继续，连上之后这里会补上期间的内容；
-                  {state.error ? `原因：${state.error.split('\n')[0]}` : '不需要做什么。'}
-                </p>
-                <button type="button" className="button" onClick={disconnect}>
-                  断开并回到登录页
-                </button>
-              </div>
-            )}
             {beside.length > 0 && (
               <div className="elsewhere-bar" role="status">
                 <Laptop />

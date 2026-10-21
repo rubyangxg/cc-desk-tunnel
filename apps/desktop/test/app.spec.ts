@@ -160,7 +160,7 @@ test('reconnect replays history without repeating a request or keeping stale app
   await page.evaluate(() =>
     (window as unknown as { testSockets: WebSocket[] }).testSockets.at(-1)!.close(),
   );
-  await expect(page.getByText('连接中断，等待恢复', { exact: true })).toBeVisible();
+  await expect(page.getByText('连接中断，正在自动重连', { exact: true })).toBeVisible();
   await expect(page.getByText('已连接', { exact: true })).toBeVisible();
   await expect(page.getByText('连接断开，运行未重放。', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '允许', exact: true })).not.toBeVisible();

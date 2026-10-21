@@ -39,14 +39,18 @@ export function RunStatus({
   connected: boolean;
   suffix: string;
 }) {
-  useTick(!tool, 5000);
+  useTick(connected && !tool, 5000);
   const quiet = (clock.now() - since) / 1000;
   const silent = !tool && quiet >= 60;
   return (
     <div className="run-indicator" role="status">
       <span className={`running-dot${connected && !silent ? ' breathing' : ''}`} />
-      {silent ? `仍在运行 · 已 ${Math.floor(quiet / 60)} 分钟没有新输出` : '运行中'}
-      {suffix}
+      {!connected
+        ? '连接中断，任务状态待确认'
+        : silent
+          ? `仍在运行 · 已 ${Math.floor(quiet / 60)} 分钟没有新输出`
+          : '运行中'}
+      {connected && suffix}
     </div>
   );
 }

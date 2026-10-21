@@ -3890,6 +3890,35 @@ details[open] > summary > .fold-chevron {
   border-color: var(--warn-line);
   justify-content: flex-start;
 }
+.reconnect-notice {
+  flex-wrap: wrap;
+}
+.reconnect-notice > svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+.reconnect-copy {
+  flex: 1 1 220px;
+  min-width: 0;
+  line-height: 1.6;
+}
+.reconnect-copy [role='status'] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.reconnect-copy p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.reconnect-copy summary {
+  cursor: pointer;
+}
+.reconnect-notice .button {
+  padding: 6px 10px;
+  font-size: 12px;
+}
 .elsewhere-bar {
   display: flex;
   align-items: center;

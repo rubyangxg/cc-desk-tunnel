@@ -90,6 +90,8 @@ export type HistoryState = {
 };
 export type ClientState = {
   status: 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
+  // Retry progress belongs to the connection, not to a request that must never be replayed.
+  retry: { attempt: number; nextAt: number | null } | null;
   connectionId: string | null;
   // The computer this client signed in as; a session's commands run on the one it is on.
   device: Device | null;
@@ -136,6 +138,7 @@ export type ConnectedDevice = Extract<ServerMessage, { type: 'devices' }>['devic
 export class ProxyClient {
   state: ClientState = {
     status: 'disconnected',
+    retry: null,
     connectionId: null,
     device: null,
     devices: [],
@@ -267,6 +270,8 @@ export class ProxyClient {
   private open(protocolVersion: number = PROTOCOL_VERSION) {
     const credentials = this.credentials;
     if (!credentials) return;
+    if (this.state.status === 'reconnecting')
+      this.update({ retry: { attempt: (this.state.retry?.attempt ?? 0) + 1, nextAt: null } });
     if (!credentials.bridge) {
       this.attach(credentials, protocolVersion);
       return;
@@ -285,6 +290,7 @@ export class ProxyClient {
         this.credentials = null;
         this.update({
           status: 'disconnected',
+          retry: null,
           connectionId: null,
           error: error instanceof Error ? error.message : '本机连接准备失败。',
         });
@@ -298,6 +304,7 @@ export class ProxyClient {
     let fallback: number | null = null;
     const timeout = setTimeout(() => socket.close(), 50000);
     socket.onopen = () => {
+      if (this.socket !== socket || this.credentials !== credentials) return;
       socket.send(
         JSON.stringify({
           type: 'auth',
@@ -332,6 +339,7 @@ export class ProxyClient {
           : null;
         this.update({
           status: 'connected',
+          retry: null,
           connectionId: message.connectionId,
           sessions: message.sessions,
           selectedId,
@@ -402,11 +410,7 @@ export class ProxyClient {
         if (this.pending.has(message.requestId)) this.results.set(message.requestId, message);
       } else if (message.type === 'service.update') {
         const { type: _type, ...update } = message;
-        this.update(
-          update.state === 'restarting'
-            ? { update, error: `服务端已升级到 ${update.latest}，正在重启；请稍候重新连接。` }
-            : { update },
-        );
+        this.update({ update });
       } else if (message.type === 'pool.state') {
         const { type: _type, ...pool } = message;
         this.update({ pool });
@@ -509,19 +513,23 @@ export class ProxyClient {
         this.credentials = null;
         this.update({
           status: 'disconnected',
+          retry: null,
           connectionId: null,
           error: this.state.error ?? (nativeClosed ? '原生连接已结束，请重新连接。' : null),
         });
         return;
       }
-      this.update({ status: 'reconnecting', connectionId: null, devices: [] });
-      this.retryTimer = setTimeout(
-        () => {
-          this.retryTimer = undefined;
-          this.open();
-        },
-        Math.min(1000 * 2 ** this.retryAttempt++, credentials.bridge ? 10000 : 5000),
-      );
+      const delay = Math.min(1000 * 2 ** this.retryAttempt++, credentials.bridge ? 10000 : 5000);
+      this.retryTimer = setTimeout(() => {
+        this.retryTimer = undefined;
+        this.open();
+      }, delay);
+      this.update({
+        status: 'reconnecting',
+        connectionId: null,
+        devices: [],
+        retry: { attempt: this.state.retry?.attempt ?? 0, nextAt: Date.now() + delay },
+      });
     };
     socket.onerror = () => {
       /* onclose owns reconnect and pending request cleanup. */
@@ -547,7 +555,7 @@ export class ProxyClient {
     socket?.close();
     this.rejectPending();
     this.retryAttempt = 0;
-    this.update({ status: 'disconnected', connectionId: null });
+    this.update({ status: 'disconnected', connectionId: null, retry: null });
   }
   private rejectPending() {
     for (const request of this.pending.values()) {
