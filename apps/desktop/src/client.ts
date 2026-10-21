@@ -204,6 +204,7 @@ export class ProxyClient {
   streamEvents: (SessionEvent | Extract<ServerMessage, { type: 'session.fragment' }>)[] = [];
   // Event history is kept for the most recently viewed sessions only.
   cacheOrder: string[] = [];
+  private historyEpoch = new Map<string, object>();
   // When something last came from each session's run, by the service's clock, for telling a run that goes on
   // from one that has been quiet for long. Readings of the context and the quota repeat through a long turn
   // and say nothing of it.
@@ -259,6 +260,7 @@ export class ProxyClient {
     this.credentials = { url: address.toString(), token: token.trim(), device, reconnect, bridge };
     this.established = false;
     this.cacheOrder = [];
+    this.historyEpoch.clear();
     this.update({
       status: 'connecting',
       device,
@@ -456,6 +458,7 @@ export class ProxyClient {
         delete events[message.sessionId];
         delete live[message.sessionId];
         delete history[message.sessionId];
+        this.historyEpoch.delete(message.sessionId);
         this.streamEvents = this.streamEvents.filter(
           (event) => event.sessionId !== message.sessionId,
         );
@@ -468,7 +471,11 @@ export class ProxyClient {
         // Archive reads have their own cursor and data. They must not prepend thousands of events into
         // the visible conversation, or depend on its four-session cache and loading indicators.
         if (this.pending.get(message.requestId)?.capture) {
-          this.upsert(message.session);
+          if (
+            this.pending.get(message.requestId)?.type === 'session.subscribe' &&
+            this.state.sessions.some((session) => session.id === message.session.id)
+          )
+            this.upsert(message.session);
           this.results.set(message.requestId, message);
           return;
         }
@@ -692,6 +699,7 @@ export class ProxyClient {
       : recorded;
   }
   private load(sessionId: string) {
+    this.historyEpoch.set(sessionId, {});
     const previous = this.state.history[sessionId];
     const afterSequence = previous?.lastSequence ?? 0;
     this.update({
@@ -705,6 +713,7 @@ export class ProxyClient {
             loadingEarlier: false,
           }),
           loading: true,
+          loadingEarlier: false,
         },
       },
     });
@@ -722,22 +731,62 @@ export class ProxyClient {
   async loadEarlier(sessionId: string) {
     const history = this.state.history[sessionId];
     if (!history?.hasEarlier || history.loadingEarlier || history.loading) return;
+    const epoch = this.historyEpoch.get(sessionId);
+    const connection = this.state.connectionId;
+    const current = () =>
+      this.historyEpoch.get(sessionId) === epoch &&
+      this.cacheOrder.includes(sessionId) &&
+      this.state.status === 'connected' &&
+      this.state.connectionId === connection &&
+      this.state.sessions.some((session) => session.id === sessionId);
     this.update({
       history: { ...this.state.history, [sessionId]: { ...history, loadingEarlier: true } },
     });
     try {
-      await this.request({
-        type: 'session.history',
-        sessionId,
-        beforeSequence: history.firstSequence,
-      });
-    } catch (error) {
-      const current = this.state.history[sessionId];
-      if (current)
-        this.update({
-          history: { ...this.state.history, [sessionId]: { ...current, loadingEarlier: false } },
-        });
-      throw error;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (!current()) return;
+        try {
+          // Keep the page separate until its read is confirmed; late attempts cannot prepend twice.
+          const page = await this.fetch({
+            type: 'session.history',
+            sessionId,
+            beforeSequence: history.firstSequence,
+          });
+          if (!current()) return;
+          if (
+            page.session.id !== sessionId ||
+            page.mode !== 'prepend' ||
+            (page.hasEarlier && (page.firstSequence <= 0 || !page.events.length)) ||
+            page.firstSequence >= history.firstSequence ||
+            page.events.some(
+              (event) => event.sessionId !== sessionId || event.sequence >= history.firstSequence,
+            )
+          )
+            throw new Error('更早记录分页异常，请重新打开会话后重试。');
+          this.flushStream();
+          const latest = this.state.history[sessionId]!;
+          this.merge(sessionId, page.events, {
+            ...latest,
+            firstSequence: page.firstSequence,
+            hasEarlier: page.hasEarlier,
+            loadingEarlier: false,
+          });
+          return;
+        } catch (error) {
+          if (!current()) return;
+          if (!(error instanceof RequestTimeoutError)) throw error;
+          if (attempt === 2)
+            throw new Error('读取更早记录超时，已自动重试 2 次。请检查连接后点击重试。');
+        }
+      }
+    } finally {
+      if (this.historyEpoch.get(sessionId) === epoch) {
+        const latest = this.state.history[sessionId];
+        if (latest?.loadingEarlier)
+          this.update({
+            history: { ...this.state.history, [sessionId]: { ...latest, loadingEarlier: false } },
+          });
+      }
     }
   }
   select(sessionId: string) {
@@ -751,6 +800,7 @@ export class ProxyClient {
       delete events[evicted];
       delete live[evicted];
       delete history[evicted];
+      this.historyEpoch.delete(evicted);
     }
     this.update({ selectedId: sessionId, events, live, history });
     if (this.state.status === 'connected') this.load(sessionId);
@@ -778,7 +828,7 @@ export class ProxyClient {
     if (this.state.status !== 'connected' || this.socket?.readyState !== WebSocket.OPEN)
       throw new Error('服务未连接。');
     const requestId = crypto.randomUUID();
-    const archiveRead = capture && ['session.subscribe', 'session.history'].includes(command.type);
+    const historyRead = ['session.subscribe', 'session.history'].includes(command.type);
     return new Promise<Response>((resolve, reject) => {
       const timer = setTimeout(
         () => {
@@ -786,8 +836,8 @@ export class ProxyClient {
           this.results.delete(requestId);
           reject(
             new RequestTimeoutError(
-              archiveRead
-                ? '读取会话历史超时，未切换服务器。'
+              historyRead
+                ? '读取会话历史超时。'
                 : command.type === 'message.enqueue'
                   ? '排队请求超时；请查看待发送队列及历史确认结果，未自动重发。'
                   : '请求超时；请查看历史确认结果，未自动重发。',
@@ -795,7 +845,7 @@ export class ProxyClient {
           );
         },
         command.type === 'session.status' ||
-          archiveRead ||
+          historyRead ||
           command.type.startsWith('account.') ||
           command.type.startsWith('service.')
           ? 30000

@@ -527,6 +527,12 @@ export default function Conversation({
   const [findOpen, setFindOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [loadError, setLoadError] = useState('');
+  const loadEpoch = useRef<object>({});
+  const loadSession = useRef(session?.id);
+  if (loadSession.current !== session?.id) {
+    loadSession.current = session?.id;
+    loadEpoch.current = {};
+  }
   const [copyStatus, setCopyStatus] = useState('');
   const [contextMenu, setContextMenu] = useState<(MenuPosition & { items: MenuItem[] }) | null>(
     null,
@@ -616,7 +622,12 @@ export default function Conversation({
         height: scroll.current.scrollHeight,
         top: scroll.current.scrollTop,
       };
-    void loadEarlier().catch(() => setLoadError('更早记录加载失败，请重试'));
+    const epoch = loadEpoch.current;
+    void loadEarlier().catch((error: unknown) => {
+      if (loadEpoch.current !== epoch) return;
+      prependAnchor.current = null;
+      setLoadError(error instanceof Error ? error.message : '更早记录加载失败，请重试');
+    });
   };
   useLayoutEffect(() => {
     prependAnchor.current = null;

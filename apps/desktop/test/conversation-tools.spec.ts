@@ -110,6 +110,25 @@ test('find opens folded tool details then restores folds, and never steals dialo
 test('find covers the loaded part of a long session and follows it as earlier pages are loaded', async ({
   page,
 }) => {
+  let rejectPage = true;
+  await page.routeWebSocket('**/ws', (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((raw) => {
+      const message = JSON.parse(String(raw));
+      if (message.type === 'session.history' && rejectPage) {
+        rejectPage = false;
+        socket.send(
+          JSON.stringify({
+            type: 'response',
+            requestId: message.requestId,
+            ok: false,
+            code: 'history_unavailable',
+            message: '历史服务暂时不可用，请重试。',
+          }),
+        );
+      } else server.send(raw);
+    });
+  });
   await page.goto('/');
   await login(page);
   const title = await createSession(page, '长历史查找');
@@ -163,6 +182,9 @@ test('find covers the loaded part of a long session and follows it as earlier pa
   // Reading upwards to the start of what is loaded brings the earlier page without a click.
   await page.locator('.conversation').hover();
   await page.mouse.wheel(0, -100000);
+  await expect(page.getByRole('alert')).toContainText('历史服务暂时不可用，请重试。');
+  await page.getByRole('button', { name: '加载更早记录', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
   await expect(page.getByRole('button', { name: '加载更早记录', exact: true })).toHaveCount(0);
   await expect(page.locator('.find-count')).toHaveText('1 / 1');
   await expect(page.getByText('早期唯一词', { exact: true })).toBeVisible();

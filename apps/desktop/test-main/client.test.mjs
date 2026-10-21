@@ -580,3 +580,110 @@ test('a remote connection that breaks is made again through a new bridge, and on
   assert.equal(sockets[4].sent.at(-1).type, 'leave');
   assert.equal(bridges, 5);
 });
+
+const microtasks = async () => {
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+};
+function earlierFixture(t) {
+  const f = fixture(t);
+  const session = f.sessions[0];
+  f.client.select(session.id);
+  f.snapshot(session, [event(session.id, 100)], { hasEarlier: true });
+  return { ...f, session };
+}
+
+test('earlier history waits beyond ten seconds and retries only the read after a lost receipt', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = earlierFixture(t);
+  const loading = f.client.loadEarlier(f.session.id);
+  const first = f.socket.sent.at(-1);
+  t.mock.timers.tick(20000);
+  await microtasks();
+  assert.equal(f.socket.sent.at(-1), first);
+  assert.equal(f.client.state.history[f.session.id].loadingEarlier, true);
+  f.socket.message({
+    type: 'session.snapshot',
+    requestId: first.requestId,
+    session: f.session,
+    events: [event(f.session.id, 50)],
+    mode: 'prepend',
+    firstSequence: 50,
+    lastSequence: 50,
+    hasEarlier: true,
+  });
+  assert.equal(f.client.state.events[f.session.id].length, 1, 'unconfirmed page stays separate');
+  t.mock.timers.tick(10000);
+  await microtasks();
+  const retry = f.socket.sent.at(-1);
+  assert.notEqual(retry.requestId, first.requestId);
+  assert.equal(retry.beforeSequence, 100);
+  f.socket.message({ type: 'response', requestId: first.requestId, ok: true });
+  f.snapshot(f.session, [event(f.session.id, 50)], { mode: 'prepend', hasEarlier: false });
+  await loading;
+  assert.deepEqual(
+    f.client.state.events[f.session.id].map((item) => item.sequence),
+    [50, 100],
+  );
+  assert.equal(f.client.state.history[f.session.id].lastSequence, 100);
+  assert.equal(f.client.state.history[f.session.id].loadingEarlier, false);
+  assert.equal(f.socket.sent.filter((m) => m.type === 'session.history').length, 2);
+  assert.equal(f.client.results.size, 0);
+});
+
+test('three stalled earlier reads stop, release loading and allow an explicit retry', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = earlierFixture(t);
+  const failed = assert.rejects(f.client.loadEarlier(f.session.id), /已自动重试 2 次/);
+  for (let i = 0; i < 3; i++) {
+    t.mock.timers.tick(30000);
+    await microtasks();
+  }
+  await failed;
+  assert.equal(f.socket.sent.filter((m) => m.type === 'session.history').length, 3);
+  assert.equal(f.client.state.history[f.session.id].loadingEarlier, false);
+  assert.equal(f.client.state.history[f.session.id].hasEarlier, true);
+  const retry = f.client.loadEarlier(f.session.id);
+  f.snapshot(f.session, [event(f.session.id, 1)], { mode: 'prepend', hasEarlier: false });
+  await retry;
+  assert.equal(f.client.state.history[f.session.id].hasEarlier, false);
+});
+
+for (const deleted of [false, true])
+  test(`earlier page cannot restore a ${deleted ? 'deleted' : 'reselected'} conversation`, async (t) => {
+    const f = earlierFixture(t);
+    const loading = f.client.loadEarlier(f.session.id);
+    const old = f.socket.sent.at(-1);
+    if (deleted) f.socket.message({ type: 'session.deleted', sessionId: f.session.id });
+    else {
+      f.client.select(f.session.id);
+      f.snapshot({ ...f.session, title: 'new title' }, [event(f.session.id, 200)], {
+        hasEarlier: true,
+      });
+    }
+    f.socket.message({
+      type: 'session.snapshot',
+      requestId: old.requestId,
+      session: f.session,
+      events: [event(f.session.id, 1)],
+      mode: 'prepend',
+      firstSequence: 1,
+      lastSequence: 1,
+      hasEarlier: false,
+    });
+    f.socket.message({ type: 'response', requestId: old.requestId, ok: true });
+    await loading;
+    if (deleted) {
+      assert.equal(
+        f.client.state.sessions.some((s) => s.id === f.session.id),
+        false,
+      );
+      assert.equal(f.client.state.events[f.session.id], undefined);
+    } else {
+      assert.deepEqual(
+        f.client.state.events[f.session.id].map((e) => e.sequence),
+        [200],
+      );
+      assert.equal(f.client.state.history[f.session.id].hasEarlier, true);
+      assert.equal(f.client.state.sessions.find((s) => s.id === f.session.id).title, 'new title');
+    }
+  });
