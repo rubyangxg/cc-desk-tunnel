@@ -45,7 +45,17 @@ export function usePoolRotation(options: {
   const [notice, setNotice] = useState<string | null>(null);
 
   async function prepare(session: Session, attempted: string[], manual = false) {
-    const events = await completeHistory(client, session.id);
+    if (client.state.sessions.some((item) => item.activeRun && isHere(item, client.state.device)))
+      throw new Error('任务仍在运行，未切换服务器。');
+    setNotice('正在读取会话历史，准备续接…');
+    let events;
+    try {
+      events = await completeHistory(client, session.id, (count) =>
+        setNotice(`正在准备续接，已读取 ${count} 条历史记录…`),
+      );
+    } finally {
+      setNotice(null);
+    }
     const live = client.state.sessions.find((item) => item.id === session.id);
     if (!live) throw new Error('原会话已不存在。');
     const blocked = transferBlock(live, events);
@@ -345,6 +355,7 @@ export function usePoolRotation(options: {
 
   useEffect(() => {
     if (
+      state.features.includes('cross-server-handoff') ||
       !pool.config.enabled ||
       state.status !== 'connected' ||
       options.busy ||
@@ -432,8 +443,8 @@ export function usePoolRotation(options: {
             }
             return;
           }
-          if (failed && failureKey) continuedFailures.current.add(failureKey);
           const handoff = failed ? await prepare(failed.session, attempted) : undefined;
+          if (failed && failureKey) continuedFailures.current.add(failureKey);
           await live.close();
           await live.profiles.select(next.id, true, handoff);
         } catch (error) {

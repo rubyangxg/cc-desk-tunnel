@@ -3,12 +3,14 @@ import { randomUUID } from 'node:crypto';
 import { PROTOCOL_VERSION } from '@cc-desk-tunnel/protocol';
 import type { Session, SessionEvent, EventPayload } from '@cc-desk-tunnel/protocol';
 
-for (const { manual, loseAck } of [
+for (const { manual, loseAck, localAvailable = false, paginated = false } of [
   { manual: false, loseAck: false },
   { manual: true, loseAck: false },
   { manual: false, loseAck: true },
+  { manual: false, loseAck: false, paginated: true },
+  { manual: false, loseAck: false, localAvailable: true },
 ])
-  test(`cross-server ${manual ? 'manual' : 'quota'}${loseAck ? ' lost acknowledgement' : ''} handoff retains history, submits once and survives reload`, async ({
+  test(`cross-server ${manual ? 'manual' : 'quota'}${loseAck ? ' lost acknowledgement' : ''}${paginated ? ' paginated' : ''}${localAvailable ? ' available local account' : ''} handoff retains history, submits once and survives reload`, async ({
     page,
   }) => {
     const device = { id: randomUUID(), name: 'test computer', platform: 'linux' as const };
@@ -26,7 +28,10 @@ for (const { manual, loseAck } of [
       model: null,
       effort: null,
       device,
-      activeRun: manual ? null : { id: runId, connectionId, status: 'running', surface: 'chat' },
+      activeRun:
+        manual || localAvailable
+          ? null
+          : { id: runId, connectionId, status: 'running', surface: 'chat' },
     };
     let target: Session | undefined;
     const sent: { server: number; type: string; text?: string }[] = [];
@@ -54,11 +59,24 @@ for (const { manual, loseAck } of [
       old,
     );
     event(source, { type: 'text.delta', messageId: randomUUID(), text: '已经完成第一步' }, old);
+    if (paginated)
+      for (let i = 0; i < 60; i++)
+        event(source, { type: 'native.notice', text: `历史记录 ${i}` }, old);
+    if (localAvailable)
+      event(source, { type: 'run.error', code: 'quota_five_hour', message: '旧账号额度耗尽' }, old);
     event(
       source,
-      { type: 'run.status', status: manual ? 'completed' : 'running', connectionId },
+      {
+        type: 'run.status',
+        status: localAvailable ? 'failed' : manual ? 'completed' : 'running',
+        connectionId,
+      },
       old,
     );
+    if (localAvailable)
+      old.forEach((event) => {
+        event.createdAt = new Date(Date.now() + 10000).toISOString();
+      });
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(e.message));
     for (const server of [1, 2])
@@ -105,7 +123,11 @@ for (const { manual, loseAck } of [
                   limits: {
                     available: true,
                     windows: [
-                      { name: 'five_hour', utilization: server === 1 ? 100 : 10, resetsAt: null },
+                      {
+                        name: 'five_hour',
+                        utilization: server === 1 && !localAvailable ? 100 : 10,
+                        resetsAt: null,
+                      },
                     ],
                   },
                 },
@@ -115,17 +137,22 @@ for (const { manual, loseAck } of [
                   ? [{ sessionId: source.id, accountId: 'default', at: Date.now() + 3600000 }]
                   : [],
             });
-          if (m.type === 'session.subscribe' && current)
+          if (['session.subscribe', 'session.history'].includes(m.type) && current) {
+            const entries = (server === 1 ? old : live).filter(
+              (event) => !m.beforeSequence || event.sequence < m.beforeSequence,
+            );
+            const page = paginated && server === 1 ? entries.slice(-10) : entries;
             send({
               type: 'session.snapshot',
               requestId: m.requestId,
               session: current,
-              mode: 'replace',
-              firstSequence: 1,
-              lastSequence: (server === 1 ? old : live).length,
-              hasEarlier: false,
-              events: server === 1 ? old : live,
+              mode: m.type === 'session.history' ? 'prepend' : 'replace',
+              firstSequence: page[0]?.sequence ?? 0,
+              lastSequence: page.at(-1)?.sequence ?? 0,
+              hasEarlier: page.length < entries.length,
+              events: page,
             });
+          }
           if (m.type === 'run.handoff') {
             expect(server).toBe(1);
             source.activeRun = null;
@@ -162,6 +189,7 @@ for (const { manual, loseAck } of [
               event: event(target, { type: 'run.status', status: 'completed', connectionId }, live),
             });
           }
+          if (loseAck && m.type === 'message.send') return;
           send({
             type: 'response',
             requestId: m.requestId,
@@ -239,6 +267,20 @@ for (const { manual, loseAck } of [
       { device, manual },
     );
     await page.goto('/');
+    if (localAvailable) {
+      await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
+      await expect(page.locator('.message.user')).toContainText('保留原来的任务和对话');
+      await page.waitForTimeout(700); // The legacy fallback used to start after 150 ms.
+      await expect(page.getByText('当前服务器：服务器1', { exact: true })).toBeVisible();
+      expect(sent.some((message) => message.server === 2)).toBe(false);
+      expect(
+        sent.filter((message) =>
+          ['run.handoff', 'message.send', 'run.continue'].includes(message.type),
+        ),
+      ).toHaveLength(0);
+      expect(errors).toEqual([]);
+      return;
+    }
     if (manual) {
       await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
       await page.getByLabel('续接到服务器', { exact: true }).selectOption('second');
@@ -250,6 +292,10 @@ for (const { manual, loseAck } of [
     expect(sent.filter((m) => m.type === 'run.handoff')).toHaveLength(manual ? 0 : 1);
     expect(sent.filter((m) => m.type === 'message.send')).toHaveLength(1);
     expect(sent.find((m) => m.type === 'message.send')?.text).toContain('保留原来的任务和对话');
+    if (paginated)
+      expect(sent.filter((message) => message.type === 'session.history').length).toBeGreaterThan(
+        1,
+      );
     await page.reload();
     await page.getByRole('button', { name: '同一个任务 · 服务器2', exact: true }).click();
     await expect(page.locator('.message.user')).toContainText('保留原来的任务和对话');

@@ -25,11 +25,18 @@ type DataMessage = Extract<
   ServerMessage,
   {
     type:
-      'usage.summary' | 'usage.page' | 'session.stats' | 'settings.state' | 'instructions.state';
+      | 'usage.summary'
+      | 'usage.page'
+      | 'session.stats'
+      | 'settings.state'
+      | 'instructions.state'
+      | 'session.snapshot';
   }
 >;
 // Commands answered with a data frame, and the frame each one gets.
 type Replies = {
+  'session.subscribe': 'session.snapshot';
+  'session.history': 'session.snapshot';
   'usage.summary': 'usage.summary';
   'usage.query': 'usage.page';
   'session.stats': 'session.stats';
@@ -80,6 +87,7 @@ export class RequestInterruptedError extends Error {
       : '连接已恢复；上次请求的确认因断线未收到。任务可能仍在运行，请查看会话历史确认结果；不会自动重发。';
   }
 }
+export class RequestTimeoutError extends Error {}
 
 export type HistoryState = {
   firstSequence: number;
@@ -204,6 +212,7 @@ export class ProxyClient {
       reject: (error: Error) => void;
       timer: ReturnType<typeof setTimeout>;
       type: Command['type'];
+      capture: boolean;
     }
   >();
   getSnapshot = () => this.state;
@@ -361,7 +370,10 @@ export class ProxyClient {
         clearTimeout(request.timer);
         this.pending.delete(message.requestId);
         if (message.ok) request.resolve(message);
-        else request.reject(new Error(message.message ?? '请求失败。'));
+        else {
+          this.results.delete(message.requestId);
+          request.reject(new Error(message.message ?? '请求失败。'));
+        }
       } else if (message.type === 'connection.error') {
         // Retry authentication once, before any session command can be sent. A new
         // bridge rechecks TLS and recreates the execution channel for this attempt.
@@ -446,6 +458,13 @@ export class ProxyClient {
           this.state.selectedId === message.sessionId ? null : this.state.selectedId;
         this.update({ sessions, events, live, history, selectedId });
       } else if (message.type === 'session.snapshot') {
+        // Archive reads have their own cursor and data. They must not prepend thousands of events into
+        // the visible conversation, or depend on its four-session cache and loading indicators.
+        if (this.pending.get(message.requestId)?.capture) {
+          this.upsert(message.session);
+          this.results.set(message.requestId, message);
+          return;
+        }
         this.flushStream();
         if (
           !this.pending.has(message.requestId) ||
@@ -558,8 +577,9 @@ export class ProxyClient {
     this.update({ status: 'disconnected', connectionId: null, retry: null });
   }
   private rejectPending() {
-    for (const request of this.pending.values()) {
+    for (const [id, request] of this.pending) {
       clearTimeout(request.timer);
+      this.results.delete(id);
       request.reject(new RequestInterruptedError(request.type));
     }
     this.pending.clear();
@@ -741,35 +761,40 @@ export class ProxyClient {
   }
   // Data replies arrive just before their response frame.
   async fetch<T extends keyof Replies>(command: Extract<NewCommand, { type: T }>) {
-    const response = await this.request(command);
+    const response = await this.request(command, true);
     const result = this.results.get(response.requestId);
     this.results.delete(response.requestId);
     if (!result) throw new Error('服务没有返回数据。');
     return result as Extract<ServerMessage, { type: Replies[T] }>;
   }
-  async request(command: NewCommand): Promise<Response> {
+  async request(command: NewCommand, capture = false): Promise<Response> {
     if (this.state.status !== 'connected' || this.socket?.readyState !== WebSocket.OPEN)
       throw new Error('服务未连接。');
     const requestId = crypto.randomUUID();
+    const archiveRead = capture && ['session.subscribe', 'session.history'].includes(command.type);
     return new Promise<Response>((resolve, reject) => {
       const timer = setTimeout(
         () => {
           this.pending.delete(requestId);
+          this.results.delete(requestId);
           reject(
-            new Error(
-              command.type === 'message.enqueue'
-                ? '排队请求超时；请查看待发送队列及历史确认结果，未自动重发。'
-                : '请求超时；请查看历史确认结果，未自动重发。',
+            new RequestTimeoutError(
+              archiveRead
+                ? '读取会话历史超时，未切换服务器。'
+                : command.type === 'message.enqueue'
+                  ? '排队请求超时；请查看待发送队列及历史确认结果，未自动重发。'
+                  : '请求超时；请查看历史确认结果，未自动重发。',
             ),
           );
         },
         command.type === 'session.status' ||
+          archiveRead ||
           command.type.startsWith('account.') ||
           command.type.startsWith('service.')
           ? 30000
           : 10000,
       );
-      this.pending.set(requestId, { resolve, reject, timer, type: command.type });
+      this.pending.set(requestId, { resolve, reject, timer, type: command.type, capture });
       this.socket!.send(JSON.stringify({ ...command, requestId }));
     });
   }

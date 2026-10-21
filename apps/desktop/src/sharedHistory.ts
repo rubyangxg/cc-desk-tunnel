@@ -1,5 +1,6 @@
 import type { Session, SessionEvent } from '@cc-desk-tunnel/protocol';
 import type { ConnectionProfile } from './connections.ts';
+import { RequestTimeoutError } from './client.ts';
 import type { ProxyClient } from './client.ts';
 
 export type HistorySegment = {
@@ -162,19 +163,61 @@ export function transferBlock(session: Session, events: SessionEvent[]): string 
   return tools.size ? '仍有工具未返回结果，不能交接。' : null;
 }
 
-export async function completeHistory(client: ProxyClient, sessionId: string) {
+export async function completeHistory(
+  client: ProxyClient,
+  sessionId: string,
+  progress: (count: number) => void = () => {},
+) {
+  const connection = client.state.connectionId;
+  const connected = () => {
+    if (client.state.status !== 'connected' || client.state.connectionId !== connection)
+      throw new Error('连接已改变，未交接。');
+  };
+  connected();
   if (client.state.selectedId !== sessionId) client.select(sessionId);
-  await client.request({ type: 'session.subscribe', sessionId, afterSequence: 0 });
-  const deadline = Date.now() + 60_000;
-  for (;;) {
-    if (client.state.status !== 'connected') throw new Error('连接已中断，未交接。');
-    if (Date.now() >= deadline) throw new Error('读取完整会话历史超时，未交接。');
-    const history = client.state.history[sessionId];
-    if (!history || history.loading || history.loadingEarlier) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      continue;
+  // Retry only a read whose reply timed out, and only on the same connection. No send/stop/continue
+  // command is repeated here. Each page has its own timeout, so a long but advancing archive can finish.
+  const read = async (before?: number) => {
+    for (let attempt = 0; ; attempt++) {
+      connected();
+      try {
+        return await client.fetch(
+          before === undefined
+            ? { type: 'session.subscribe', sessionId, afterSequence: 0 }
+            : { type: 'session.history', sessionId, beforeSequence: before },
+        );
+      } catch (error) {
+        if (!(error instanceof RequestTimeoutError) || attempt >= 2) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+      }
     }
-    if (!history.hasEarlier) return client.shown(sessionId);
-    await client.loadEarlier(sessionId);
+  };
+  const events = new Map<number, SessionEvent>();
+  let before: number | undefined;
+  let revision: string | undefined;
+  for (;;) {
+    const page = await read(before);
+    connected();
+    revision ??= page.session.updatedAt;
+    if (
+      page.session.id !== sessionId ||
+      page.session.updatedAt !== revision ||
+      client.state.sessions.find((item) => item.id === sessionId)?.updatedAt !== revision
+    )
+      throw new Error('读取历史期间会话已改变，未交接。');
+    if (
+      page.mode !== (before === undefined ? 'replace' : 'prepend') ||
+      (before !== undefined && page.firstSequence >= before) ||
+      (page.hasEarlier && (page.firstSequence <= 0 || !page.events.length))
+    )
+      throw new Error('历史分页未前进，未交接。');
+    for (const event of page.events) {
+      if (event.sessionId !== sessionId || (before !== undefined && event.sequence >= before))
+        throw new Error('历史分页范围不一致，未交接。');
+      events.set(event.sequence, event);
+    }
+    progress(events.size);
+    if (!page.hasEarlier) return [...events.values()].sort((a, b) => a.sequence - b.sequence);
+    before = page.firstSequence;
   }
 }
