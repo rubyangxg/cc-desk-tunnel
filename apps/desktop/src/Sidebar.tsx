@@ -44,6 +44,9 @@ type Elsewhere = {
 };
 
 export default function Sidebar({
+  sources = {},
+  catalogStatus,
+  refreshCatalog,
   serviceName,
   unifiedHistory = false,
   sessions,
@@ -64,6 +67,9 @@ export default function Sidebar({
   sessionMenu,
   projectMenu,
 }: {
+  sources?: Record<string, string>;
+  catalogStatus?: string;
+  refreshCatalog?: () => void;
   serviceName?: string;
   unifiedHistory?: boolean;
   sessions: Session[];
@@ -248,7 +254,7 @@ export default function Sidebar({
         onContextMenu={(event) => {
           event.preventDefault();
           leave();
-          sessionMenu(session, { x: event.clientX, y: event.clientY });
+          if (!sources[session.id]) sessionMenu(session, { x: event.clientX, y: event.clientY });
         }}
         onMouseEnter={(event) => {
           const row = event.currentTarget.getBoundingClientRect();
@@ -268,6 +274,7 @@ export default function Sidebar({
         <button
           type="button"
           className="session-select"
+          aria-label={`${session.title} · ${sources[session.id] ?? serviceName ?? '当前服务器'}`}
           disabled={terminalOpen}
           onClick={() => select(session.id)}
         >
@@ -277,31 +284,35 @@ export default function Sidebar({
               className={`running-dot${session.activeRun.status === 'awaiting_approval' ? '' : ' breathing'}`}
             />
           )}
-          <small>{activity(session)}</small>
+          <small title={sources[session.id]}>{sources[session.id] ?? activity(session)}</small>
         </button>
-        <IconButton
-          title={isPinned ? '取消置顶' : '置顶'}
-          className="row-action"
-          onClick={() =>
-            setPrefs((value) => ({
-              ...value,
-              pinnedSessions: toggled(value.pinnedSessions, session.id),
-            }))
-          }
-        >
-          <Pin />
-        </IconButton>
-        <IconButton
-          title="会话操作"
-          className="row-action session-more"
-          onClick={(event) => {
-            const box = event.currentTarget.getBoundingClientRect();
-            leave();
-            sessionMenu(session, { x: box.left, y: box.bottom + 4 });
-          }}
-        >
-          <Ellipsis />
-        </IconButton>
+        {!sources[session.id] && (
+          <>
+            <IconButton
+              title={isPinned ? '取消置顶' : '置顶'}
+              className="row-action"
+              onClick={() =>
+                setPrefs((value) => ({
+                  ...value,
+                  pinnedSessions: toggled(value.pinnedSessions, session.id),
+                }))
+              }
+            >
+              <Pin />
+            </IconButton>
+            <IconButton
+              title="会话操作"
+              className="row-action session-more"
+              onClick={(event) => {
+                const box = event.currentTarget.getBoundingClientRect();
+                leave();
+                sessionMenu(session, { x: box.left, y: box.bottom + 4 });
+              }}
+            >
+              <Ellipsis />
+            </IconButton>
+          </>
+        )}
       </div>
     );
   }
@@ -355,10 +366,18 @@ export default function Sidebar({
           <p className="session-source">
             <strong>当前会话来源：{serviceName}</strong>
             <span>
-              {unifiedHistory
-                ? '此服务内所有账号共用项目与会话列表。'
-                : '本机项目共用；其他服务的历史请切换后查看。'}
+              {refreshCatalog
+                ? '全部代理会话 · 点击自动连接来源服务'
+                : unifiedHistory
+                  ? '此服务内所有账号共用项目与会话列表。'
+                  : '本机项目共用。'}
             </span>
+            {catalogStatus && <span role="status">{catalogStatus}</span>}
+            {refreshCatalog && (
+              <button className="catalog-refresh" onClick={refreshCatalog}>
+                刷新全部会话
+              </button>
+            )}
           </p>
         )}
         {pinned.length > 0 && <div className="list-heading">置顶</div>}

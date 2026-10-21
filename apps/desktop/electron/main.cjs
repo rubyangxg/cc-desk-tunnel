@@ -365,6 +365,31 @@ handle('profiles:quota', async (_event, id) => {
   const { probeQuota } = await import(pathToFileURL(path.join(__dirname, 'quota-probe.mjs')).href);
   return probeQuota(profile, (url) => session.defaultSession.resolveProxy(url));
 });
+handle('profiles:pool', async (_event, id, command) => {
+  const profile = loadProfiles(readSettings(), safeStorage)?.profiles.find(
+    (item) => item.id === id,
+  );
+  if (!profile?.token) throw new Error('请先为此代理保存连接凭据。');
+  const { probePool, poolQuota } = await import(
+    pathToFileURL(path.join(__dirname, 'quota-probe.mjs')).href
+  );
+  const state = await probePool(
+    profile,
+    (url) => session.defaultSession.resolveProxy(url),
+    command,
+  );
+  return { state, limits: poolQuota(state) };
+});
+handle('profiles:sessions', async (_event, id) => {
+  const profile = loadProfiles(readSettings(), safeStorage)?.profiles.find(
+    (item) => item.id === id,
+  );
+  if (!profile?.token) throw new Error('请先为此代理保存连接凭据。');
+  const { probeSessions } = await import(
+    pathToFileURL(path.join(__dirname, 'quota-probe.mjs')).href
+  );
+  return probeSessions(profile, (url) => session.defaultSession.resolveProxy(url));
+});
 // Replaces a file whole through a flushed temporary file, so a crash or power loss in the middle of a write
 // leaves the previous content in place.
 function replaceFile(target, text) {

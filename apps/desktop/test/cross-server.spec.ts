@@ -240,7 +240,7 @@ for (const { manual, loseAck } of [
     );
     await page.goto('/');
     if (manual) {
-      await page.locator('.session-row').filter({ hasText: '同一个任务' }).click();
+      await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
       await page.getByLabel('续接到服务器', { exact: true }).selectOption('second');
     }
     await expect(page.getByText('当前服务器：服务器2', { exact: true })).toBeVisible();
@@ -251,13 +251,13 @@ for (const { manual, loseAck } of [
     expect(sent.filter((m) => m.type === 'message.send')).toHaveLength(1);
     expect(sent.find((m) => m.type === 'message.send')?.text).toContain('保留原来的任务和对话');
     await page.reload();
-    await page.locator('.session-row').filter({ hasText: '同一个任务' }).click();
+    await page.getByRole('button', { name: '同一个任务 · 服务器2', exact: true }).click();
     await expect(page.locator('.message.user')).toContainText('保留原来的任务和对话');
     await expect(page.getByText('服务器2继续完成第二步', { exact: true })).toBeVisible();
     expect(sent.filter((m) => m.type === 'message.send')).toHaveLength(1);
     await page.getByRole('button', { name: '设置与账号', exact: true }).click();
     await page.getByRole('menuitem', { name: '切换代理服务 · 服务器1', exact: true }).click();
-    await page.locator('.session-row').filter({ hasText: '同一个任务' }).click();
+    await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
     await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeDisabled();
     await page.getByRole('button', { name: '前往当前会话', exact: true }).click();
     await expect(page.getByText('当前服务器：服务器2', { exact: true })).toBeVisible();

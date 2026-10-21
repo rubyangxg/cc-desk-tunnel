@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { createServer } from 'node:https';
 import { WebSocketServer } from 'ws';
 import { PROTOCOL_VERSION } from '@cc-desk-tunnel/protocol';
-import { probeQuota } from '../electron/quota-probe.mjs';
+import { probeQuota, probeSessions, probePool } from '../electron/quota-probe.mjs';
 
 test(
   'quota probe pins TLS before authentication and queries status without creating a device or running a prompt',
@@ -116,7 +116,9 @@ test(
               ],
             }),
           );
-        } else if (message.type === 'pool.status') {
+        } else if (
+          ['pool.status', 'pool.configure', 'pool.account.update'].includes(message.type)
+        ) {
           const pool = {
             type: 'pool.state',
             settings: {
@@ -197,6 +199,39 @@ test(
     seen.length = 0;
     assert.deepEqual(await probeQuota(config), limits);
     assert.deepEqual(seen, ['auth', 'pool.status']);
+    seen.length = 0;
+    const catalog = await probeSessions(config);
+    assert.equal(catalog.length, 2);
+    assert.deepEqual(
+      seen,
+      ['auth'],
+      'catalog reads only the greeting and never registers a device',
+    );
+    seen.length = 0;
+    const state = await probePool(config);
+    assert.equal(state.accounts.length, 2);
+    assert.equal(state.accounts[1].id, backupId);
+    assert.deepEqual(seen, ['auth', 'pool.status']);
+    seen.length = 0;
+    await probePool(config, undefined, {
+      type: 'pool.account.update',
+      accountId: backupId,
+      enabled: false,
+    });
+    assert.deepEqual(seen, ['auth', 'pool.account.update']);
+    seen.length = 0;
+    await assert.rejects(
+      probePool(config, undefined, { type: 'message.send', text: 'no' }),
+      /不支持/,
+    );
+    await assert.rejects(
+      probePool(config, undefined, { type: 'pool.account.login', accountId: backupId }),
+      /不支持/,
+    );
+    assert.deepEqual(seen, [], 'unsupported commands are rejected before connecting');
+    await assert.rejects(probePool({ ...config, fingerprint: 'AA'.repeat(32) }), /指纹不匹配/);
+    await assert.rejects(probeSessions({ ...config, fingerprint: 'AA'.repeat(32) }), /指纹不匹配/);
+    assert.deepEqual(seen, [], 'background metadata still pins before sending credentials');
     multiAccount = false;
     serviceProtocol = 16;
     seen.length = 0;

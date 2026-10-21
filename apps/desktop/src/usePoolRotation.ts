@@ -234,8 +234,9 @@ export function usePoolRotation(options: {
   }, [state.status, state.error, profiles.autoConnect, pool.config.enabled, pool.refresh, id]);
 
   useEffect(() => {
-    pool.observe(id, state.metrics?.rateLimits ?? null);
-  }, [state.metrics?.rateLimits, id, pool.observe]);
+    if (!state.features.includes('account-pool'))
+      pool.observe(id, state.metrics?.rateLimits ?? null);
+  }, [state.metrics?.rateLimits, state.features, id, pool.observe]);
 
   useEffect(() => {
     const handoff = profiles.handoff;

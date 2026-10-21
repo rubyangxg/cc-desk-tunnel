@@ -53,6 +53,11 @@ declare global {
       removeWorkspace: (directory: string) => Promise<void>;
       loadProfiles: () => Promise<import('./connections.ts').ConnectionProfiles | null>;
       saveProfiles: (profiles: import('./connections.ts').ConnectionProfiles) => Promise<void>;
+      profileSessions: (id: string) => Promise<import('@cc-desk-tunnel/protocol').Session[]>;
+      profilePool: (
+        id: string,
+        command?: import('./UnifiedAccountPool.tsx').PoolCommand,
+      ) => Promise<import('./UnifiedAccountPool.tsx').PoolSnapshot>;
       probeQuota: (
         id: string,
       ) => Promise<import('@cc-desk-tunnel/protocol').NativeMetrics['rateLimits']>;

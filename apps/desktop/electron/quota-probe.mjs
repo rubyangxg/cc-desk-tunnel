@@ -4,12 +4,35 @@ import {
   MAX_FRAME_BYTES,
   PROTOCOL_VERSION,
   clientServerMessageSchema,
+  commandSchema,
   fallbackServerProtocol,
 } from '@cc-desk-tunnel/protocol';
 import { certificateMatches, connectService } from './proxy-bridge.mjs';
 
 // A telemetry-only peer: it never registers a device, opens a tunnel or submits a model prompt.
 export async function probeQuota(config, resolveProxy, timeoutMs = 25000) {
+  return probe(config, resolveProxy, timeoutMs, 'quota');
+}
+
+// Reading the greeting lists sessions without registering a device or interrupting its execution tunnel.
+export async function probeSessions(config, resolveProxy, timeoutMs = 12000) {
+  return probe(config, resolveProxy, timeoutMs, 'sessions');
+}
+
+// Only bounded account metadata operations are accepted; no device/tunnel or model commands.
+export async function probePool(
+  config,
+  resolveProxy,
+  command = { type: 'pool.status', refresh: true },
+  timeoutMs = 25000,
+) {
+  if (!['pool.status', 'pool.configure', 'pool.account.update'].includes(command?.type))
+    throw new Error('不支持此后台账号操作。');
+  const validated = commandSchema.parse({ ...command, requestId: randomUUID() });
+  return probe(config, resolveProxy, timeoutMs, validated);
+}
+
+async function probe(config, resolveProxy, timeoutMs, catalog) {
   const address = new URL(config.url);
   if (
     address.protocol !== 'wss:' ||
@@ -21,11 +44,11 @@ export async function probeQuota(config, resolveProxy, timeoutMs = 25000) {
     throw new Error('账号池仅支持不含凭据的 WSS 地址。');
   const deadline = Date.now() + timeoutMs;
   try {
-    return await queryQuota(config, address, resolveProxy, timeoutMs, PROTOCOL_VERSION);
+    return await queryQuota(config, address, resolveProxy, timeoutMs, PROTOCOL_VERSION, catalog);
   } catch (error) {
     const remaining = deadline - Date.now();
     if (!(error instanceof LegacyProtocolError) || remaining <= 0) throw error;
-    return queryQuota(config, address, resolveProxy, remaining, error.protocolVersion);
+    return queryQuota(config, address, resolveProxy, remaining, error.protocolVersion, catalog);
   }
 }
 
@@ -76,7 +99,7 @@ class LegacyProtocolError extends Error {
   }
 }
 
-function queryQuota(config, address, resolveProxy, timeoutMs, protocolVersion) {
+function queryQuota(config, address, resolveProxy, timeoutMs, protocolVersion, catalog) {
   return new Promise((resolve, reject) => {
     let complete = false;
     let ready = false;
@@ -84,6 +107,20 @@ function queryQuota(config, address, resolveProxy, timeoutMs, protocolVersion) {
     let sessionId;
     let poolMode = false;
     let refreshingPool = false;
+    let poolState = null;
+    let acknowledged = false;
+    const fullPool = typeof catalog === 'object';
+    const needsRefresh = !fullPool || (catalog.type === 'pool.status' && catalog.refresh);
+    const finishPool = () => {
+      if (
+        poolState &&
+        acknowledged &&
+        (!needsRefresh || (refreshingPool && !poolState.refreshing))
+      ) {
+        quota = fullPool ? poolState : poolQuota(poolState);
+        finish();
+      }
+    };
     const subscriptionId = randomUUID();
     const requestId = randomUUID();
     const socket = new WebSocket(address, {
@@ -123,7 +160,7 @@ function queryQuota(config, address, resolveProxy, timeoutMs, protocolVersion) {
           type: 'auth',
           protocolVersion,
           token: config.token,
-          deviceName: '账号池额度查询',
+          deviceName: catalog === 'sessions' ? '会话列表查询' : '账号池额度查询',
         }),
       );
     });
@@ -147,13 +184,28 @@ function queryQuota(config, address, resolveProxy, timeoutMs, protocolVersion) {
       }
       if (message.type === 'ready') {
         ready = true;
+        if (catalog === 'sessions') {
+          quota = message.sessions;
+          finish();
+          return;
+        }
         if (message.adapter !== 'claude-code') {
           finish(new Error('模拟服务没有 Claude 订阅额度。'));
           return;
         }
         if (message.features?.includes('account-pool')) {
           poolMode = true;
-          socket.send(JSON.stringify({ type: 'pool.status', requestId, refresh: true }));
+          socket.send(
+            JSON.stringify(
+              fullPool
+                ? { ...catalog, requestId }
+                : { type: 'pool.status', requestId, refresh: true },
+            ),
+          );
+          return;
+        }
+        if (fullPool) {
+          finish(new Error('此服务不支持账号池，请升级服务端。'));
           return;
         }
         const session =
@@ -174,14 +226,17 @@ function queryQuota(config, address, resolveProxy, timeoutMs, protocolVersion) {
       }
       if (poolMode) {
         if (message.type === 'pool.state') {
+          poolState = message;
           if (message.refreshing) refreshingPool = true;
-          else if (refreshingPool) {
-            quota = poolQuota(message);
-            finish();
-          }
         }
-        if (message.type === 'response' && message.requestId === requestId && !message.ok)
-          finish(new Error(message.message ?? '账号池额度查询失败。'));
+        if (message.type === 'response' && message.requestId === requestId) {
+          if (!message.ok) {
+            finish(new Error(message.message ?? '账号池操作失败。'));
+            return;
+          }
+          acknowledged = true;
+        }
+        finishPool();
         return;
       }
       if (message.type === 'session.event' && message.event.payload.type === 'native.metrics')

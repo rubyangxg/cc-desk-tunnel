@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { NativeMetrics } from '@cc-desk-tunnel/protocol';
+import type { NativeMetrics, ServerPoolState } from '@cc-desk-tunnel/protocol';
 import type { ConnectionProfile } from './connections.ts';
 import type { PoolSettings, Quotas } from './accountPool.ts';
 
@@ -35,6 +35,7 @@ export function useAccountPool(profiles: ConnectionProfile[]) {
   const [config, setConfig] = useState(settings);
   const currentConfig = useRef(config);
   currentConfig.current = config;
+  const [states, setStates] = useState<Record<string, ServerPoolState | null>>({});
   const [quotas, setQuotas] = useState<Quotas>({});
   const [refreshing, setRefreshing] = useState(false);
   const current = useRef(profiles);
@@ -87,9 +88,20 @@ export function useAccountPool(profiles: ConnectionProfile[]) {
                 !current.current.length ||
                 current.current.some((item) => connectionKey(item) === connectionKey(profile));
               try {
-                const limits = await window.desktop!.probeQuota(profile.id);
+                let details:
+                  Awaited<ReturnType<NonNullable<Window['desktop']>['profilePool']>> | undefined;
+                try {
+                  details = await window.desktop?.profilePool?.(profile.id);
+                } catch (error) {
+                  if (!(error instanceof Error) || !error.message.includes('不支持账号池'))
+                    throw error;
+                }
+                const limits = details
+                  ? details.limits
+                  : await window.desktop!.probeQuota(profile.id);
                 if (!unchanged() || (latest.current[profile.id]?.checkedAt ?? 0) > checkedAt)
                   return;
+                setStates((value) => ({ ...value, [profile.id]: details?.state ?? null }));
                 update({
                   ...latest.current,
                   [profile.id]: {
@@ -130,6 +142,11 @@ export function useAccountPool(profiles: ConnectionProfile[]) {
     for (const [id, signature] of connections.current) {
       if (next.get(id) !== signature) {
         delete quotas[id];
+        setStates((value) => {
+          const next = { ...value };
+          delete next[id];
+          return next;
+        });
         changed = true;
       }
     }
@@ -170,7 +187,25 @@ export function useAccountPool(profiles: ConnectionProfile[]) {
     },
     [configure],
   );
+  const command = async (id: string, command: import('./UnifiedAccountPool.tsx').PoolCommand) => {
+    const profile = current.current.find((item) => item.id === id);
+    if (!profile || !window.desktop?.profilePool) throw new Error('请先连接该服务器管理账号。');
+    const result = await window.desktop.profilePool(id, command);
+    if (!current.current.some((item) => connectionKey(item) === connectionKey(profile)))
+      throw new Error('服务器配置已改变，请重新检测。');
+    setStates((value) => ({ ...value, [id]: result.state }));
+    update({
+      ...latest.current,
+      [id]: {
+        limits: result.limits,
+        checkedAt: Date.now(),
+        blockedUntil: latest.current[id]?.blockedUntil,
+      },
+    });
+  };
   return {
+    states,
+    command,
     config,
     quotas,
     refreshing,

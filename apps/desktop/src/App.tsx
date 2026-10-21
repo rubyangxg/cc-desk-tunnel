@@ -40,7 +40,7 @@ import type {
   SessionEvent,
 } from '@cc-desk-tunnel/protocol';
 import AccountPanel from './AccountPanel.tsx';
-import ServerAccountPool from './ServerAccountPool.tsx';
+import UnifiedAccountPool from './UnifiedAccountPool.tsx';
 import { ProxyClient, RequestInterruptedError } from './client.ts';
 import Composer from './Composer.tsx';
 import SessionBar from './SessionBar.tsx';
@@ -79,6 +79,7 @@ import {
 import SettingsPage from './SettingsPage.tsx';
 import type { Section } from './SettingsPage.tsx';
 import Sidebar from './Sidebar.tsx';
+import { useSessionCatalog } from './useSessionCatalog.ts';
 import TitleBar from './TitleBar.tsx';
 import type { BarMenu } from './TitleBar.tsx';
 import { IconButton, Menu } from './ui.tsx';
@@ -212,6 +213,8 @@ export function App({ profiles }: { profiles: ProfileControls }) {
       current = false;
     };
   }, [unplaced]);
+  const catalog = useSessionCatalog(form, profiles.profiles, connected, state.sessions);
+  const catalogRows = new Map(catalog.others.map((item) => [item.display.id, item]));
   const onThis = (session: Session) => isHere(session, state.device, absent);
   const sessions = state.sessions.filter((session) => onThis(session));
   const elsewhere = state.sessions.filter((session) => !onThis(session));
@@ -320,15 +323,19 @@ export function App({ profiles }: { profiles: ProfileControls }) {
     error: setError,
   });
   useEffect(() => {
-    if (
-      connected &&
-      profiles.focusSession &&
-      state.sessions.some((session) => session.id === profiles.focusSession)
-    ) {
-      show(profiles.focusSession);
+    if (connected && profiles.focusSession) {
+      if (state.sessions.some((session) => session.id === profiles.focusSession))
+        show(profiles.focusSession);
+      else setError('来源服务器已没有这条会话，请刷新会话列表。');
       profiles.completeFocus();
     }
   }, [connected, profiles.focusSession, state.sessions]);
+  useEffect(() => {
+    if (connected && profiles.focusAccount) {
+      open('settings', 'account');
+      profiles.completeAccountFocus();
+    }
+  }, [connected, profiles.focusAccount]);
   const canCompact = !!latest(events, 'native.context')?.persisted;
   // A native terminal anywhere keeps what the CLI holds for all sessions, the account and its status, from
   // being read or changed; this window's own terminal, `terminalSessionId`, also takes the window.
@@ -645,7 +652,12 @@ export function App({ profiles }: { profiles: ProfileControls }) {
     setForm((current) => (current.remember ? current : { ...current, token: '' }));
     void window.desktop?.disconnectProxy();
   }
-  async function switchProfile(id: string, connect: boolean, sessionId?: string) {
+  async function switchProfile(
+    id: string,
+    connect: boolean,
+    sessionId?: string,
+    accountPage = false,
+  ) {
     if (id === profileId) {
       if (sessionId) show(sessionId);
       return;
@@ -655,7 +667,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
       signedIn.current = false;
       client.disconnect();
       await window.desktop?.disconnectProxy();
-      await profiles.select(id, connect, undefined, sessionId);
+      await profiles.select(id, connect, undefined, sessionId, accountPage);
     });
   }
   function confirmSwitch() {
@@ -1569,22 +1581,20 @@ export function App({ profiles }: { profiles: ProfileControls }) {
           showNotes={setNotes}
           account={
             serverPool ? (
-              <>
-                {profiles.profiles.length > 1 && (
-                  <AccountPoolPanel
-                    pool={profiles.pool}
-                    profiles={profiles.profiles}
-                    activeId={profileId}
-                    connected={connected}
-                  />
-                )}
-                <ServerAccountPool
-                  client={client}
-                  pool={state.pool}
-                  connected={connected}
-                  serviceName={form.name}
-                />
-              </>
+              <UnifiedAccountPool
+                client={client}
+                state={state.pool}
+                connected={connected}
+                profiles={profiles}
+                select={(id) =>
+                  void switchProfile(
+                    id,
+                    !!profiles.profiles.find((item) => item.id === id)?.token,
+                    undefined,
+                    true,
+                  )
+                }
+              />
             ) : (
               <AccountPanel
                 pool={
@@ -1628,8 +1638,19 @@ export function App({ profiles }: { profiles: ProfileControls }) {
           <Sidebar
             serviceName={serverPool || profiles.profiles.length > 1 ? form.name : undefined}
             unifiedHistory={serverPool}
-            sessions={sessions}
-            elsewhere={elsewhere}
+            sources={Object.fromEntries(
+              catalog.others.map((item) => [item.display.id, item.source.name]),
+            )}
+            catalogStatus={catalog.failure || (catalog.refreshing ? '同步其他代理会话…' : '')}
+            refreshCatalog={() => void catalog.refresh()}
+            sessions={[
+              ...sessions,
+              ...catalog.others.filter((item) => onThis(item.session)).map((item) => item.display),
+            ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))}
+            elsewhere={[
+              ...elsewhere,
+              ...catalog.others.filter((item) => !onThis(item.session)).map((item) => item.display),
+            ]}
             devices={state.devices}
             selectedId={selected?.id}
             projects={projects}
@@ -1639,7 +1660,15 @@ export function App({ profiles }: { profiles: ProfileControls }) {
             refreshing={refreshing}
             terminalOpen={!!terminalSessionId}
             notifications={notifications}
-            select={show}
+            select={(id) => {
+              const remote = catalogRows.get(id);
+              if (!remote) {
+                show(id);
+                return;
+              }
+              const profile = profiles.profiles.find((item) => item.id === remote.source.id);
+              if (profile) void switchProfile(profile.id, !!profile.token, remote.session.id);
+            }}
             newSession={() => {
               void newSession();
             }}

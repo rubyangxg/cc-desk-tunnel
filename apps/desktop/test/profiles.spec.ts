@@ -74,15 +74,17 @@ test('saved profiles share local projects, restore server history, isolate draft
   await expect(
     page.getByRole('button', { name: '新建会话 · D:\\工作\\中文项目', exact: true }),
   ).toBeVisible();
-  await expect(page.getByText('此服务暂无会话', { exact: true })).toBeVisible();
-  await expect(page.locator('.session-row').filter({ hasText: title })).toHaveCount(0);
+  const oldSession = page.locator('.session-row').filter({ hasText: title });
+  await expect(oldSession).toHaveCount(1);
+  await expect(oldSession).toContainText('工作账号');
+  await expect(oldSession.getByRole('button', { name: '会话操作', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '添加项目', exact: true }).click();
   await page.getByLabel('本机项目目录').fill('D:\\个人项目');
   await page.getByRole('button', { name: '添加', exact: true }).click();
   await page.getByRole('button', { name: '定时任务', exact: true }).click();
   await expect(page.getByText('A 的定时任务', { exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: '设置与账号', exact: true }).click();
-  await page.getByRole('menuitem', { name: '切换代理服务 · 工作账号', exact: true }).click();
+  await page.getByRole('button', { name: '会话', exact: true }).click();
+  await oldSession.getByRole('button').click();
   await expect(page.getByLabel('服务地址', { exact: true })).toHaveValue(first.serverUrl);
   await expect(page.getByLabel('服务凭据', { exact: true })).toHaveValue('');
   await page.getByLabel('服务凭据', { exact: true }).fill(first.token);
@@ -91,7 +93,7 @@ test('saved profiles share local projects, restore server history, isolate draft
   await expect(
     page.getByRole('button', { name: '新建会话 · D:\\个人项目', exact: true }),
   ).toBeVisible();
-  await page.locator('.session-row').filter({ hasText: title }).click();
+  // The catalog click restores this exact session after authentication, without another row click.
   await expect(page.locator('.message.user')).toContainText('切换服务前保留的历史消息');
   await expect(page.getByRole('textbox', { name: '消息', exact: true })).toHaveValue(
     '账号 A 的未发送草稿',
@@ -380,3 +382,45 @@ for (const { recovery, failedService } of [
       }
     },
   );
+
+test('catalog keeps newer results and persists metadata without queued message bodies', async ({
+  page,
+}) => {
+  await page.goto('/');
+  const result = await page.evaluate(async () => {
+    const module = '/src/sessionCatalog.ts';
+    const { readCatalog, writeCatalog } = await import(/* @vite-ignore */ module);
+    const source = {
+      id: 'catalog-test',
+      name: '远程',
+      url: 'wss://catalog.example/ws',
+      fingerprint: '',
+    };
+    const session = {
+      id: crypto.randomUUID(),
+      title: '新目录',
+      projectPath: '/tmp/project',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      activeRun: null,
+      autoTitle: false,
+      model: null,
+      effort: null,
+      permissionMode: 'auto',
+      messageQueue: { messages: [{ text: 'private queued text' }] },
+    };
+    await writeCatalog(source, [session], 200);
+    await writeCatalog(source, [], 100);
+    const retained = (await readCatalog()).find(
+      (entry: { source: { id: string } }) => entry.source.id === source.id,
+    );
+    await writeCatalog(source, [], 300);
+    const deleted = (await readCatalog()).find(
+      (entry: { source: { id: string } }) => entry.source.id === source.id,
+    );
+    return { retained, deleted };
+  });
+  expect(result.retained.sessions).toHaveLength(1);
+  expect(JSON.stringify(result.retained)).not.toContain('private queued text');
+  expect(result.deleted.sessions).toHaveLength(0);
+});

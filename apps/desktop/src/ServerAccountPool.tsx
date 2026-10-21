@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowDown,
@@ -24,7 +25,7 @@ import type { ProxyClient } from './client.ts';
 import { IconButton, Modal, Switch } from './ui.tsx';
 import { copyText } from './copy.tsx';
 
-function status(account: ServerPoolAccount, now: number) {
+export function status(account: ServerPoolAccount, now: number) {
   if (!account.enabled) return { text: '已停用', kind: 'muted' };
   if (account.login) return { text: '等待授权', kind: 'warning' };
   if (account.loggedIn === false) return { text: '需要登录', kind: 'warning' };
@@ -55,7 +56,7 @@ function resetTime(value: string | null | undefined, now: number) {
   const minutes = Math.ceil((time - now) / 60000);
   return `${minutes >= 60 ? `${Math.floor(minutes / 60)} 小时 ` : ''}${minutes % 60} 分钟后重置`;
 }
-function Quota({
+export function Quota({
   account,
   name,
   label,
@@ -111,11 +112,23 @@ export default function ServerAccountPool({
   pool,
   connected,
   serviceName,
+  unified,
 }: {
   client: ProxyClient;
   pool: ServerPoolState | null;
   connected: boolean;
   serviceName: string;
+  unified?: {
+    policy: ReactNode;
+    cards: ReactNode;
+    picker: ReactNode;
+    count: number;
+    ready: number;
+    loggedIn: number;
+    refreshing: boolean;
+    nextReset?: { at: number; name: string };
+    refresh: () => void;
+  };
 }) {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -161,7 +174,14 @@ export default function ServerAccountPool({
   const ready = accounts.filter((account) => status(account, now).kind === 'ready').length;
   const waits = pool?.quotaWaits ?? [];
   const scheduled = waits.filter((wait) => wait.at !== null).sort((a, b) => a.at! - b.at!)[0];
-  const reset = waits.length ? scheduled : ready === 0 ? pool?.nextReset : null;
+  const localReset = waits.length ? scheduled : ready === 0 ? pool?.nextReset : null;
+  const remoteReset =
+    ready + (unified?.ready ?? 0) === 0 &&
+    unified?.nextReset &&
+    (!localReset?.at || unified.nextReset.at < localReset.at)
+      ? unified.nextReset
+      : null;
+  const reset = remoteReset ? { at: remoteReset.at, accountId: '' } : localReset;
   const seconds = reset?.at != null ? Math.max(0, Math.ceil((reset.at - now) / 1000)) : null;
   const countdown =
     seconds === null
@@ -186,10 +206,11 @@ export default function ServerAccountPool({
       <header className="server-pool-hero">
         <div className="pool-service-tag">
           <Server />
-          {serviceName}
+          {unified ? '全部代理服务器' : serviceName}
         </div>
         <div className="pool-title-row">
           <h1>Claude 账号池</h1>
+          {unified?.picker}
           <button
             className="button primary"
             disabled={disabled || !pool || accounts.length >= 10}
@@ -203,13 +224,15 @@ export default function ServerAccountPool({
           <div>
             <span>可调度</span>
             <strong>
-              {ready}
-              <small> / {accounts.length}</small>
+              {ready + (unified?.ready ?? 0)}
+              <small> / {accounts.length + (unified?.count ?? 0)}</small>
             </strong>
           </div>
           <div>
             <span>已登录</span>
-            <strong>{accounts.filter((account) => account.loggedIn).length}</strong>
+            <strong>
+              {accounts.filter((account) => account.loggedIn).length + (unified?.loggedIn ?? 0)}
+            </strong>
           </div>
         </div>
         {(waits.length > 0 || reset) && (
@@ -219,7 +242,9 @@ export default function ServerAccountPool({
             <strong role="timer" aria-label="距额度重置">
               {connected ? countdown : '等待重新连接'}
             </strong>
-            {resetAccount && <span className="pool-reset-account">{resetAccount.name}</span>}
+            {(remoteReset || resetAccount) && (
+              <span className="pool-reset-account">{remoteReset?.name ?? resetAccount?.name}</span>
+            )}
             <small>
               {!connected
                 ? '重新连接后确认等待状态'
@@ -255,51 +280,53 @@ export default function ServerAccountPool({
         </div>
       ) : (
         <>
-          <div className="pool-policy-card">
-            <div className="pool-policy-heading">
-              <h2 title="额度耗尽后接力；全部账号耗尽时等待重置">自动接力</h2>
-              <Switch
-                label="启用服务端账号池"
-                checked={pool.settings.enabled}
-                disabled={disabled}
-                onChange={(enabled) => configure({ enabled })}
-              />
-            </div>
-            <div className="pool-policy-fields">
-              <label>
-                优先顺序
-                <select
-                  aria-label="服务端账号优先顺序"
-                  value={pool.settings.strategy}
+          {unified?.policy ?? (
+            <div className="pool-policy-card">
+              <div className="pool-policy-heading">
+                <h2 title="额度耗尽后接力；全部账号耗尽时等待重置">自动接力</h2>
+                <Switch
+                  label="启用服务端账号池"
+                  checked={pool.settings.enabled}
                   disabled={disabled}
-                  onChange={(event) =>
-                    configure({ strategy: event.target.value as 'reset' | 'order' })
-                  }
-                >
-                  <option value="reset">5 小时额度最快重置</option>
-                  <option value="order">自定义顺序</option>
-                </select>
-              </label>
-              <label>
-                固定账号
-                <select
-                  aria-label="默认 Claude 账号"
-                  value={pool.settings.preferredId}
-                  disabled={disabled}
-                  onChange={(event) => configure({ preferredId: event.target.value })}
-                >
-                  {accounts.map((account) => (
-                    <option key={account.id} value={account.id}>
-                      {account.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  onChange={(enabled) => configure({ enabled })}
+                />
+              </div>
+              <div className="pool-policy-fields">
+                <label>
+                  优先顺序
+                  <select
+                    aria-label="服务端账号优先顺序"
+                    value={pool.settings.strategy}
+                    disabled={disabled}
+                    onChange={(event) =>
+                      configure({ strategy: event.target.value as 'reset' | 'order' })
+                    }
+                  >
+                    <option value="reset">5 小时额度最快重置</option>
+                    <option value="order">自定义顺序</option>
+                  </select>
+                </label>
+                <label>
+                  固定账号
+                  <select
+                    aria-label="默认 Claude 账号"
+                    value={pool.settings.preferredId}
+                    disabled={disabled}
+                    onChange={(event) => configure({ preferredId: event.target.value })}
+                  >
+                    {accounts.map((account) => (
+                      <option key={account.id} value={account.id}>
+                        {account.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
             </div>
-          </div>
+          )}
           <div className="pool-list-heading">
             <h2>
-              账号 <span>{accounts.length}</span>
+              账号 <span>{accounts.length + (unified?.count ?? 0)}</span>
             </h2>
             <div className="pool-toolbar">
               <button className="button secondary" disabled={disabled} onClick={() => setLog(true)}>
@@ -308,11 +335,14 @@ export default function ServerAccountPool({
               </button>
               <button
                 className="button secondary"
-                disabled={disabled || pool.refreshing}
-                onClick={() => void act({ type: 'pool.status', refresh: true })}
+                disabled={disabled || pool.refreshing || unified?.refreshing}
+                onClick={() => {
+                  void act({ type: 'pool.status', refresh: true });
+                  unified?.refresh();
+                }}
               >
                 <RefreshCw className={pool.refreshing ? 'spinning' : ''} />
-                {pool.refreshing ? '正在检测…' : '检测全部账号'}
+                {pool.refreshing || unified?.refreshing ? '正在检测…' : '检测全部账号'}
               </button>
             </div>
           </div>
@@ -336,6 +366,7 @@ export default function ServerAccountPool({
                     <span className={`pool-state ${state.kind}`}>{state.text}</span>
                   </div>
                   <div className="pool-account-tags">
+                    {unified && <span className="pool-service-badge">{serviceName} · 已连接</span>}
                     <span>{account.subscriptionType ?? 'Claude Code'}</span>
                     {account.busy && <span className="account-running">任务运行中</span>}
                     {account.id === pool.settings.preferredId && <span>默认账号</span>}
@@ -481,6 +512,7 @@ export default function ServerAccountPool({
                 </article>
               );
             })}
+            {unified?.cards}
           </div>
         </>
       )}
