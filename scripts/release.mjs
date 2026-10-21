@@ -5,21 +5,29 @@ import { fileURLToPath } from 'node:url';
 import { releaseFiles } from './release-manifest.mjs';
 
 // Releases the version in apps/desktop/package.json from what the personal branch on GitHub holds. Nothing is
-// built on this computer: the `package` workflow on GitHub builds every file from that commit, starts each
+// built on this computer: the `package` workflow on GitHub builds the selected files from that commit, starts each
 // client as a check, and attaches them to a draft release this script made, with release.json and
 // SHA256SUMS. The release stays a draft unless --publish is given; --prerelease marks it as a preview, which
-// the service does not offer as an update. --dry-run only writes the notes. Needs gh (or GH pointing at
+// the service does not offer as an update. Windows and server packages are the default; --all-platforms adds
+// macOS and Linux. --resume continues a draft from the same commit. --dry-run only writes the notes. Needs gh (or GH pointing at
 // it), signed in.
 const root = fileURLToPath(new URL('..', import.meta.url));
 const dryRun = process.argv.includes('--dry-run');
 const publish = process.argv.includes('--publish');
 const prerelease = process.argv.includes('--prerelease');
+const resume = process.argv.includes('--resume');
+const target = process.argv.includes('--all-platforms') ? 'all' : 'windows-server';
 // A word this script does not know is a mistake, not something to release past: `--help` would otherwise publish.
 const unknown = process.argv
   .slice(2)
-  .filter((word) => !['--dry-run', '--publish', '--prerelease'].includes(word));
+  .filter(
+    (word) =>
+      !['--dry-run', '--publish', '--prerelease', '--all-platforms', '--resume'].includes(word),
+  );
 if (unknown.length)
-  throw new Error(`Unknown argument ${unknown.join(' ')}. Use --dry-run, --prerelease, --publish.`);
+  throw new Error(
+    `Unknown argument ${unknown.join(' ')}. Use --dry-run, --prerelease, --publish, --all-platforms, --resume.`,
+  );
 const repositoryName = 'rubyangxg/cc-desk-tunnel';
 const releaseBranch = 'personal';
 const gh = process.env.GH ?? 'gh';
@@ -43,7 +51,7 @@ const section = new RegExp(
   .trim();
 if (!section) throw new Error(`CHANGELOG.md has no section "## ${version}".`);
 const repository = `https://github.com/${repositoryName}`;
-const [installer, server, ...others] = releaseFiles(version);
+const [installer, server, ...others] = releaseFiles(version, target);
 // Every release reads the same way: what the project is, this version's section of the change log with its
 // headings one level up, then how to get and upgrade to it. A preview carries the same text, so that making
 // it the release later changes nothing a reader has seen.
@@ -62,7 +70,11 @@ const notes = [
   '- **已在使用**：可在客户端的“设置 → 关于与更新”里检查更新；升级顺序与兼容版本以本版“升级说明”为准。',
   `- **Windows 客户端**：下载 \`${installer}\` 并安装。安装包没有代码签名，SmartScreen 与杀毒软件的提示见[说明](${repository}#杀毒软件与-smartscreen)。`,
   `- **服务端**：新部署按[快速开始](${repository}#快速开始)用一条命令安装；\`${server}\` 是它下载的程序包。`,
-  `- **macOS 与 Linux 客户端（实验性）**：${others.map((name) => `\`${name}\``).join('、')}。没有签名，也不带应用内更新，升级时重新下载安装；安装与首次打开见 [macOS 说明](${repository}/blob/${releaseBranch}/docs/macos.md)与 [Linux 说明](${repository}/blob/${releaseBranch}/docs/linux.md)。`,
+  ...(others.length
+    ? [
+        `- **macOS 与 Linux 客户端（实验性）**：${others.map((name) => `\`${name}\``).join('、')}。没有签名，也不带应用内更新，升级时重新下载安装；安装与首次打开见 [macOS 说明](${repository}/blob/${releaseBranch}/docs/macos.md)与 [Linux 说明](${repository}/blob/${releaseBranch}/docs/linux.md)。`,
+      ]
+    : []),
   '- **校验**：各文件的 SHA256 在 `SHA256SUMS` 与 `release.json` 中。',
   '',
   `文档：[部署手册](${repository}/blob/${releaseBranch}/deploy/README.md) · [变更记录](${repository}/blob/${releaseBranch}/CHANGELOG.md) · [安全须知](${repository}#安全须知)`,
@@ -87,30 +99,49 @@ if (dryRun) {
   ]).trim();
   if (remote !== commit)
     throw new Error('Check out the current personal branch from GitHub first.');
-  let exists = true;
+  let existing;
   try {
-    run(gh, ['release', 'view', tag], { stdio: 'pipe' });
+    existing = JSON.parse(
+      run(gh, ['release', 'view', tag, '--json', 'url,isDraft,targetCommitish,assets'], {
+        stdio: 'pipe',
+      }),
+    );
   } catch {
-    exists = false;
+    if (resume) throw new Error(`Cannot read draft ${tag} to resume it.`);
   }
-  if (exists) throw new Error(`Release ${tag} already exists; raise the version.`);
+  if (existing && (!resume || !existing.isDraft || existing.targetCommitish !== commit))
+    throw new Error(
+      `Release ${tag} already exists; --resume requires a draft from the current commit.`,
+    );
+  if (
+    existing &&
+    existing.assets.some(
+      (asset) =>
+        ![...releaseFiles(version, target), 'release.json', 'SHA256SUMS'].includes(asset.name),
+    )
+  )
+    throw new Error(
+      `Draft ${tag} has files outside the selected target; inspect it before resuming.`,
+    );
+  if (existing) run(gh, ['release', 'edit', tag, '--notes-file', join(output, 'notes.md')]);
 
   // Always a draft first: what is published is complete.
-  let url;
+  let url = existing?.url;
   try {
-    url = run(gh, [
-      'release',
-      'create',
-      tag,
-      '--draft',
-      ...(prerelease ? ['--prerelease', '--latest=false'] : []),
-      '--target',
-      commit,
-      '--title',
-      `CC Desk Tunnel ${version}`,
-      '--notes-file',
-      join(output, 'notes.md'),
-    ]).trim();
+    if (!existing)
+      url = run(gh, [
+        'release',
+        'create',
+        tag,
+        '--draft',
+        ...(prerelease ? ['--prerelease', '--latest=false'] : []),
+        '--target',
+        commit,
+        '--title',
+        `CC Desk Tunnel ${version}`,
+        '--notes-file',
+        join(output, 'notes.md'),
+      ]).trim();
   } catch (error) {
     // gh has reported a failure after GitHub had made the draft; it is looked for before giving up, or the
     // next attempt would stop at a release that "already exists".
@@ -140,12 +171,30 @@ if (dryRun) {
           '--commit',
           commit,
           '--json',
-          'databaseId',
+          'databaseId,status,conclusion,displayTitle',
         ]),
       );
-    const before = new Set(runs().map((item) => item.databaseId));
-    run(gh, ['workflow', 'run', 'package.yml', '--ref', releaseBranch, '-f', `release=${tag}`]);
-    let started;
+    const previous = runs();
+    const before = new Set(previous.map((item) => item.databaseId));
+    let started = resume
+      ? previous.find((item) => item.displayTitle === `${tag} · ${target}`)
+      : undefined;
+    if (!started && previous.some((item) => item.status !== 'completed'))
+      throw new Error(
+        'Another package run for this commit is still active; inspect it before starting a release.',
+      );
+    if (!started)
+      run(gh, [
+        'workflow',
+        'run',
+        'package.yml',
+        '--ref',
+        releaseBranch,
+        '-f',
+        `release=${tag}`,
+        '-f',
+        `target=${target}`,
+      ]);
     for (let attempt = 0; !started && attempt < 30; attempt++) {
       wait(5_000);
       started = runs().find((item) => !before.has(item.databaseId));
@@ -158,24 +207,36 @@ if (dryRun) {
       run(gh, ['run', 'watch', String(started.databaseId), '--exit-status', '--interval', '30'], {
         stdio: 'inherit',
       });
-    try {
-      watch();
-    } catch {
-      console.log('The run failed; running its failed jobs once more.');
-      run(gh, ['run', 'rerun', String(started.databaseId), '--failed']);
-      wait(15_000);
-      watch();
+    let rerun = false;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        watch();
+        break;
+      } catch (error) {
+        if (attempt >= 3) throw error;
+        const status = JSON.parse(
+          run(gh, ['run', 'view', String(started.databaseId), '--json', 'status,conclusion']),
+        );
+        if (status.status === 'completed') {
+          if (status.conclusion === 'success') break;
+          if (rerun || status.conclusion !== 'failure') throw error;
+          console.log('The run failed; running its failed jobs once more.');
+          run(gh, ['run', 'rerun', String(started.databaseId), '--failed']);
+          rerun = true;
+        } else console.log('Watching was interrupted; continuing to watch the existing run.');
+        wait(15_000);
+      }
     }
     const attached = JSON.parse(run(gh, ['release', 'view', tag, '--json', 'assets'])).assets.map(
       (asset) => asset.name,
     );
-    const missing = [...releaseFiles(version), 'release.json', 'SHA256SUMS'].filter(
+    const missing = [...releaseFiles(version, target), 'release.json', 'SHA256SUMS'].filter(
       (name) => !attached.includes(name),
     );
     if (missing.length) throw new Error(`The draft ${tag} lacks ${missing.join(', ')}.`);
   } catch (error) {
     console.log(
-      `The draft ${url} is left as it is. Delete it (gh release delete ${tag}) to try again.`,
+      `The draft ${url} is left as it is. Inspect the existing run, then use --resume to continue it.`,
     );
     throw error;
   }

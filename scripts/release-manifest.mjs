@@ -5,18 +5,24 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Describes the files of a release, which the `package` workflow has gathered in one directory: release.json
-// is what programs read, SHA256SUMS the same hashes for `sha256sum -c`. A release has exactly these five
-// files; one missing or one too many stops it.
+// is what programs read, SHA256SUMS the same hashes for `sha256sum -c`. A release has exactly the files
+// selected by its target; one missing or one too many stops it.
 const root = fileURLToPath(new URL('..', import.meta.url));
 const directory = resolve(process.argv[2] ?? 'artifacts/release');
 const version = JSON.parse(readFileSync(join(root, 'apps/desktop/package.json'), 'utf8')).version;
-export const releaseFiles = (version) => [
-  `CC-Desk-Tunnel-Setup-${version}-x64.exe`,
-  `cc-desk-tunnel-server-${version}.tar.gz`,
-  `CC-Desk-Tunnel-${version}-linux-amd64.deb`,
-  `CC-Desk-Tunnel-${version}-mac-arm64.dmg`,
-  `CC-Desk-Tunnel-${version}-mac-x64.dmg`,
-];
+export const releaseFiles = (version, target = 'windows-server') => {
+  if (!['windows-server', 'all'].includes(target))
+    throw new Error(`Unknown release target: ${target}`);
+  const files = [`CC-Desk-Tunnel-Setup-${version}-x64.exe`];
+  files.push(`cc-desk-tunnel-server-${version}.tar.gz`);
+  if (target === 'all')
+    files.push(
+      `CC-Desk-Tunnel-${version}-linux-amd64.deb`,
+      `CC-Desk-Tunnel-${version}-mac-arm64.dmg`,
+      `CC-Desk-Tunnel-${version}-mac-x64.dmg`,
+    );
+  return files;
+};
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const protocol = Number(
@@ -29,7 +35,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const commit =
     process.env.GITHUB_SHA ??
     execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
-  const names = releaseFiles(version);
+  const names = releaseFiles(version, process.env.RELEASE_TARGET);
   const found = readdirSync(directory).sort();
   if (found.join() !== [...names].sort().join())
     throw new Error(`Expected ${names.join(', ')} in ${directory}; found ${found.join(', ')}.`);

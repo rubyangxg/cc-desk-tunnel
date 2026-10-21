@@ -1,15 +1,21 @@
-# Builds the release files on GitHub's machines instead of a maintainer's own: the Windows installer, the
-# macOS and Linux packages and the server bundle, each client started as a check. This is where a release
+# Builds the Windows installer and server bundle by default, with macOS and Linux available on request.
+# Each client is started as a check. This is where a release
 # is built: the release script names its draft in `release`, and the files are attached to it with their
 # hashes. Nothing is signed with a certificate. Otherwise the files are kept with the run for 30 days; it
 # runs when asked for and after a push to the personal branch.
 name: package
+run-name: ${{ inputs.release || github.ref_name }} · ${{ inputs.target || 'windows-server' }}
 on:
   workflow_dispatch:
     inputs:
       release:
         description: Tag of a draft release to attach the files to. Left empty, they stay with the run.
         default: ''
+      target:
+        description: Release packages (Windows by default, with the server updater)
+        type: choice
+        default: windows-server
+        options: [windows-server, all]
   push:
     branches: [personal]
 permissions:
@@ -60,6 +66,7 @@ jobs:
   # One package for each kind of Mac, each built and started on a machine of its own kind. The picture is of
   # the window as the system draws it there.
   macos:
+    if: inputs.target == 'all'
     strategy:
       fail-fast: false
       matrix:
@@ -112,6 +119,7 @@ jobs:
   # The .deb, built and then installed the way a user installs it, and started from where it was installed:
   # that is where its sandbox and what it depends on are in place. A virtual screen stands in for a desktop.
   linux:
+    if: inputs.target == 'all'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -177,7 +185,12 @@ jobs:
   # release.json and SHA256SUMS, without passing through a maintainer's computer. The only job that may
   # write to the repository.
   attach:
-    if: inputs.release != ''
+    if: >-
+      always() && !cancelled() && inputs.release != '' &&
+      needs.windows.result == 'success' &&
+      needs.server.result == 'success' &&
+      ((inputs.target == 'all' && needs.macos.result == 'success' && needs.linux.result == 'success') ||
+       (inputs.target != 'all' && needs.macos.result == 'skipped' && needs.linux.result == 'skipped'))
     needs: [windows, macos, linux, server]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -195,9 +208,11 @@ jobs:
           path: downloaded
       - run: |
           mkdir release
-          mv downloaded/*.exe downloaded/*.dmg downloaded/*.deb downloaded/*.tar.gz release/
+          find downloaded -maxdepth 1 -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.deb' -o -name '*.tar.gz' \) -exec mv {} release/ \;
           node scripts/release-manifest.mjs release
-          gh release upload "$TAG" release/* --repo "$GITHUB_REPOSITORY"
+          test "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish --jq '[.isDraft, .targetCommitish] | @tsv')" = "$(printf 'true\t%s' "$GITHUB_SHA")"
+          gh release upload "$TAG" release/* --repo "$GITHUB_REPOSITORY" --clobber
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.release }}
+          RELEASE_TARGET: ${{ inputs.target || 'windows-server' }}
