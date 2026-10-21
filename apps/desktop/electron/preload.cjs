@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('desktop', {
   gitBranch: (directory) => ipcRenderer.invoke('git:branch', directory),
   copyText: (text) => ipcRenderer.invoke('clipboard:write', text),
   openExternal: (url) => ipcRenderer.invoke('external:open', url),
+  openWeb: (url) => ipcRenderer.invoke('web:open', url),
   workspaceRoots: () => ipcRenderer.invoke('workspace:roots'),
   chooseWorkspace: (reset) => ipcRenderer.invoke('workspace:choose', reset),
   createWorkspace: () => ipcRenderer.invoke('workspace:create'),

@@ -4360,3 +4360,277 @@ dialog {
 .pool-server-order > div > span {
   flex: 1;
 }
+
+/* Browser access uses the workbench's existing rows and dialogs, not a second shell. */
+.web-login {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.web-login-body {
+  width: min(100%, 400px);
+}
+.web-login-body h1 {
+  margin: 0 0 8px;
+  font-size: 26px;
+}
+.web-login-body form,
+.web-settings-form fieldset {
+  display: grid;
+  gap: 18px;
+}
+.web-login-body label,
+.web-settings-form label {
+  display: grid;
+  gap: 6px;
+}
+.web-login-body input,
+.web-settings-form input,
+.web-settings-form textarea {
+  width: 100%;
+  min-width: 0;
+}
+.web-trust-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  margin: 16px 0;
+  color: var(--text);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.web-trust-warning svg {
+  flex-shrink: 0;
+  width: 17px;
+  height: 17px;
+  color: var(--warn);
+}
+.shell.web-self-signed {
+  grid-template-rows: var(--bar) auto minmax(0, 1fr);
+}
+.shell > .web-trust-warning {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  margin: 0;
+}
+.web-self-signed > .titlebar {
+  grid-row: 1;
+}
+.web-self-signed > .rail,
+.web-self-signed > .sidebar,
+.web-self-signed > .workspace {
+  grid-row: 3;
+}
+.web-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+.web-access-address {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.web-sessions {
+  border-top: 1px solid var(--line-soft);
+  padding: 16px 0;
+}
+.web-sessions summary {
+  display: flex;
+  justify-content: space-between;
+  cursor: pointer;
+}
+.web-sessions summary span {
+  color: var(--muted);
+}
+.web-sessions ul {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0 0 0 16px;
+  border-left: 1px solid var(--line);
+}
+.web-sessions li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+}
+.web-sessions li strong,
+.web-sessions li small {
+  display: block;
+  font-weight: normal;
+}
+.web-sessions li small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.web-settings-form {
+  width: 100%;
+}
+dialog:has(.web-settings-form) {
+  width: min(568px, calc(100vw - 32px));
+}
+.web-settings-form fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.web-settings-form textarea {
+  resize: vertical;
+  font-family: monospace;
+  font-size: 12px;
+}
+.web-settings-form .dialog-actions {
+  margin-top: 24px;
+}
+.web-path-input {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.web-totp-setup {
+  display: grid;
+  gap: 14px;
+}
+.web-totp-qr {
+  width: 200px;
+  height: 200px;
+  margin: auto;
+}
+.web-totp-qr img {
+  display: block;
+}
+
+.web-totp-manual {
+  display: grid;
+  gap: 6px;
+}
+.web-totp-secret-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 32px;
+}
+.web-totp-secret {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.web-totp-secret-row .copy-button {
+  flex: none;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+.web-totp-secret-row .copy-button svg {
+  width: 16px;
+  height: 16px;
+}
+.web-totp-secret-row .copy-button span {
+  display: none;
+}
+.web-expiry {
+  color: var(--danger);
+  font-size: 12px;
+}
+@media (max-width: 700px) {
+  .web-access-settings .setting-row {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .web-self-signed > .sidebar {
+    top: calc(var(--bar) + var(--web-warning-height, 56px));
+  }
+  .web-trust-warning {
+    min-height: 56px;
+  }
+}
+
+.web-certificate-details {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 0 0 16px;
+  overflow-wrap: anywhere;
+}
+
+.web-sessions summary > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.web-sessions summary svg {
+  width: 14px;
+  height: 14px;
+}
+.web-sessions[open] summary svg {
+  transform: rotate(90deg);
+}
+
+.web-proxy-help {
+  min-width: 0;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 16px;
+}
+.web-proxy-help > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  list-style: none;
+}
+.web-proxy-help > summary::-webkit-details-marker {
+  display: none;
+}
+.web-proxy-help > summary svg {
+  width: 14px;
+  height: 14px;
+}
+.web-proxy-help[open] > summary svg {
+  transform: rotate(90deg);
+}
+.web-proxy-fields {
+  display: grid;
+  gap: 14px;
+  padding-top: 12px;
+  min-width: 0;
+}
+.web-proxy-fields p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.web-proxy-fields pre {
+  margin: 0;
+  padding: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-s);
+  overflow: auto;
+  max-width: 100%;
+  max-height: 280px;
+  font-size: 12px;
+  line-height: 1.6;
+  user-select: text;
+}
+.web-proxy-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.web-proxy-trust > summary {
+  cursor: pointer;
+  font-size: 12px;
+}
+.web-proxy-trust > p,
+.web-proxy-trust > pre {
+  margin-top: 10px;
+}

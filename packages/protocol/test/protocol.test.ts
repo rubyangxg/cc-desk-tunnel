@@ -46,6 +46,8 @@ test('only clients accept the audited v0.3.1 protocol and retry its version refu
   assert.equal(serverMessageSchema.safeParse({ ...ready, protocolVersion: 18 }).success, false);
   assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.10' }, PROTOCOL_VERSION), 18);
   assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.10' }, 18), null);
+  assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.20' }, PROTOCOL_VERSION), 19);
+  assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.20' }, 19), null);
   assert.equal(fallbackServerProtocol(refusal, 17), 16);
   assert.equal(fallbackServerProtocol(refusal, 16), null);
   assert.equal(fallbackServerProtocol({ ...refusal, service: '0.2.13' }, 17), null);

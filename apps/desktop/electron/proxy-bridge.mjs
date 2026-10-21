@@ -121,6 +121,7 @@ export async function openProxyBridge(
   // Kept for the installer download, which uses the same secret and certificate check as the connection.
   let token = '';
   let release;
+  let webUrl = null;
   let closed = false;
   let closing;
   // The window said it is ending the connection on purpose; the service is told, so that it keeps nothing.
@@ -292,6 +293,8 @@ export async function openProxyBridge(
         fail('服务端的消息无法识别。\n客户端与服务端的版本可能不一致，请把两者升级到同一版本。');
         return;
       }
+      if (message.type === 'web.settings.state')
+        webUrl = message.values.enabled ? (message.values.url ?? null) : null;
       // A service of another version refuses the connection but may still offer the installer for its own.
       if (message.type === 'connection.error' && message.client) release = message.client;
       if (message.type === 'connection.error')
@@ -421,6 +424,7 @@ export async function openProxyBridge(
     url: `ws://127.0.0.1:${server.address().port}/bridge/${nonce}`,
     close,
     downloadInstaller,
+    webUrl: () => (closed ? null : webUrl),
     // The installer the service last announced, if any.
     release: () => release,
   };

@@ -51,6 +51,7 @@ export default function Sidebar({
   refreshCatalog,
   serviceName,
   unifiedHistory = false,
+  localProjects = true,
   sessions,
   elsewhere,
   devices,
@@ -75,6 +76,7 @@ export default function Sidebar({
   refreshCatalog?: () => void;
   serviceName?: string;
   unifiedHistory?: boolean;
+  localProjects?: boolean;
   sessions: Session[];
   // Sessions on the user's other computers: listed apart, by computer and under it by project folder, and not
   // part of any project here.
@@ -160,9 +162,13 @@ export default function Sidebar({
         plain: [],
       };
       groups.set(device.id, entry);
+      // The server currently creates only sessions without a project; its workspace paths are internal.
       // Which folders hold another computer's sessions without a project is not known here; the ones this
       // program makes are told by their shape, a day and under it a time.
-      if (/[\\/]\d{4}-\d{2}-\d{2}[\\/]\d{6}(-\d+)?[\\/]?$/.test(session.projectPath)) {
+      if (
+        devices.some((item) => item.id === device.id && item.server) ||
+        /[\\/]\d{4}-\d{2}-\d{2}[\\/]\d{6}(-\d+)?[\\/]?$/.test(session.projectPath)
+      ) {
         entry.plain.push(session);
         continue;
       }
@@ -388,16 +394,18 @@ export default function Sidebar({
         )}
         {pinned.length > 0 && <div className="list-heading">置顶</div>}
         {pinned.map(renderSession)}
-        <div className="list-heading">
-          项目
-          <IconButton
-            title="添加项目"
-            disabled={!connected || busy || terminalOpen}
-            onClick={addProject}
-          >
-            <Plus />
-          </IconButton>
-        </div>
+        {localProjects && (
+          <div className="list-heading">
+            项目
+            <IconButton
+              title="添加项目"
+              disabled={!connected || busy || terminalOpen}
+              onClick={addProject}
+            >
+              <Plus />
+            </IconButton>
+          </div>
+        )}
         {groups.map(({ key, path, sessions: members }) => {
           // A search shows what it found, folded or not.
           const collapsed = !search.trim() && prefs.collapsedProjects.includes(key);
@@ -450,7 +458,7 @@ export default function Sidebar({
             </section>
           );
         })}
-        {groups.length === 0 && (
+        {localProjects && groups.length === 0 && (
           <p className="project-empty">{search ? '没有匹配的项目' : '还没有项目'}</p>
         )}
         {plain.length > 0 && <div className="list-heading">最近</div>}

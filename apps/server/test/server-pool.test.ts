@@ -918,3 +918,38 @@ for (const queued of [false, true])
       assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 1);
     },
   );
+
+nativeTest(
+  'server-hosted sessions rotate pool accounts without requiring a desktop SSH seat',
+  { timeout: 60000 },
+  async (t) => {
+    const f = await fixture(t);
+    const created = await f.request({
+      type: 'server.session.create',
+      title: 'server pool handoff',
+    });
+    const sessionId = created.sessionId!;
+    await f.request({ type: 'message.send', sessionId, text: 'continue the server task' });
+    await f.wait(
+      (message) =>
+        message.type === 'session.event' &&
+        message.event.sessionId === sessionId &&
+        message.event.payload.type === 'run.status' &&
+        message.event.payload.status === 'completed',
+    );
+    assert.equal(f.server.store.get(sessionId).session.accountId, f.id);
+    const calls = readFileSync(f.log, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    assert.equal(calls.length, 2);
+    assert.ok(calls[1].prompt.endsWith('\n\ncontinue'));
+    assert.equal(
+      f.server.store
+        .snapshot(sessionId)
+        .events.filter(({ payload }) => payload.type === 'message.user' && payload.continued)
+        .length,
+      1,
+    );
+  },
+);

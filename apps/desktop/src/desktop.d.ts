@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 export {};
 declare global {
   interface Window {
@@ -45,6 +46,7 @@ declare global {
       gitBranch: (path: string) => Promise<string | null>;
       copyText: (text: string) => Promise<void>;
       openExternal: (url: string) => Promise<void>;
+      openWeb: (url: string) => Promise<void>;
       // The folders holding sessions without a project; new ones are made in the first.
       workspaceRoots: () => Promise<string[]>;
       // Asks for another folder, or goes back to the one under Documents; the folders as they are afterwards.

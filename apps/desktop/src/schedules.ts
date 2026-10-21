@@ -200,6 +200,7 @@ export function useSchedules(
   send: (task: Task, due: number) => Promise<boolean>,
   report?: (task: Task, outcome: Outcome) => void,
   profileId = 'default',
+  enabled = true,
 ) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [problems, setProblems] = useState<string[]>([]);
@@ -239,12 +240,13 @@ export function useSchedules(
     [record],
   );
   useEffect(() => {
+    if (!enabled) return;
     void loadFile(profileId).then((file) => {
       setPath(file.path);
       accept(file.text);
     });
     return window.desktop?.onSchedulesChanged(accept, profileId);
-  }, [accept, profileId]);
+  }, [accept, profileId, enabled]);
 
   const settle = useCallback(
     (task: Task, status: Outcome['status'], text: string) => {
@@ -273,6 +275,7 @@ export function useSchedules(
     [settle],
   );
   useEffect(() => {
+    if (!enabled) return;
     const tick = async () => {
       if (busy.current) return;
       busy.current = true;
@@ -293,7 +296,7 @@ export function useSchedules(
     void tick();
     const timer = setInterval(() => void tick(), 15_000);
     return () => clearInterval(timer);
-  }, [attempt, settle]);
+  }, [attempt, settle, enabled]);
 
   const save = useCallback(
     async (tasks: Task[]) => {

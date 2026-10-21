@@ -62,7 +62,8 @@ export type ClaudeRun = {
     toolId: string,
     waiting: 'approval' | 'question',
   ) => Promise<{ allowed: boolean; answers?: Record<string, string> }>;
-  ssh: SshConnection;
+  // Absent only for a session owned by the service itself.
+  ssh?: SshConnection;
   // Told when Claude has finished its turn and the run goes on only for background tasks, and when it resumes.
   waiting: (background: boolean) => void;
   // Told when a turn ends: the figures so far for the user message the turn answered. A turn that a background task
@@ -183,7 +184,9 @@ export async function runClaude(
         systemPrompt: {
           type: 'preset',
           preset: 'claude_code',
-          append: remotePrompt(run.projectPath, run.ssh, run.sessionId, run.platform),
+          ...(run.ssh
+            ? { append: remotePrompt(run.projectPath, run.ssh, run.sessionId, run.platform) }
+            : {}),
           snapshot: false,
         },
         ...(run.resume ? { resume: nativeId } : { sessionId: nativeId }),

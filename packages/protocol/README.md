@@ -21,6 +21,16 @@
 - `terminal.open/close` 为带 requestId 的操作，`terminal.opened/data/closed` 仅发所属连接；独立的 terminalId，摘要 `activeRun.surface=terminal` 表示互斥占用，不意味着终端上下文与图形 session 相同。终端原始文本不存入 session.event。
 - `terminal.input/resize/ack` 无逐键请求响应；校验归属、terminalId 和大小。`ack.bytes` 是 xterm 已渲染的 UTF-8 字节数，控制 PTY 背压；不能超过服务尚未确认的输出。原始数据帧按 16384 个 UTF-16 code units 分片且不切开 surrogate pair。
 
+## 浏览器连接
+
+桌面 `/ws` 及其首帧认证保持不变。启用 Web 后，浏览器先在入口路径下通过 HTTPS 登录，取得 `HttpOnly` Cookie，再连接该路径下的 `/api/ws`；握手校验 Cookie 和同源关系，首帧为 `web.auth`，不携带服务凭据或设备身份。`ready.browser` 标识这是一条浏览器控制连接，之后复用已有会话、运行和终端消息，不建立执行通道。
+
+`src/web.ts` 定义登录状态、`web.settings.*`、浏览器会话撤销和 TOTP；`src/index.ts` 定义 `server.session.create`；`src/web-certificate.ts` 定义桌面专用的证书命令与状态。Web 设置回复通过各自的状态消息返回，不进入 `ProxyClient` 的通用会话状态。服务端用显式命令白名单限制浏览器，新命令不会自动开放；浏览器不能发送 `device`、`tunnel.*`、项目管理或其他设备的会话创建 / 分叉命令。
+
+浏览器页面上有点击、按键、滚动或触摸时，最多每分钟发一次无 requestId 的 `web.activity` 帧，服务端据此更新空闲时间；发消息、审批等修改类命令本身也会更新。读取命令、自动加载和重连不会更新；桌面连接发送这一帧会被视为无效消息。它不改变命令权限，也不延长 30 天绝对期限。
+
+`server.session.create` 创建归属稳定服务端设备的普通会话，跨浏览器或服务重启保留归属；原生工具直接在容器里执行。浏览器仍可操作其他在线设备的已有会话。登录与权限边界见[浏览器访问](../../docs/server-web.md)。
+
 ## 生命周期
 
 运行状态为 `running → awaiting_approval → running → completed`，也可终止为 `cancelled/failed`。拒绝产生 `tool.result(denied)`，模拟器在解释拒绝后正常完成本轮；错误事件与失败状态分开。

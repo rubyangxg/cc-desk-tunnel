@@ -39,12 +39,16 @@ export type TerminalSpawner = (
   options: { cwd: string; cols: number; rows: number; env: Record<string, string>; name: string },
 ) => TerminalProcess;
 
-export function terminalArguments(options: ClaudeOptions, session: Session, ssh: SshConnection) {
+export function terminalArguments(options: ClaudeOptions, session: Session, ssh?: SshConnection) {
   return [
     '--permission-mode',
     session.permissionMode === 'default' ? 'manual' : session.permissionMode,
-    '--append-system-prompt',
-    remotePrompt(session.projectPath, ssh, session.id, platformOf(session.device)),
+    ...(ssh
+      ? [
+          '--append-system-prompt',
+          remotePrompt(session.projectPath, ssh, session.id, platformOf(session.device)),
+        ]
+      : []),
     ...((session.model ?? options.model) ? ['--model', session.model ?? options.model!] : []),
     ...(session.effort ? ['--effort', session.effort] : []),
     ...(options.settingsPath ? ['--settings', options.settingsPath] : []),

@@ -153,3 +153,42 @@ export function App() {
   };
   return <Workspace key={initial.id} profiles={controls} />;
 }
+
+// Browser sessions stay on their authenticated origin; desktop profiles are never loaded here.
+export function BrowserApp({
+  browser,
+}: {
+  browser: { selfSigned: boolean; expired: () => void; logout: () => Promise<void> };
+}) {
+  const pool = useAccountPool([]);
+  const [initial] = useState<ConnectionProfile>(() => ({
+    id: 'browser',
+    name: '当前服务',
+    url: '',
+    token: '',
+    fingerprint: '',
+    mode: 'local',
+    remember: false,
+    autoLogin: false,
+  }));
+  const unavailable = async () => {
+    throw new Error('请在桌面客户端管理代理服务。');
+  };
+  const profiles: ProfileControls = {
+    profiles: [],
+    initial,
+    autoConnect: false,
+    pool: { ...pool, config: { ...pool.config, enabled: false } },
+    handoff: null,
+    focusSession: null,
+    focusAccount: false,
+    completeFocus: () => {},
+    completeAccountFocus: () => {},
+    completeHandoff: () => {},
+    save: async () => {},
+    select: unavailable,
+    add: unavailable,
+    remove: unavailable,
+  };
+  return <Workspace profiles={profiles} browser={browser} />;
+}

@@ -1,9 +1,9 @@
 import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import { Client } from 'ssh2';
+import { packageServer } from './package-server.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const config = JSON.parse(readFileSync(resolve(process.argv[2] ?? '.local/deploy.json'), 'utf8'));
@@ -54,22 +54,7 @@ try {
   const local = join(root, '.local');
   mkdirSync(local, { recursive: true });
   const archive = join(local, 'service.tar.gz');
-  execFileSync(
-    process.platform === 'win32' ? 'tar.exe' : 'tar',
-    [
-      '-czf',
-      archive,
-      '--exclude=node_modules',
-      '-C',
-      root,
-      'package.json',
-      'package-lock.json',
-      'apps/server',
-      'apps/desktop/package.json',
-      'packages/protocol',
-    ],
-    { windowsHide: true },
-  );
+  packageServer(root, archive);
   await exec(`mkdir -p ${quote(base + '/app')} ${quote(base + '/state')} ${quote(base + '/logs')}`);
   const certPath = `${base}/tls/server.crt`;
   const keyPath = `${base}/tls/server.key`;

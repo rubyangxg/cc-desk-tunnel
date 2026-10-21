@@ -8,7 +8,7 @@ Electron + React 的 Windows 桌面客户端：界面、到服务端的连接桥
 
 不安装时，直接运行 `artifacts/windows/win-unpacked/CC Desk Tunnel.exe`；必须保留同目录全部资源。每个连接单实例，重复启动聚焦已有窗口。发行包为 Windows x64，未签名；SmartScreen 与杀毒软件的提示及处理见[根目录说明](../../README.md#杀毒软件与-smartscreen)，应用不自动修改安全软件设置。
 
-开发时根目录执行 `npm ci`；浏览器开发用 `npm run dev`。模拟登录信息位于 `.local/dev-connection.json`；浏览器仅支持环回模拟，原生连接由 Electron 主进程管理。从源码运行的桌面端默认选择远程模式，离线测试需选择本地模拟；安装版不提供本地模拟，登录页也不显示这个切换。
+开发时根目录执行 `npm ci`；浏览器开发用 `npm run dev`，该 Vite 开发入口连接环回模拟服务，模拟登录信息位于 `.local/dev-connection.json`。正式浏览器入口由服务端提供，见下节；桌面原生连接仍由 Electron 主进程管理。从源码运行的桌面端默认选择远程模式，离线测试需选择本地模拟；安装版不提供本地模拟，登录页也不显示这个切换。
 
 ### 单服务 Claude 账号池
 
@@ -33,6 +33,12 @@ Electron + React 的 Windows 桌面客户端：界面、到服务端的连接桥
 Electron 44.5.1 的 npm 包将二进制安装改为显式步骤：先运行 `npm run setup:desktop`（该包的官方 `install-electron`，从 Electron 发布源下载并用其内置 checksums 校验），再执行 `npm run build` / `npm run desktop`。桌面窗口加载同一份生产渲染页，不自动开启另一个代理服务；可连接 `npm run dev` 已启动的模拟服务。
 
 macOS 与 Linux 上是同一个客户端，实验性支持：本机的 SSH 服务换成应用自身的一个进程，脚本由使用者的 shell 执行。安装、差别和实现见 [macOS 客户端](../../docs/macos.md)与 [Linux 客户端](../../docs/linux.md)。
+
+## 浏览器访问
+
+在桌面「设置 → 常规 → 浏览器访问」中启用。Web 首次默认关闭，选择保存在服务端，重启后保持；不另开端口或容器。浏览器使用服务凭据和可选验证器动态码登录，与桌面复用同一套 React 页面和 `ProxyClient`，直接连接服务端，不经过桌面中继。
+
+浏览器可操作在线设备的已有会话，也可新建在服务端容器内执行的普通会话；没有本机项目管理、执行通道、附件上传、定时任务和客户端升级入口。证书导入、域名、可信代理和 Web 启停由桌面管理。登录有效期、子路径、证书与安全边界见[浏览器访问](../../docs/server-web.md)。
 
 ## 发行构建
 
@@ -81,6 +87,8 @@ Electron 选择“远程代理”，输入可信 WSS 地址、代理 token；自
 | `src/App.tsx` | 编排：连接与登录、当前会话、所有请求和禁用条件；不含具体界面 |
 | `src/LoginPage.tsx`、`TitleBar.tsx`、`Rail.tsx`、`Sidebar.tsx`、`Conversation.tsx`、`Composer.tsx`、`SessionDialogs.tsx` | 各界面区域，只渲染并上报用户意图：标题栏、图标栏、会话侧栏、会话区、输入区、对话框 |
 | `src/SettingsPage.tsx`、`SettingsPanel.tsx`、`Help.tsx` | 设置页的分类与客户端自身的设置；云端 Claude Code 的设置项；帮助文案 |
+| `src/WebAccessSettings.tsx`、`WebGate.tsx`、`browser-api.ts`、`host-capabilities.ts` | Web 设置与证书管理；浏览器登录和会话；桌面与浏览器的宿主能力区分 |
+| `src/ReverseProxyHelp.tsx`、`reverse-proxy.ts` | 根据当前访问设置生成可复制的 nginx / Caddy 示例，只生成文本，不改变部署 |
 | `src/shortcuts.ts`、`ShortcutSettings.tsx` | 快捷键的动作、默认组合键与按键的识别；修改它们的设置页 |
 | `src/QuestionCard.tsx`、`ComposerControls.tsx`、`PermissionMenu.tsx`、`AccountPanel.tsx`、`UsagePanel.tsx`、`NativeTerminal.tsx` | Claude 提问的作答卡片、模型 / effort / 上下文、审批模式菜单、账号页、调用日志、原生终端 |
 | `src/drafts.ts`、`prefs.ts`、`schedules.ts`、`SchedulePanel.tsx` | 只属于这台电脑的数据：未发送的草稿；置顶、项目显示名称、通知开关与快捷键；定时任务的格式、到点判断与面板 |

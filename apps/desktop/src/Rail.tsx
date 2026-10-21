@@ -7,6 +7,7 @@ export type Page = 'chat' | 'schedules' | 'settings';
 // something to install.
 export default function Rail({
   page,
+  schedules = true,
   go,
   update,
   openUpdate,
@@ -14,6 +15,7 @@ export default function Rail({
   accountPool,
 }: {
   page: Page;
+  schedules?: boolean;
   go: (page: Page) => void;
   update: string | null;
   openUpdate: (position: MenuPosition) => void;
@@ -35,15 +37,17 @@ export default function Rail({
       >
         <MessagesSquare />
       </button>
-      <button
-        type="button"
-        title="定时任务"
-        aria-label="定时任务"
-        aria-current={page === 'schedules' ? 'page' : undefined}
-        onClick={() => go('schedules')}
-      >
-        <CalendarClock />
-      </button>
+      {schedules && (
+        <button
+          type="button"
+          title="定时任务"
+          aria-label="定时任务"
+          aria-current={page === 'schedules' ? 'page' : undefined}
+          onClick={() => go('schedules')}
+        >
+          <CalendarClock />
+        </button>
+      )}
       <span className="rail-space" />
       {accountPool && (
         <button

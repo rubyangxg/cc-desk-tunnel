@@ -76,6 +76,17 @@ wait_healthy() {
   done
   fail "Service is not healthy. Run manage.sh logs; credentials are not printed automatically."
 }
+# A release archive brings the Web client built, and the image uses it over any sources beside it: an archive
+# unpacked into a git checkout leaves the checkout's older client sources in place. A checkout that has moved
+# on since drops the unpacked client, so that the image builds the client from the sources again.
+build_image() {
+  local web="$ROOT/apps/server/web/index.html" commit
+  if [[ -f "$web" && -d "$ROOT/.git" ]] && command -v git >/dev/null; then
+    commit="$(git -c safe.directory="$ROOT" -C "$ROOT" log -1 --format=%ct 2>/dev/null || echo 0)"
+    if ((commit > $(stat -c %Y "$web"))); then rm -rf -- "$ROOT/apps/server/web"; fi
+  fi
+  dc build --pull
+}
 running() { [[ -n "$(dc ps --status running -q proxy)" ]]; }
 ask() {
   local prompt="$1" default="${2:-}" answer
@@ -144,7 +155,7 @@ case "$command" in
     fi
     load
     echo "构建镜像（首次需要几分钟）…"
-    dc build --pull
+    build_image
     dc up -d
     wait_healthy
     summary
@@ -232,7 +243,7 @@ case "$command" in
 esac
 load
 case "$command" in
-  build) dc build --pull ;;
+  build) build_image ;;
   up) dc up -d; wait_healthy ;;
   status) dc ps ;;
   logs) dc logs --tail=100 -f ;;
@@ -249,7 +260,7 @@ case "$command" in
     fi
     # The port frp had before 0.2.10 is no longer published; its setting goes with it.
     if grep -q '^FRPS_PORT=' "$CONFIG"; then sed -i '/^FRPS_PORT=/d' "$CONFIG"; fi
-    dc build --pull; dc up -d; wait_healthy; summary ;;
+    build_image; dc up -d; wait_healthy; summary ;;
   summary) summary ;;
   client)
     [[ $# = 1 && -f "$1" && "$(basename -- "$1")" =~ ^CC-Desk-Tunnel-Setup-[0-9]+\.[0-9]+\.[0-9]+-x64\.exe$ ]] \

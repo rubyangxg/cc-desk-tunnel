@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,8 +17,16 @@ const git = (...args) =>
 const files = git('ls-files', '-z').split('\0').filter(Boolean);
 const privatePath =
   /(^|\/)(?:\.local|node_modules|dist|coverage)(?:\/|$)|(^|\/)\.env(?:\.|$)|\.local\.json$|\.(?:pem|key|p12|pfx)$/i;
-const secretValue =
-  /\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}|-----BEGIN (?:OPENSSH |RSA |EC )?PRIVATE KEY-----/;
+const secretToken = /\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}/;
+const privateKey = /-----BEGIN (?:OPENSSH |RSA |EC )?PRIVATE KEY-----/;
+// Public, test-only keys. Any change requires reviewing the entire fixture and its hash;
+// this does not exempt other files or token-like secrets in the fixture.
+const publicTestKeys = new Map([
+  [
+    'apps/server/test/fixtures/web-certificates.ts',
+    '501efd4fc27c5d3103247d9ef0f44f16fbb683e0645ec5b6152c01d37b27bb48',
+  ],
+]);
 
 for (const file of files) {
   if (privatePath.test(file) && !file.endsWith('.env.example')) {
@@ -25,7 +34,11 @@ for (const file of files) {
   }
   if (!/\.(?:md|mjs|cjs|ts|tsx|html|css|json|txt|sh|ps1)$/.test(file)) continue;
   const content = git('show', ':' + file);
-  if (secretValue.test(content)) errors.push('疑似秘密：' + file + '（内容不显示）');
+  const reviewedKeys =
+    publicTestKeys.get(file) === createHash('sha256').update(content).digest('hex');
+  if (secretToken.test(content) || (privateKey.test(content) && !reviewedKeys)) {
+    errors.push('疑似秘密：' + file + '（内容不显示）');
+  }
   if (file.endsWith('.json')) {
     try {
       JSON.parse(content);

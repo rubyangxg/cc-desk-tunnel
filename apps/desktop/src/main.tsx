@@ -1,5 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import WebGate from './WebGate.tsx';
 import { App } from './Connections.tsx';
 import { getPrefs, onPrefs } from './prefs.ts';
 import './style.css';
@@ -15,6 +16,6 @@ onPrefs(showTheme);
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    {!window.desktop && !import.meta.env.DEV ? <WebGate /> : <App />}
   </React.StrictMode>,
 );

@@ -1,6 +1,10 @@
 import { z } from 'zod';
+import { webCommandSchemas, webSettingsStateSchema, webTotpSetupSchema } from './web.ts';
+import { webCertificateStateSchema } from './web-certificate.ts';
+export * from './web.ts';
+export * from './web-certificate.ts';
 
-export const PROTOCOL_VERSION = 19;
+export const PROTOCOL_VERSION = 20;
 // The release each protocol version began with, from 0.2.4 on: a client newer than its service signs in with
 // the service's number to have it upgrade (see the README). A new number adds its line here.
 export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
@@ -17,6 +21,7 @@ export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
   '0.3.5': 17,
   '0.4.10': 18,
   '0.4.11': 19,
+  '0.4.21': 20,
 };
 export const MAX_FRAME_BYTES = 256 * 1024;
 // The longest global instructions edited here, in characters; it keeps a frame of them within MAX_FRAME_BYTES.
@@ -558,6 +563,14 @@ export const serviceUpdateSchema = z.object({
 export type ServiceUpdate = z.infer<typeof serviceUpdateSchema>;
 const request = { requestId: id };
 export const commandSchema = z.discriminatedUnion('type', [
+  ...webCommandSchemas,
+  z
+    .object({
+      type: z.literal('server.session.create'),
+      ...request,
+      title: z.string().trim().min(1).max(120),
+    })
+    .strict(),
   z
     .object({ type: z.literal('pool.status'), ...request, refresh: z.boolean().optional() })
     .strict(),
@@ -904,10 +917,22 @@ const readyMessageSchema = z.object({
   client: installerSchema.optional(),
   sessions: z.array(sessionSchema),
   features: z.array(z.string()).optional(),
+  browser: z.object({ sessionId: id, serverDeviceId: id, selfSigned: z.boolean() }).optional(),
 });
 export const serverMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('pool.state'), ...serverPoolStateSchema.shape }),
   readyMessageSchema,
+  z.object({
+    type: z.literal('web.settings.state'),
+    requestId: id,
+    values: webSettingsStateSchema,
+  }),
+  z.object({ type: z.literal('web.totp.setup'), requestId: id, ...webTotpSetupSchema.shape }),
+  z.object({
+    type: z.literal('web.certificate.state'),
+    requestId: id,
+    ...webCertificateStateSchema.shape,
+  }),
   z.object({
     type: z.literal('response'),
     requestId: id,
@@ -990,7 +1015,9 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
   // whenever it changes. A computer not listed is away, and its sessions can only be read.
   z.object({
     type: z.literal('devices'),
-    devices: z.array(deviceSchema.extend({ ready: z.boolean() })),
+    devices: z.array(
+      deviceSchema.extend({ ready: z.boolean(), server: z.literal(true).optional() }),
+    ),
   }),
   // The execution channel runs over connections the device opens to this same address. `secret` signs them
   // in; it belongs to this connection alone and ends with it.
@@ -1006,17 +1033,22 @@ export type ServerMessage = z.infer<typeof serverMessageSchema>;
 export const clientServerMessageSchema = z.union([
   serverMessageSchema,
   readyMessageSchema.extend({
-    protocolVersion: z.union([z.literal(16), z.literal(17), z.literal(18)]),
+    protocolVersion: z.union([z.literal(16), z.literal(17), z.literal(18), z.literal(19)]),
   }),
 ]);
 export type ClientServerMessage = z.infer<typeof clientServerMessageSchema>;
 
 export function fallbackServerProtocol(message: ClientServerMessage, attempted: number) {
   if (message.type !== 'connection.error' || message.code !== 'version_mismatch') return null;
-  if ([17, 18, 19].includes(attempted) && message.service === '0.3.1') return 16;
-  if ([18, 19].includes(attempted) && /^(?:0\.3\.[25]|0\.4\.[0-9])$/.test(message.service ?? ''))
+  if ([17, 18, 19, 20].includes(attempted) && message.service === '0.3.1') return 16;
+  if (
+    [18, 19, 20].includes(attempted) &&
+    /^(?:0\.3\.[25]|0\.4\.[0-9])$/.test(message.service ?? '')
+  )
     return 17;
-  if (attempted === 19 && /^(?:0\.3\.[34]|0\.4\.10)$/.test(message.service ?? '')) return 18;
+  if ([19, 20].includes(attempted) && /^(?:0\.3\.[34]|0\.4\.10)$/.test(message.service ?? ''))
+    return 18;
+  if (attempted === 20 && /^0\.4\.(?:1[1-9]|20)$/.test(message.service ?? '')) return 19;
   return null;
 }
 

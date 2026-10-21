@@ -526,6 +526,30 @@ export class SessionStore {
     return session;
   }
 
+  // A plain session on this server has one directory that is both its project and its native root.
+  createOnServer(requestId: string, title: string, device: Device): Session {
+    const existing = this.created(requestId);
+    if (existing) {
+      if (existing.device?.id !== device.id)
+        throw new DomainError('request_conflict', '请求 ID 已被其他内容使用。');
+      return this.create(requestId, title, existing.projectPath, device);
+    }
+    const root = randomUUID();
+    const projectPath = join(this.directory, 'native', root);
+    this.database.exec('BEGIN');
+    try {
+      this.database
+        .prepare('INSERT INTO native_roots VALUES (?, ?, ?)')
+        .run(device.id, pathKey(projectPath), root);
+      const session = this.create(requestId, title, projectPath, device);
+      this.database.exec('COMMIT');
+      return session;
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   created(requestId: string) {
     const row = this.database
       .prepare('SELECT metadata FROM sessions WHERE create_request_id = ?')

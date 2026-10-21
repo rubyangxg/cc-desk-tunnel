@@ -225,6 +225,20 @@ handle('external:open', async (event, target) => {
     throw new Error('Unexpected link');
   await shell.openExternal(url.toString());
 });
+// Only an address announced by the currently authenticated service may leave the application here.
+handle('web:open', async (_event, target) => {
+  const url = new URL(String(target));
+  if (
+    url.protocol !== 'https:' ||
+    url.username ||
+    url.password ||
+    url.hash ||
+    url.search ||
+    bridge?.webUrl() !== url.href
+  )
+    throw new Error('Unexpected Web address');
+  await shell.openExternal(url.href);
+});
 // Sessions without a project still need a working directory on this computer; they get one under Documents, grouped by
 // day, unless the user chose another folder. Folders used before are remembered: their sessions are still
 // sessions without a project.
