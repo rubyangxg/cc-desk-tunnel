@@ -28,6 +28,12 @@ declare global {
       foldersExist: (folders: string[]) => Promise<boolean[]>;
       // Files to mention in a message; the paths of the ones chosen.
       chooseFiles: () => Promise<string[]>;
+      loadSharedDocument: () => Promise<import('./SharedDocument.tsx').DocumentState>;
+      saveSharedDocument: (
+        text: string,
+        version: string,
+      ) => Promise<import('./SharedDocument.tsx').DocumentState>;
+      importSharedDocument: () => Promise<string | null>;
       pathForFile: (file: File) => string;
       // Asks where to save and writes the text there; false when the dialog was cancelled.
       saveFile: (name: string, text: string) => Promise<boolean>;

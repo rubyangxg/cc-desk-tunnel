@@ -1503,6 +1503,7 @@ export function App({ profiles }: { profiles: ProfileControls }) {
     account: '账号与额度',
     claude: 'Claude Code 设置',
     general: '常规设置',
+    document: '共享文档',
     notifications: '通知设置',
     shortcuts: '快捷键',
     help: '帮助',

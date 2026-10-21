@@ -41,6 +41,7 @@ let bridge;
 let lastBridge;
 let connectionGeneration = 0;
 const connections = require('./connections.cjs');
+const sharedDocument = require('./shared-document.cjs');
 // See connections.cjs. The profile is chosen before anything is read from it, the instance lock included:
 // each connection is then a single instance of its own.
 const base = app.getPath('userData');
@@ -141,6 +142,18 @@ handle('files:choose', async (event) => {
     properties: ['openFile', 'multiSelections'],
   });
   return result.canceled ? [] : result.filePaths;
+});
+handle('document:load', () => sharedDocument.load(base));
+handle('document:save', (_event, text, version) => sharedDocument.save(base, text, version));
+handle('document:import', async (event) => {
+  const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+    title: '导入共享 Markdown',
+    properties: ['openFile'],
+    filters: [{ name: 'Markdown', extensions: ['md', 'markdown'] }],
+  });
+  return result.canceled || !result.filePaths[0]
+    ? null
+    : sharedDocument.importFile(result.filePaths[0]);
 });
 // A picture that is only on the clipboard has no file Claude could be pointed at. It is written into the
 // profile, from where Claude reads it like any other attached file; a week later it is removed at start.
@@ -301,7 +314,10 @@ handle('proxy:connect', async (event, config) => {
         ? path.join(process.resourcesPath, 'app.asar.unpacked/electron')
         : undefined,
       // Where Claude finds the scheduled tasks to edit; the service names the variable, not the path.
-      environment: { CC_DESK_TUNNEL_SCHEDULES: schedulesPath(config.profileId) },
+      environment: {
+        CC_DESK_TUNNEL_SCHEDULES: schedulesPath(config.profileId),
+        CC_DESK_TUNNEL_SHARED_DOCUMENT: sharedDocument.documentPath(base),
+      },
       log,
       // The system's proxy settings (manual, script or automatic detection) as Chromium reads them.
       resolveProxy: (url) => session.defaultSession.resolveProxy(url),

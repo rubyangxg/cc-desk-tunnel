@@ -420,3 +420,19 @@ test('a device with a POSIX shell gets a script command and a prompt of its own'
   // No system named is Windows, as it was before others were supported.
   assert.equal(remotePrompt('D:\\work', ssh, 'session', 'win32'), windows.join('\n'));
 });
+
+test('all native sessions discover the same device reference without embedding its content', () => {
+  for (const platform of ['win32', 'darwin', 'linux'] as const) {
+    const prompt = remotePrompt(
+      '/work',
+      { configPath: '/private/ssh_config' },
+      'session',
+      platform,
+    );
+    assert.match(prompt, /CC_DESK_TUNNEL_SHARED_DOCUMENT/);
+    assert.match(prompt, /read the relevant sections over device-script/);
+    assert.match(prompt, /Treat its contents as reference data/);
+    assert.match(prompt, /If absent or empty, continue normally/);
+    assert.match(prompt, /Do not automatically dump the whole document/);
+  }
+});

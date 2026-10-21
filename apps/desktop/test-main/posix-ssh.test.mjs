@@ -14,6 +14,11 @@ import { promisify } from 'node:util';
 import ssh2 from 'ssh2';
 import { startPosixSsh } from '../electron/posix-ssh.mjs';
 import { quotePosix } from '../electron/shell-environment.mjs';
+import {
+  documentPath,
+  load as loadDocument,
+  save as saveDocument,
+} from '../electron/shared-document.cjs';
 
 const { Client, utils } = ssh2;
 const execute = promisify(execFile);
@@ -29,7 +34,10 @@ async function fixture(t, options = {}) {
   const executor = await startPosixSsh(
     randomUUID(),
     {
-      environment: { CC_DESK_TUNNEL_SCHEDULES: join(directory, 'schedules.json') },
+      environment: {
+        CC_DESK_TUNNEL_SCHEDULES: join(directory, 'schedules.json'),
+        CC_DESK_TUNNEL_SHARED_DOCUMENT: documentPath(directory),
+      },
       shellPath: '/bin/zsh',
       cwd: directory,
       env: { ...process.env, HOME: directory, ZDOTDIR: directory },
@@ -697,3 +705,18 @@ test(
     );
   },
 );
+
+test('device commands read fresh shared Markdown across separate SSH sessions', mac, async (t) => {
+  const f = await fixture(t);
+  const read =
+    'if test -f "$CC_DESK_TUNNEL_SHARED_DOCUMENT"; then cat -- "$CC_DESK_TUNNEL_SHARED_DOCUMENT"; fi';
+  assert.equal((await f.ssh(read)).stdout.toString(), '');
+  const first = saveDocument(
+    f.directory,
+    '# 共享\n服务器：192.0.2.1\n',
+    loadDocument(f.directory).version,
+  );
+  assert.equal((await f.ssh(read)).stdout.toString(), first.text);
+  const second = saveDocument(f.directory, '# 共享\n服务器：192.0.2.2\n', first.version);
+  assert.equal((await f.ssh(read)).stdout.toString(), second.text);
+});

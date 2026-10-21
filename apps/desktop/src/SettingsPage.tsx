@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   Bell,
   CircleHelp,
+  FileText,
   Info,
   Keyboard,
   Search,
@@ -24,11 +25,12 @@ import SettingsPanel from './SettingsPanel.tsx';
 import { useShared } from './shared.ts';
 import type { ListedConnection } from './shared.ts';
 import ShortcutSettings from './ShortcutSettings.tsx';
+import SharedDocument from './SharedDocument.tsx';
 import { IconButton, Switch } from './ui.tsx';
 import type { MenuItem } from './ui.tsx';
 
 export type Section =
-  'account' | 'claude' | 'general' | 'notifications' | 'shortcuts' | 'help' | 'about';
+  'account' | 'claude' | 'general' | 'document' | 'notifications' | 'shortcuts' | 'help' | 'about';
 // `words` is what the search box matches besides the name: the settings found inside.
 const sections: { id: Section; name: string; group: string; icon: typeof Bell; words: string }[] = [
   {
@@ -52,6 +54,13 @@ const sections: { id: Section; name: string; group: string; icon: typeof Bell; w
     icon: SlidersHorizontal,
     words:
       '额度 输入框 托盘 后台 记住凭据 自动登录 启动 普通会话 文件夹 连接 超时 等待 SSH 回复小结 会话栏 用量 首字 速度 缓存 多开 多个连接 窗口 服务端',
+  },
+  {
+    id: 'document',
+    name: '共享文档',
+    group: '客户端',
+    icon: FileText,
+    words: 'Markdown md 资料 服务器 IP 密码 编辑 保存 导入',
   },
   {
     id: 'notifications',
@@ -879,6 +888,8 @@ export default function SettingsPage({
             workspaceRoot={workspaceRoot}
             chooseWorkspace={chooseWorkspace}
           />
+        ) : section === 'document' ? (
+          <SharedDocument />
         ) : section === 'notifications' ? (
           <Notices />
         ) : section === 'shortcuts' ? (

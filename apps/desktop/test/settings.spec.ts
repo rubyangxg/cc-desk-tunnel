@@ -103,6 +103,7 @@ test('the settings of this computer open from the login page without a connectio
   await page.getByRole('button', { name: '本机设置', exact: true }).click();
   await expect(page.getByRole('navigation', { name: '设置分类' }).getByRole('button')).toHaveText([
     '常规',
+    '共享文档',
     '通知',
     '快捷键',
   ]);
