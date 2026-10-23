@@ -9,7 +9,7 @@ import { releaseFiles } from './release-manifest.mjs';
 // client as a check, and attaches them to a draft release this script made, with release.json and
 // SHA256SUMS. The release stays a draft unless --publish is given; --prerelease marks it as a preview, which
 // the service does not offer as an update. Windows and server packages are the default; --all-platforms adds
-// macOS and Linux. --resume continues a draft from the same commit. --dry-run only writes the notes. Needs gh (or GH pointing at
+// Linux. macOS packages are excluded from releases. --resume continues a draft from the same commit. --dry-run only writes the notes. Needs gh (or GH pointing at
 // it), signed in.
 const root = fileURLToPath(new URL('..', import.meta.url));
 const dryRun = process.argv.includes('--dry-run');
@@ -72,7 +72,7 @@ const notes = [
   `- **服务端**：新部署按[快速开始](${repository}#快速开始)用一条命令安装；\`${server}\` 是它下载的程序包。`,
   ...(others.length
     ? [
-        `- **macOS 与 Linux 客户端（实验性）**：${others.map((name) => `\`${name}\``).join('、')}。没有签名，也不带应用内更新，升级时重新下载安装；安装与首次打开见 [macOS 说明](${repository}/blob/${releaseBranch}/docs/macos.md)与 [Linux 说明](${repository}/blob/${releaseBranch}/docs/linux.md)。`,
+        `- **Linux 客户端（实验性）**：${others.map((name) => `\`${name}\``).join('、')}。没有签名，也不带应用内更新，升级时重新下载安装；安装与首次打开见 [Linux 说明](${repository}/blob/${releaseBranch}/docs/linux.md)。`,
       ]
     : []),
   '- **校验**：各文件的 SHA256 在 `SHA256SUMS` 与 `release.json` 中。',

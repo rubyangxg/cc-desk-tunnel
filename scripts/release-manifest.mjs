@@ -15,12 +15,7 @@ export const releaseFiles = (version, target = 'windows-server') => {
     throw new Error(`Unknown release target: ${target}`);
   const files = [`CC-Desk-Tunnel-Setup-${version}-x64.exe`];
   files.push(`cc-desk-tunnel-server-${version}.tar.gz`);
-  if (target === 'all')
-    files.push(
-      `CC-Desk-Tunnel-${version}-linux-amd64.deb`,
-      `CC-Desk-Tunnel-${version}-mac-arm64.dmg`,
-      `CC-Desk-Tunnel-${version}-mac-x64.dmg`,
-    );
+  if (target === 'all') files.push(`CC-Desk-Tunnel-${version}-linux-amd64.deb`);
   return files;
 };
 

@@ -14,7 +14,12 @@ for (const target of ['windows-server', 'all']) {
     t.after(() => rmSync(directory, { recursive: true, force: true }));
     const version = JSON.parse(readFileSync(resolve('apps/desktop/package.json'), 'utf8')).version;
     const names = releaseFiles(version, target);
-    assert.equal(names.length, target === 'all' ? 5 : 2);
+    assert.equal(names.length, target === 'all' ? 3 : 2);
+    assert.ok(!names.some((name) => name.endsWith('.dmg')));
+    assert.equal(
+      names.some((name) => name.endsWith('.deb')),
+      target === 'all',
+    );
     assert.ok(names.some((name) => name.endsWith('.exe')));
     assert.ok(names.some((name) => name.endsWith('.tar.gz')));
     const build = () =>

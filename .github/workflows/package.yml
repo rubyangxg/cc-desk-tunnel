@@ -1,4 +1,4 @@
-# Builds the Windows installer and server bundle by default, with macOS and Linux available on request.
+# Builds the Windows installer and server bundle by default, with Linux available on request. macOS packages are not built.
 # Each client is started as a check. This is where a release
 # is built: the release script names its draft in `release`, and the files are attached to it with their
 # hashes. Nothing is signed with a certificate. Otherwise the files are kept with the run for 30 days; it
@@ -12,7 +12,7 @@ on:
         description: Tag of a draft release to attach the files to. Left empty, they stay with the run.
         default: ''
       target:
-        description: Release packages (Windows by default, with the server updater)
+        description: Release packages (Windows + server; all also includes Linux, never macOS)
         type: choice
         default: windows-server
         options: [windows-server, all]
@@ -62,59 +62,6 @@ jobs:
           name: windows-x64
           path: artifacts/windows/*.exe
           if-no-files-found: error
-          retention-days: 30
-  # One package for each kind of Mac, each built and started on a machine of its own kind. The picture is of
-  # the window as the system draws it there.
-  macos:
-    if: inputs.target == 'all'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { runner: macos-15, arch: arm64 }
-          - { runner: macos-15-intel, arch: x64 }
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      # Electron and the packaging tools, kept from one run to the next: they are fetched from release pages
-      # that now and then time out, and change only with the versions the lock file names.
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/AppData/Local/electron/Cache
-            ~/AppData/Local/electron-builder/Cache
-            ~/Library/Caches/electron
-            ~/Library/Caches/electron-builder
-            ~/.cache/electron
-            ~/.cache/electron-builder
-            .tools
-          key: packaging-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json', 'scripts/prepare-windows.ps1') }}
-      - run: npm ci
-      - run: npm run setup:desktop || (sleep 60 && npm run setup:desktop)
-        shell: bash
-      - run: npm run package:macos -- --${{ matrix.arch }} || (sleep 60 && npm run package:macos -- --${{ matrix.arch }})
-        shell: bash
-        env:
-          SMOKE_SCREENSHOT: artifacts/macos/window-${{ matrix.arch }}.png
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-${{ matrix.arch }}
-          path: |
-            artifacts/macos/*.dmg
-            artifacts/macos/*.zip
-          if-no-files-found: error
-          retention-days: 30
-      # By itself, so that it can be looked at without fetching the package.
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-${{ matrix.arch }}-window
-          path: artifacts/macos/*.png
-          if-no-files-found: warn
           retention-days: 30
   # The .deb, built and then installed the way a user installs it, and started from where it was installed:
   # that is where its sandbox and what it depends on are in place. A virtual screen stands in for a desktop.
@@ -192,9 +139,9 @@ jobs:
       always() && !cancelled() && inputs.release != '' &&
       needs.windows.result == 'success' &&
       needs.server.result == 'success' &&
-      ((inputs.target == 'all' && needs.macos.result == 'success' && needs.linux.result == 'success') ||
-       (inputs.target != 'all' && needs.macos.result == 'skipped' && needs.linux.result == 'skipped'))
-    needs: [windows, macos, linux, server]
+      ((inputs.target == 'all' && needs.linux.result == 'success') ||
+       (inputs.target != 'all' && needs.linux.result == 'skipped'))
+    needs: [windows, linux, server]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -206,7 +153,7 @@ jobs:
           node-version: 24
       - uses: actions/download-artifact@v4
         with:
-          pattern: '{windows-x64,macos-arm64,macos-x64,linux-x64,server}'
+          pattern: '{windows-x64,linux-x64,server}'
           merge-multiple: true
           path: downloaded
       - run: |

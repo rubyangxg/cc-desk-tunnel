@@ -76,7 +76,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/rubyangxg/cc-desk-t
 
 首次运行会遇到 SmartScreen 提示，处理方法见[杀毒软件与 SmartScreen](#杀毒软件与-smartscreen)。
 
-macOS 与 Linux 的安装包在同一个发布页，安装方法见 [macOS 客户端](docs/macos.md)与 [Linux 客户端](docs/linux.md)。它们是实验性支持，没有签名，升级时需要重新下载安装。
+个人版后续发布不再构建 macOS（Intel / Apple Silicon）安装包。默认发布 Windows 和服务端；`npm run release -- --publish --all-platforms` 额外包含 Linux，不包含 macOS。Linux 安装方法见 [Linux 客户端](docs/linux.md)；macOS 可参考 [macOS 客户端](docs/macos.md)自行构建。它们是实验性支持，没有签名。
 
 ### 3. 登录 Claude
 
