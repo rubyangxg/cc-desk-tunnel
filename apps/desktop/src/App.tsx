@@ -1300,7 +1300,7 @@ export function App({
             run: () => open('settings', 'account'),
           },
           ...profiles.profiles
-            .filter((profile) => profile.id !== profileId)
+            .filter((profile) => !profiles.pool.config.enabled && profile.id !== profileId)
             .map((profile) => ({
               label: `切换代理服务 · ${profile.name}`,
               icon: <UserRound />,
@@ -1816,47 +1816,54 @@ export function App({
                 </button>
               </div>
             )}
-            {selected && profiles.profiles.length > 1 && !terminalSessionId && (
-              <div className="session-account-strip">
-                <span>当前服务器：{form.name}</span>
-                <select
-                  aria-label="续接到服务器"
-                  value=""
-                  disabled={
-                    controlsDisabled || away || sessions.some((session) => !!session.activeRun)
-                  }
-                  onChange={(event) => {
-                    if (draft.trim()) {
-                      setError('请先发送或清空草稿，再切换服务器。');
-                      return;
+            {selected &&
+              profiles.profiles.length > 1 &&
+              !profiles.pool.config.enabled &&
+              !terminalSessionId && (
+                <div className="session-account-strip">
+                  <span>当前服务器：{form.name}</span>
+                  <select
+                    aria-label="续接到服务器"
+                    value=""
+                    disabled={
+                      controlsDisabled || away || sessions.some((session) => !!session.activeRun)
                     }
-                    void rotation.transfer(event.target.value, selected);
-                  }}
-                >
-                  <option value="" disabled>
-                    续接到其他服务器…
-                  </option>
-                  {profiles.profiles
-                    .filter((profile) => profile.id !== profileId)
-                    .map((profile) => (
-                      <option key={profile.id} value={profile.id}>
-                        {profile.name}
-                      </option>
-                    ))}
-                </select>
-              </div>
-            )}
+                    onChange={(event) => {
+                      if (draft.trim()) {
+                        setError('请先发送或清空草稿，再切换服务器。');
+                        return;
+                      }
+                      void rotation.transfer(event.target.value, selected);
+                    }}
+                  >
+                    <option value="" disabled>
+                      续接到其他服务器…
+                    </option>
+                    {profiles.profiles
+                      .filter((profile) => profile.id !== profileId)
+                      .map((profile) => (
+                        <option key={profile.id} value={profile.id}>
+                          {profile.name}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              )}
             {serverPool && !terminalSessionId && (
-              <div className="session-account-strip">
+              <div className="session-account-strip" aria-label={`当前服务器：${form.name}`}>
                 <div>
                   <span className="pool-live-dot" />
                   <strong>
-                    {state.pool?.settings.enabled ? '账号池自动接力' : '固定账号模式'}
+                    {profiles.pool.config.enabled
+                      ? '自动调度'
+                      : state.pool?.settings.enabled
+                        ? '账号池自动接力'
+                        : '固定账号模式'}
                   </strong>
                   <span className="session-account-note">同一项目 · 历史连续</span>
                 </div>
                 <div>
-                  {selected && (
+                  {selected && !profiles.pool.config.enabled && (
                     <select
                       aria-label="当前会话 Claude 账号"
                       value={selected.accountId ?? ''}

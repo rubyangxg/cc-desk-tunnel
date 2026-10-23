@@ -39,6 +39,10 @@ test('all servers share one account page with scoped controls, costs and honest 
   const remote = makePool(['同名账号', '备用账号']);
   await page.addInitScript(
     ({ local, remote }) => {
+      localStorage.setItem(
+        'proxy-account-pool',
+        JSON.stringify({ enabled: true, strategy: 'reset', order: [], disabled: ['b'] }),
+      );
       const log: string[] = [];
       let fail = false;
       let saved = {
@@ -145,6 +149,9 @@ test('all servers share one account page with scoped controls, costs and honest 
   await page.goto('/');
   await page.getByRole('button', { name: 'Claude 账号池', exact: true }).click();
   await expect(page.locator('.server-account-card')).toHaveCount(3);
+  expect(
+    await page.evaluate(() => JSON.parse(localStorage.getItem('proxy-account-pool')!).disabled),
+  ).not.toContain('b');
   const remoteCard = page.getByRole('article', {
     name: 'Claude 账号 · 服务器 2 · 同名账号',
     exact: true,

@@ -478,6 +478,8 @@ export const messageQueueSchema = z.object({
     .max(20),
   paused: z.boolean(),
   reason: z.string().optional(),
+  // Only pre-dispatch quota rejection may be resumed automatically on another service.
+  reasonCode: z.literal('pool_unavailable').optional(),
   // Persisted before dispatch so restart recovery can distinguish an accepted message.
   dispatching: id.optional(),
   // Source-side immutable backup; only the destination may dispatch these messages.

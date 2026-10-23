@@ -953,3 +953,45 @@ nativeTest(
     );
   },
 );
+
+nativeTest(
+  'idle queued quota rejection stays unsent, is marked for automatic handoff, and explicit pause clears eligibility',
+  async (t) => {
+    const f = await fixture(t);
+    for (const directory of [f.config, join(f.dir, 'accounts', f.id, 'config')]) {
+      const file = join(directory, 'fixture.json');
+      writeFileSync(
+        file,
+        JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), blocked: true }),
+      );
+    }
+    await f.request({ type: 'pool.status', refresh: true });
+    await f.wait(
+      (m) =>
+        m.type === 'pool.state' &&
+        !m.refreshing &&
+        m.accounts.every((a) =>
+          a.limits?.windows.some((w) => w.name === 'five_hour' && w.utilization === 100),
+        ),
+    );
+    const created = await f.request({
+      type: 'session.create',
+      title: 'idle quota queue',
+      projectPath: '/local/project',
+    });
+    const sessionId = created.sessionId!;
+    await f.request({ type: 'message.enqueue', sessionId, text: 'next task' });
+    const session = f.server.store.get(sessionId).session;
+    assert.equal(session.activeRun, null);
+    assert.equal(session.messageQueue?.reasonCode, 'pool_unavailable');
+    assert.equal(session.messageQueue?.paused, true);
+    assert.equal(session.messageQueue?.items.length, 1);
+    assert.equal(
+      f.server.store.userMessage(sessionId, session.messageQueue!.items[0].id),
+      undefined,
+    );
+    await f.request({ type: 'message.queue.pause', sessionId, paused: true });
+    assert.equal(f.server.store.get(sessionId).session.messageQueue?.reasonCode, undefined);
+    assert.equal(f.server.store.get(sessionId).session.messageQueue?.reason, undefined);
+  },
+);

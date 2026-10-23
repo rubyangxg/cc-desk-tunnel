@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ProfileControls } from './Connections.tsx';
 import type { ProxyClient } from './client.ts';
-import { exhausted, fiveHour, handoffFor, poolCandidates, quotaFailure } from './accountPool.ts';
+import {
+  exhausted,
+  fiveHour,
+  handoffFor,
+  poolCandidates,
+  quotaFailure,
+  quotaPausedQueue,
+} from './accountPool.ts';
 import { isHere } from './device.ts';
 import { transcript } from './transcript.ts';
 import type { Session } from '@cc-desk-tunnel/protocol';
@@ -43,6 +50,7 @@ export function usePoolRotation(options: {
   const continuedFailures = useRef(new Set<string>());
   const nextAttempt = useRef(0);
   const [working, setWorking] = useState(false);
+  const [connectionRetry, setConnectionRetry] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
 
   async function prepare(
@@ -187,6 +195,86 @@ export function usePoolRotation(options: {
     }
   }
 
+  // A queued send can be rejected before a run exists. This is separate from quotaWaits:
+  // the server retained the unsent message, so freeze it before transferring ownership.
+  useEffect(() => {
+    if (
+      !pool.config.enabled ||
+      state.status !== 'connected' ||
+      working ||
+      rotating.current ||
+      options.busy ||
+      options.terminalOpen ||
+      profiles.handoff ||
+      !state.features.includes('cross-server-queue-handoff')
+    )
+      return;
+    if (state.sessions.some((item) => item.activeRun && isHere(item, state.device))) return;
+    const session = state.sessions.find(
+      (item) => isHere(item, state.device) && quotaPausedQueue(item),
+    );
+    if (!session || Date.now() < nextAttempt.current) return;
+    const timer = setTimeout(() => {
+      nextAttempt.current = Date.now() + 55_000;
+      rotating.current = true;
+      setWorking(true);
+      setNotice('正在选择可用账号，稍后自动发送…');
+      void (async () => {
+        try {
+          const quotas = await pool.refresh();
+          const live = current.current;
+          const latest = client.state.sessions.find((item) => item.id === session.id);
+          if (
+            !live.profiles.pool.config.enabled ||
+            live.busy ||
+            live.terminalOpen ||
+            client.state.status !== 'connected' ||
+            !latest ||
+            !quotaPausedQueue(latest) ||
+            client.state.sessions.some(
+              (item) => item.activeRun && isHere(item, client.state.device),
+            )
+          )
+            return;
+          const candidates = poolCandidates(
+            live.profiles.profiles,
+            quotas,
+            live.profiles.pool.config,
+          );
+          if (candidates.some((item) => item.id === id)) {
+            await client.request({
+              type: 'message.queue.pause',
+              sessionId: session.id,
+              paused: false,
+            });
+            setNotice(null);
+            return;
+          }
+          const next = candidates[0];
+          if (!next) {
+            setNotice('等待可用额度，恢复后自动发送。');
+            return;
+          }
+          await freezeQueue(latest);
+          const handoff = await prepare(latest, [id], false, true);
+          // This pause was created by a rejected dispatch, not by the user.
+          if (handoff.queue) handoff.queue.paused = false;
+          if (!current.current.profiles.pool.config.enabled) return;
+          await current.current.close();
+          await current.current.profiles.select(next.id, true, handoff);
+        } catch (error) {
+          current.current.error(
+            `自动接力暂未完成：${error instanceof Error ? error.message : '请求失败'}`,
+          );
+        } finally {
+          rotating.current = false;
+          setWorking(false);
+        }
+      })();
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [state, pool.quotas, pool.config, options.busy, options.terminalOpen, working]);
+
   // New services rotate inside their own pool first. Only an explicit quota-wait can be released.
   useEffect(() => {
     if (
@@ -283,6 +371,14 @@ export function usePoolRotation(options: {
       return;
     failedConnectionHandled.current = true;
     let cancelled = false;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const retryLater = () => {
+      retry = setTimeout(() => {
+        if (cancelled) return;
+        failedConnectionHandled.current = false;
+        setConnectionRetry((value) => value + 1);
+      }, 60_000);
+    };
     setWorking(true);
     setNotice(`${profiles.initial.name} 连接失败，已禁用调度，正在查找其他代理服务…`);
     void (async () => {
@@ -299,9 +395,10 @@ export function usePoolRotation(options: {
         )[0];
         if (!next) {
           setNotice(
-            '账号池已暂停：没有可调度的代理服务。请修复连接后选中该服务重新连接；成功后恢复调度。' +
+            '账号池已暂停：暂时没有可用账号，正在等待连接或额度恢复。' +
               (live.profiles.handoff ? '待续接的任务上下文仍保留。' : ''),
           );
+          retryLater();
           return;
         }
         const handoff = live.profiles.handoff ? { ...live.profiles.handoff, attempted } : undefined;
@@ -310,17 +407,27 @@ export function usePoolRotation(options: {
       } catch (error) {
         if (!cancelled)
           setNotice(
-            `账号池已暂停：${error instanceof Error ? error.message : '代理服务检测失败'}。请选中可用服务重新连接。`,
+            `账号池已暂停：${error instanceof Error ? error.message : '代理服务检测失败'}。稍后自动重试。`,
           );
+        if (!cancelled) retryLater();
       } finally {
         if (!cancelled) setWorking(false);
       }
     })();
     return () => {
       cancelled = true;
+      clearTimeout(retry);
       setWorking(false);
     };
-  }, [state.status, state.error, profiles.autoConnect, pool.config.enabled, pool.refresh, id]);
+  }, [
+    state.status,
+    state.error,
+    profiles.autoConnect,
+    pool.config.enabled,
+    pool.refresh,
+    id,
+    connectionRetry,
+  ]);
 
   useEffect(() => {
     if (!state.features.includes('account-pool'))

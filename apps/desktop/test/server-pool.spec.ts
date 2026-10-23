@@ -40,6 +40,9 @@ test('one-service account dashboard logs in independent accounts, saves policy a
   page,
 }) => {
   test.setTimeout(60000);
+  await page.addInitScript(() =>
+    localStorage.setItem('proxy-account-pool', JSON.stringify({ enabled: false })),
+  );
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto('/');

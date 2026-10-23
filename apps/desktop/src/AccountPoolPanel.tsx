@@ -97,7 +97,7 @@ export default function AccountPoolPanel({
                             ? `可调度 · 5 小时剩余 ${Math.max(0, 100 - window!.utilization!)}%`
                             : '待检测 · 暂不参与调度'}
                 </small>
-                {disabled && <small>选中此服务并重新连接，成功后恢复调度。</small>}
+                {disabled && <small>正在后台检测，连接恢复后自动参与调度。</small>}
                 {quota?.error && <small>{quota.error}</small>}
                 {reset ? <small>重置：{new Date(reset).toLocaleString('zh-CN')}</small> : null}
               </div>

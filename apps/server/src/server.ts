@@ -1517,7 +1517,7 @@ export function createProxyServer(options: ServerOptions) {
   function pauseQueue(sessionId: string, reason: string) {
     const queue = store.get(sessionId).session.messageQueue;
     if (!queue?.items.length || queue.handoff) return;
-    store.setMessageQueue(sessionId, { ...queue, paused: true, reason });
+    store.setMessageQueue(sessionId, { ...queue, paused: true, reason, reasonCode: undefined });
     updated(sessionId);
   }
   function drainQueue(sessionId: string) {
@@ -1565,6 +1565,11 @@ export function createProxyServer(options: ServerOptions) {
         items,
         paused: true,
         reason: error instanceof Error ? error.message : '发送失败，请确认后继续队列。',
+        ...(error instanceof DomainError &&
+        error.code === 'pool_unavailable' &&
+        items === queue.items
+          ? { reasonCode: 'pool_unavailable' as const }
+          : {}),
       });
       updated(sessionId);
     }
@@ -1966,6 +1971,7 @@ export function createProxyServer(options: ServerOptions) {
           ...queue,
           paused: command.paused,
           reason: undefined,
+          reasonCode: undefined,
         });
         updated(session.id);
         if (!command.paused) drainQueue(session.id);

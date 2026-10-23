@@ -7,7 +7,7 @@ export type PoolSettings = {
   enabled: boolean;
   strategy: 'reset' | 'manual';
   order: string[];
-  // A full connection failure needs a successful connection before scheduling again.
+  // A connection failure is excluded until a fresh authenticated probe succeeds.
   disabled?: string[];
 };
 export type QuotaSnapshot = {
@@ -82,6 +82,21 @@ export function poolCandidates(
         (settings.strategy === 'reset' ? reset(a.id) - reset(b.id) : 0) ||
         order.indexOf(a.id) - order.indexOf(b.id),
     );
+}
+
+// Older protocol-20 services supplied only this exact reason. Never infer auto-resume from
+// a generic failure, a user pause, a stopped run or an unconfirmed dispatch.
+export function quotaPausedQueue(session: Session) {
+  const queue = session.messageQueue;
+  return !!(
+    !session.activeRun &&
+    queue?.items.length &&
+    queue.paused &&
+    !queue.dispatching &&
+    !queue.handoff &&
+    (queue.reasonCode === 'pool_unavailable' ||
+      (!queue.reasonCode && queue.reason === '账号池暂无可用额度，请检测账号或等待额度重置。'))
+  );
 }
 
 export function quotaFailure(events: SessionEvent[]) {

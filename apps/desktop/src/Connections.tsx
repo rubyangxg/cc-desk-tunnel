@@ -70,7 +70,8 @@ export function App() {
         if (auto && pool.config.enabled) {
           const quotas = await pool.refresh(next.profiles);
           const preferred = poolCandidates(next.profiles, quotas, pool.config)[0];
-          shouldConnect = !!preferred;
+          // Stay connected for history and automatic quota recovery even when all accounts are limited.
+          shouldConnect = auto;
           if (preferred) {
             next.activeId = preferred.id;
             await window.desktop?.saveProfiles(next);

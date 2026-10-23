@@ -17,7 +17,7 @@ function settings(): PoolSettings {
   try {
     const value = JSON.parse(localStorage.getItem(key) ?? '{}');
     return {
-      enabled: value.enabled === true,
+      enabled: value.enabled !== false,
       strategy: value.strategy === 'manual' ? 'manual' : 'reset',
       order: Array.isArray(value.order)
         ? value.order.filter((id: unknown) => typeof id === 'string')
@@ -27,7 +27,7 @@ function settings(): PoolSettings {
         : [],
     };
   } catch {
-    return { enabled: false, strategy: 'reset', order: [] };
+    return { enabled: true, strategy: 'reset', order: [] };
   }
 }
 
@@ -73,6 +73,12 @@ export function useAccountPool(profiles: ConnectionProfile[]) {
     },
     [update],
   );
+  const configure = useCallback((values: Partial<PoolSettings>) => {
+    const next = { ...currentConfig.current, ...values };
+    currentConfig.current = next;
+    localStorage.setItem(key, JSON.stringify(next));
+    setConfig(next);
+  }, []);
   const refresh = useCallback(
     (accounts = current.current): Promise<Quotas> => {
       if (pending.current) return pending.current;
@@ -101,6 +107,11 @@ export function useAccountPool(profiles: ConnectionProfile[]) {
                   : await window.desktop!.probeQuota(profile.id);
                 if (!unchanged() || (latest.current[profile.id]?.checkedAt ?? 0) > checkedAt)
                   return;
+                // A fresh authenticated probe re-enables a recovered endpoint automatically.
+                if (limits?.available && currentConfig.current.disabled?.includes(profile.id))
+                  configure({
+                    disabled: currentConfig.current.disabled.filter((id) => id !== profile.id),
+                  });
                 setStates((value) => ({ ...value, [profile.id]: details?.state ?? null }));
                 update({
                   ...latest.current,
@@ -132,7 +143,7 @@ export function useAccountPool(profiles: ConnectionProfile[]) {
       });
       return pending.current;
     },
-    [update],
+    [update, configure],
   );
   const accountsKey = profiles.map(connectionKey).join('|');
   useEffect(() => {
@@ -167,12 +178,6 @@ export function useAccountPool(profiles: ConnectionProfile[]) {
       clearInterval(timer);
     };
   }, [config.enabled, accountsKey, refresh, update]);
-  const configure = useCallback((values: Partial<PoolSettings>) => {
-    const next = { ...currentConfig.current, ...values };
-    currentConfig.current = next;
-    localStorage.setItem(key, JSON.stringify(next));
-    setConfig(next);
-  }, []);
   const markUnavailable = useCallback(
     (id: string) => {
       const disabled = currentConfig.current.disabled ?? [];

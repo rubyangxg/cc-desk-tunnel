@@ -268,7 +268,7 @@ export default function UnifiedAccountPool({
                       ? '正在读取账号…'
                       : '保存连接凭据后自动读取账号'
                   : pool.config.disabled?.includes(profile.id)
-                    ? '连接失败，重新连接后恢复调度'
+                    ? '连接暂不可用，正在自动检测恢复'
                     : enabled && !remote.settings.enabled
                       ? '此服务器自动接力未开启，请重新开启统一开关'
                       : null);

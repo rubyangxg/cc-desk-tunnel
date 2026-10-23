@@ -13,7 +13,13 @@ for (const {
   stoppedSend = false,
   away = false,
   loseQueueAck = false,
+  quotaQueue = false,
+  legacyQueue = false,
+  userPaused = false,
 } of [
+  { manual: false, loseAck: false, queued: true, quotaQueue: true },
+  { manual: false, loseAck: false, queued: true, quotaQueue: true, legacyQueue: true },
+  { manual: false, loseAck: false, queued: true, quotaQueue: true, userPaused: true },
   { manual: false, loseAck: false },
   { manual: true, loseAck: false },
   { manual: false, loseAck: true },
@@ -26,7 +32,7 @@ for (const {
   { manual: false, loseAck: false, away: true },
   { manual: false, loseAck: false, queued: true, loseQueueAck: true },
 ])
-  test(`cross-server ${manual ? 'manual' : 'quota'}${loseAck ? ' lost acknowledgement' : ''}${paginated ? ' paginated' : ''}${localAvailable ? ' available local account' : ''}${queued ? ' queued' : ''}${paused ? ' paused' : ''}${stoppedSend ? ' stopped resend' : ''}${away ? ' other device' : ''}${loseQueueAck ? ' lost queue acknowledgement' : ''} handoff retains history, submits once and survives reload`, async ({
+  test(`cross-server ${manual ? 'manual' : 'quota'}${loseAck ? ' lost acknowledgement' : ''}${paginated ? ' paginated' : ''}${localAvailable ? ' available local account' : ''}${queued ? ' queued' : ''}${paused ? ' paused' : ''}${stoppedSend ? ' stopped resend' : ''}${away ? ' other device' : ''}${loseQueueAck ? ' lost queue acknowledgement' : ''}${quotaQueue ? ' idle quota queue' : ''}${legacyQueue ? ' legacy' : ''}${userPaused ? ' user paused' : ''} handoff retains history, submits once and survives reload`, async ({
     page,
   }) => {
     const device = { id: randomUUID(), name: 'test computer', platform: 'linux' as const };
@@ -52,11 +58,19 @@ for (const {
               scenario: 'chat' as const,
               createdAt: now,
             })),
-            paused: paused || stoppedSend,
+            paused: paused || stoppedSend || quotaQueue,
+            ...(quotaQueue
+              ? {
+                  reason: userPaused ? undefined : '账号池暂无可用额度，请检测账号或等待额度重置。',
+                  ...(!legacyQueue && !userPaused
+                    ? { reasonCode: 'pool_unavailable' as const }
+                    : {}),
+                }
+              : {}),
           }
         : undefined,
       activeRun:
-        manual || localAvailable || stoppedSend
+        manual || localAvailable || stoppedSend || quotaQueue
           ? null
           : { id: runId, connectionId, status: 'running', surface: 'chat' },
     };
@@ -99,7 +113,7 @@ for (const {
           ? 'failed'
           : stoppedSend
             ? 'cancelled'
-            : manual
+            : manual || quotaQueue
               ? 'completed'
               : 'running',
         connectionId,
@@ -357,6 +371,16 @@ for (const {
       ).toBe(false);
       return;
     }
+    if (userPaused) {
+      await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
+      await expect(page.getByRole('region', { name: '待发送消息' })).toContainText('已暂停');
+      await page.waitForTimeout(700);
+      expect(
+        sent.some((m) => ['session.handoff', 'run.handoff', 'message.send'].includes(m.type)),
+      ).toBe(false);
+      expect(source.messageQueue?.items).toHaveLength(2);
+      return;
+    }
     if (stoppedSend) {
       await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
       await page.getByRole('textbox', { name: '消息', exact: true }).fill('停止后新的指令');
@@ -366,7 +390,7 @@ for (const {
       await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
       await expect(page.locator('.message.user')).toContainText('保留原来的任务和对话');
       await page.waitForTimeout(700); // The legacy fallback used to start after 150 ms.
-      await expect(page.getByText('当前服务器：服务器1', { exact: true })).toBeVisible();
+      await expect(page.getByLabel('当前服务器：服务器1', { exact: true })).toBeVisible();
       expect(sent.some((message) => message.server === 2)).toBe(false);
       expect(
         sent.filter((message) =>
@@ -380,7 +404,7 @@ for (const {
       await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
       await page.getByLabel('续接到服务器', { exact: true }).selectOption('second');
     }
-    await expect(page.getByText('当前服务器：服务器2', { exact: true })).toBeVisible();
+    await expect(page.getByLabel('当前服务器：服务器2', { exact: true })).toBeVisible();
     if (loseQueueAck) {
       await expect(page.getByText(/自动续接已暂停：排队请求超时/)).toBeVisible({ timeout: 15000 });
       expect(target?.messageQueue?.items.map((item) => item.text)).toEqual(['后续任务1']);
@@ -399,12 +423,17 @@ for (const {
     await expect(page.getByText('已经完成第一步', { exact: true })).toBeVisible();
     await expect(page.getByText('服务器2继续完成第二步', { exact: true })).toBeVisible();
     expect(sent.filter((m) => m.type === 'run.handoff')).toHaveLength(
-      manual || stoppedSend ? 0 : 1,
+      manual || stoppedSend || quotaQueue ? 0 : 1,
     );
     expect(sent.filter((m) => m.type === 'message.send' && m.server === 2)).toHaveLength(1);
     expect(sent.find((m) => m.type === 'message.send' && m.server === 2)?.text).toContain(
       '保留原来的任务和对话',
     );
+    if (quotaQueue) {
+      expect(sent.filter((m) => m.type === 'session.handoff')).toHaveLength(1);
+      await expect(page.getByLabel('续接到服务器', { exact: true })).toHaveCount(0);
+      await expect(page.getByLabel('当前会话 Claude 账号', { exact: true })).toHaveCount(0);
+    }
     if (queued) {
       await expect.poll(() => target?.messageQueue?.items.length).toBe(2);
       expect(target!.messageQueue!.items.map((item) => item.text)).toEqual([
@@ -429,12 +458,10 @@ for (const {
     await expect(page.locator('.message.user')).toContainText('保留原来的任务和对话');
     await expect(page.getByText('服务器2继续完成第二步', { exact: true })).toBeVisible();
     expect(sent.filter((m) => m.type === 'message.send' && m.server === 2)).toHaveLength(1);
-    await page.getByRole('button', { name: '设置与账号', exact: true }).click();
-    await page.getByRole('menuitem', { name: '切换代理服务 · 服务器1', exact: true }).click();
     await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
     await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeDisabled();
     await page.getByRole('button', { name: '前往当前会话', exact: true }).click();
-    await expect(page.getByText('当前服务器：服务器2', { exact: true })).toBeVisible();
+    await expect(page.getByLabel('当前服务器：服务器2', { exact: true })).toBeVisible();
     await expect(page.locator('.message.user')).toContainText('保留原来的任务和对话');
     expect(sent.filter((m) => m.type === 'message.send' && m.server === 2)).toHaveLength(1);
     expect(errors).toEqual([]);
