@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  ArrowDown,
   ArrowUpToLine,
   Bot,
   Brain,
@@ -541,7 +542,7 @@ export default function Conversation({
   const lastFindRequest = useRef(findRequest);
   const searching = findOpen && query.length > 0;
   const openFind = () => {
-    follow.current = false;
+    leave();
     setFindOpen(true);
   };
   useEffect(() => {
@@ -601,17 +602,28 @@ export default function Conversation({
     edit: edit && !running ? (item) => edit(item.id, item.text) : undefined,
   };
   const scroll = useRef<HTMLDivElement>(null);
-  // The view follows new output while the reader stays near the bottom.
+  // The view follows new output until the reader moves up from the end, and again once they come back down to it.
   const follow = useRef(true);
+  // Shown while not following, as the way back to the end.
+  const [away, setAway] = useState(false);
   // Earlier history is inserted above; the anchor keeps the lines being read where they were.
   const prependAnchor = useRef<{ sessionId: string; height: number; top: number } | null>(null);
   const lastTop = useRef(0);
-  const scrollToBottom = () => {
+  // What the view moved by itself is not the reader's: the next scroll event compares with where it was put.
+  const toEnd = () => {
     if (!scroll.current) return;
-    scroll.current.scrollTop = scroll.current.scrollHeight;
+    scroll.current.scrollTo(0, scroll.current.scrollHeight);
     lastTop.current = scroll.current.scrollTop;
   };
-  const held = useRef(false);
+  const fromEnd = (box: HTMLElement) => box.scrollHeight - box.scrollTop - box.clientHeight;
+  const leave = () => {
+    follow.current = false;
+    setAway(true);
+  };
+  const rejoin = () => {
+    follow.current = true;
+    setAway(false);
+  };
   const loadMore = () => {
     if (!session || !connected || !history?.hasEarlier || history.loadingEarlier || history.loading)
       return;
@@ -631,8 +643,8 @@ export default function Conversation({
   };
   useLayoutEffect(() => {
     prependAnchor.current = null;
-    follow.current = true;
-    scrollToBottom();
+    rejoin();
+    toEnd();
   }, [session?.id]);
   useLayoutEffect(() => {
     const anchor = prependAnchor.current;
@@ -640,17 +652,17 @@ export default function Conversation({
       scroll.current.scrollTop = anchor.top + scroll.current.scrollHeight - anchor.height;
       lastTop.current = scroll.current.scrollTop;
       prependAnchor.current = null;
-      follow.current = false;
+      leave();
       return;
     }
     if (anchor) return;
-    if (follow.current && !findOpen) scrollToBottom();
+    if (follow.current && !findOpen) toEnd();
   }, [events, history?.loadingEarlier, session?.id]);
   useLayoutEffect(() => {
     if (!scroll.current || !transcriptRoot.current) return;
     // Markdown and content-visibility can change message heights after the initial scroll.
     const observer = new ResizeObserver(() => {
-      if (follow.current && !findOpen && !prependAnchor.current) scrollToBottom();
+      if (follow.current && !findOpen && !prependAnchor.current) toEnd();
     });
     observer.observe(transcriptRoot.current);
     observer.observe(scroll.current);
@@ -728,33 +740,46 @@ export default function Conversation({
         onScroll={() => {
           if (!scroll.current) return;
           const top = scroll.current.scrollTop;
-          // Reaching the end follows again. Only the reader leaves it: settling heights move the view too.
-          if (scroll.current.scrollHeight - top - scroll.current.clientHeight < 80)
-            follow.current = true;
-          else if (held.current && top < lastTop.current) follow.current = false;
+          const end = fromEnd(scroll.current) < 40;
+          // Coming down to the end follows again; only moving down does, so a slow wheel or a flick upwards is not
+          // pulled back while output comes in fast. Moving up away from it leaves, by touch as well: heights that
+          // settle or shrink keep the view at the end, where the reader never is after scrolling up.
+          if (end && top > lastTop.current) rejoin();
+          else if (!end && top < lastTop.current && follow.current) leave();
           // Reading on upwards past what is loaded brings the page before it; a failed load waits for the button.
           if (top < lastTop.current && top < 240 && !loadError) loadMore();
           lastTop.current = top;
         }}
         onPointerDown={(event) => {
-          held.current = true;
-          const release = () => {
-            held.current = false;
-            window.removeEventListener('pointerup', release);
-            window.removeEventListener('pointercancel', release);
-          };
-          window.addEventListener('pointerup', release);
-          window.addEventListener('pointercancel', release);
           // Steps opened or closed are being read where they are.
-          if ((event.target as HTMLElement).closest('summary')) follow.current = false;
+          if ((event.target as HTMLElement).closest('summary')) leave();
         }}
         onKeyDown={(event) => {
           if ((event.target as HTMLElement).closest('input, textarea, [contenteditable="true"]'))
             return;
-          if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) follow.current = false;
+          if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) leave();
+          else if (event.key === 'End') rejoin();
         }}
         onWheel={(event) => {
-          if (event.deltaY < 0) follow.current = false;
+          // Left at once, before the scroll it starts arrives: output in between would pull the view back.
+          if (
+            event.deltaY < 0 &&
+            scroll.current &&
+            scroll.current.scrollHeight > scroll.current.clientHeight
+          )
+            leave();
+          // A turn down that reaches the end follows again from it. The scroll it makes is told too late for that
+          // when output is coming in: by then the end has moved on.
+          if (event.deltaY > 0 && scroll.current && !follow.current) {
+            const box = scroll.current;
+            const by =
+              event.deltaMode === 1
+                ? event.deltaY * 40
+                : event.deltaMode === 2
+                  ? event.deltaY * box.clientHeight
+                  : event.deltaY;
+            if (fromEnd(box) <= by + 40) rejoin();
+          }
           // A loaded page shorter than the window cannot scroll, so the wheel itself asks for more.
           if (event.deltaY < 0 && scroll.current?.scrollTop === 0 && !loadError) loadMore();
         }}
@@ -887,6 +912,20 @@ export default function Conversation({
                   {connected && !ownsRun && ' · 所在设备不在线'}
                 </div>
               ))}
+          </div>
+        )}
+        {session && away && (
+          <div className="to-end">
+            <IconButton
+              title="回到底部"
+              className="to-end-button"
+              onClick={() => {
+                rejoin();
+                toEnd();
+              }}
+            >
+              <ArrowDown />
+            </IconButton>
           </div>
         )}
       </div>

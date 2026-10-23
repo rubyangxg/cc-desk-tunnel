@@ -22,9 +22,11 @@ function reply(n: number) {
   ].join('\n\n');
 }
 
+// Opens the session; what is returned starts a reply streaming into it, fast, and stops it when called.
 async function open(page: Page) {
   const now = new Date().toISOString();
   const connectionId = randomUUID();
+  let stream = (): (() => void) => () => {};
   const session: Session = {
     id: randomUUID(),
     title: '长对话',
@@ -76,6 +78,29 @@ async function open(page: Page) {
         event({ type: 'run.status', status: 'completed', connectionId }),
       );
     }
+    stream = () => {
+      // A native reply keeps one run ID across all of its streaming fragments.
+      const runId = randomUUID();
+      const messageId = randomUUID();
+      let n = 0;
+      const timer = setInterval(() => {
+        send({
+          type: 'session.event',
+          event: {
+            sessionId: session.id,
+            runId,
+            sequence: ++sequence,
+            createdAt: new Date().toISOString(),
+            payload: {
+              type: 'text.delta',
+              messageId,
+              text: `\n\n流式输出第${++n}段，写得长一些，好让它在窗口里换行，页面跟着变高。`,
+            },
+          },
+        });
+      }, 20);
+      return () => clearInterval(timer);
+    };
     route.onMessage((raw) => {
       const message = JSON.parse(String(raw));
       if (message.type === 'device') return;
@@ -118,6 +143,7 @@ async function open(page: Page) {
     .locator('.session-select')
     .click();
   await expect(page.getByText(`第${turns - 1}轮的回答。`)).toBeVisible();
+  return () => stream();
 }
 
 // How far the view is from the end of the conversation, once it has stopped moving.
@@ -169,4 +195,49 @@ test('opening the steps of the last turn does not pull them out of sight', async
   await expect(page.locator('.turn-process').last()).toHaveAttribute('open', '');
   await fromEnd(page);
   await expect(summary).toBeInViewport();
+});
+
+test('while output streams in fast, a reader scrolling up a little is not pulled back to the end', async ({
+  page,
+}) => {
+  const stream = await open(page);
+  const conversation = page.locator('.conversation');
+  const back = page.getByRole('button', { name: '回到底部', exact: true });
+  expect(await fromEnd(page)).toBeLessThan(2);
+  await expect(back).toHaveCount(0);
+  const stop = stream();
+  await page.waitForTimeout(300);
+  // One notch at a time, slower than the output comes in.
+  await conversation.hover();
+  for (let i = 0; i < 3; i++) {
+    await page.mouse.wheel(0, -60);
+    await page.waitForTimeout(150);
+  }
+  await page.waitForTimeout(800);
+  const read = await conversation.evaluate((box) => box.scrollTop);
+  await page.waitForTimeout(500);
+  expect(await conversation.evaluate((box) => box.scrollTop)).toBe(read);
+  await expect(back).toBeVisible();
+  // The button brings the view down, and it follows the output from there.
+  await back.click();
+  await expect(back).toHaveCount(0);
+  await page.waitForTimeout(500);
+  stop();
+  expect(await fromEnd(page)).toBeLessThan(2);
+  // Scrolling all the way down by hand follows again as well.
+  const again = stream();
+  await page.mouse.wheel(0, -400);
+  await expect(back).toBeVisible();
+  for (let i = 0; i < 20 && (await back.count()); i++) {
+    // Reach the moving end: a fixed 400px step can be slower than this synthetic stream.
+    await page.mouse.wheel(
+      0,
+      await conversation.evaluate((box) => box.scrollHeight - box.scrollTop),
+    );
+    await page.waitForTimeout(100);
+  }
+  await expect(back).toHaveCount(0);
+  await page.waitForTimeout(500);
+  again();
+  expect(await fromEnd(page)).toBeLessThan(2);
 });

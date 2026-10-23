@@ -1,6 +1,6 @@
 {
   "name": "@cc-desk-tunnel/desktop",
-  "version": "0.4.21",
+  "version": "0.4.22",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -35,6 +35,6 @@
     "@vitejs/plugin-react": "6.1.1",
     "babel-plugin-react-compiler": "1.0.0",
     "electron": "44.5.1",
-    "vite": "8.3.2"
+    "vite": "8.3.3"
   }
 }

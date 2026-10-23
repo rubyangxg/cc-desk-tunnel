@@ -2003,6 +2003,23 @@ kbd {
   overflow-x: hidden;
   padding: 28px;
 }
+/* Kept to the bottom of the view while it is scrolled up, taking no room at the end of the conversation. */
+.to-end {
+  position: sticky;
+  bottom: 0;
+  height: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+.to-end-button {
+  transform: translateY(calc(-100% - 12px));
+  border: 1px solid var(--line-soft);
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+}
 .conversation-tools {
   display: flex;
   align-items: center;
