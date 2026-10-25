@@ -175,6 +175,21 @@ test('all servers share one account page with scoped controls, costs and honest 
   expect(await page.evaluate(() => (window as unknown as { testLog: string[] }).testLog)).toContain(
     'b:pool.configure:',
   );
+  const backupCard = page.getByRole('article', {
+    name: 'Claude 账号 · 服务器 2 · 备用账号',
+    exact: true,
+  });
+  await backupCard.getByRole('button', { name: '切换使用', exact: true }).click();
+  await expect(backupCard.getByRole('button', { name: '优先使用中', exact: true })).toBeVisible();
+  expect(
+    await page.evaluate(() => JSON.parse(localStorage.getItem('proxy-account-pool')!)),
+  ).toMatchObject({ enabled: true, strategy: 'manual', order: ['b', 'a'] });
+  const localCard = page.getByRole('article', { name: 'Claude 账号 · 同名账号', exact: true });
+  await localCard.getByRole('button', { name: '切换使用', exact: true }).click();
+  await expect(localCard.getByRole('button', { name: '优先使用中', exact: true })).toBeVisible();
+  expect(
+    await page.evaluate(() => JSON.parse(localStorage.getItem('proxy-account-pool')!).order),
+  ).toEqual(['a', 'b']);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.screenshot({ path: join(screenshots, 'unified-accounts-desktop.png') });
   await page.evaluate(() => (window as unknown as { failRemote: () => void }).failRemote());
@@ -183,6 +198,7 @@ test('all servers share one account page with scoped controls, costs and honest 
   await expect(
     page.getByRole('article', { name: 'Claude 账号 · 服务器 2 · 备用账号', exact: true }),
   ).toContainText('离线 · 上次数据');
+  await expect(backupCard.getByRole('button', { name: '切换使用', exact: true })).toBeDisabled();
   await expect(page.locator('.server-account-card')).toHaveCount(3);
   expect(
     (await page.evaluate(() => (window as unknown as { testLog: string[] }).testLog)).filter(

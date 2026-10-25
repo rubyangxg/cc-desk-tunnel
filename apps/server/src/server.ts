@@ -1452,9 +1452,7 @@ export function createProxyServer(options: ServerOptions) {
       const current =
         session.accountId ?? (store.hasNativeContext(session.id) ? 'default' : undefined);
       // Re-evaluate priority only at a new run boundary; active runs retain their account.
-      const selected = pool.choose(
-        pool.settings.strategy === 'reset' && pool.settings.enabled ? undefined : current,
-      );
+      const selected = pool.choose(pool.settings.enabled ? undefined : current);
       if (poolLogins.has(selected.id) || (selected.id === 'default' && login))
         throw new DomainError('login_active', '所选账号正在登录，请稍后发送。');
       const previous = session.accountId ?? 'default';

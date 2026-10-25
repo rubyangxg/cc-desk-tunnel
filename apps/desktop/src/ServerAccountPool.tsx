@@ -113,11 +113,15 @@ export default function ServerAccountPool({
   connected,
   serviceName,
   unified,
+  onUseAccount,
+  preferredAccount,
 }: {
   client: ProxyClient;
   pool: ServerPoolState | null;
   connected: boolean;
   serviceName: string;
+  onUseAccount?: (id: string) => Promise<void>;
+  preferredAccount?: string;
   unified?: {
     policy: ReactNode;
     cards: ReactNode;
@@ -452,6 +456,38 @@ export default function ServerAccountPool({
                   )}
                   <footer className="pool-account-actions">
                     <div>
+                      <button
+                        className="button secondary"
+                        disabled={disabled || status(account, now).kind !== 'ready'}
+                        onClick={() => {
+                          if (onUseAccount) {
+                            if (working) return;
+                            setWorking(true);
+                            setError(null);
+                            void onUseAccount(account.id)
+                              .catch((error) =>
+                                setError(error instanceof Error ? error.message : '切换失败'),
+                              )
+                              .finally(() => setWorking(false));
+                          } else
+                            configure({
+                              enabled: true,
+                              strategy: 'order',
+                              order: [account.id, ...order.filter((id) => id !== account.id)],
+                            });
+                        }}
+                        title="下一轮优先使用；额度耗尽后自动接力"
+                      >
+                        {(
+                          onUseAccount
+                            ? preferredAccount === account.id
+                            : pool.settings.enabled &&
+                              pool.settings.strategy === 'order' &&
+                              order[0] === account.id
+                        )
+                          ? '优先使用中'
+                          : '切换使用'}
+                      </button>
                       {!account.login && (
                         <button
                           className="button secondary"

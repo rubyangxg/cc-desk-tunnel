@@ -112,6 +112,44 @@ export default function UnifiedAccountPool({
       ...(values.strategy ? { strategy: values.strategy === 'reset' ? 'reset' : 'manual' } : {}),
     });
   }
+  const preferred = (profileId: string, accountId: string) => {
+    const settings = profileId === initial.id ? state?.settings : pool.states[profileId]?.settings;
+    return (
+      pool.config.enabled &&
+      pool.config.strategy === 'manual' &&
+      order[0] === profileId &&
+      settings?.enabled &&
+      settings.strategy === 'order' &&
+      settings.order[0] === accountId
+    );
+  };
+  async function prioritizeAccount(profileId: string, accountId: string) {
+    const snapshot = profileId === initial.id ? state : pool.states[profileId];
+    const account = snapshot?.accounts.find((item) => item.id === accountId);
+    if (!snapshot || !account || status(account, now).kind !== 'ready')
+      throw new Error('该账号暂不可用，请检测额度后重试。');
+    const values = {
+      enabled: true,
+      strategy: 'order' as const,
+      order: [
+        accountId,
+        ...new Set(
+          [...snapshot.settings.order, ...snapshot.accounts.map((item) => item.id)].filter(
+            (id) => id !== accountId,
+          ),
+        ),
+      ],
+    };
+    // Commit local routing only after the destination has acknowledged its account priority.
+    if (profileId === initial.id) await client.request({ type: 'pool.configure', values });
+    else await pool.command(profileId, { type: 'pool.configure', values });
+    pool.configure({
+      enabled: true,
+      strategy: 'manual',
+      order: [profileId, ...order.filter((id) => id !== profileId)],
+      disabled: pool.config.disabled?.filter((id) => id !== profileId),
+    });
+  }
   if (!others.length)
     return (
       <ServerAccountPool
@@ -119,6 +157,8 @@ export default function UnifiedAccountPool({
         pool={state}
         connected={connected}
         serviceName={initial.name}
+        onUseAccount={(accountId) => prioritizeAccount(initial.id, accountId)}
+        preferredAccount={state?.accounts.find((account) => preferred(initial.id, account.id))?.id}
       />
     );
   return (
@@ -127,6 +167,8 @@ export default function UnifiedAccountPool({
       pool={state}
       connected={connected}
       serviceName={initial.name}
+      onUseAccount={(accountId) => prioritizeAccount(initial.id, accountId)}
+      preferredAccount={state?.accounts.find((account) => preferred(initial.id, account.id))?.id}
       unified={{
         count: entries.length,
         loggedIn: entries.filter(({ account }) => account.loggedIn).length,
@@ -314,6 +356,14 @@ export default function UnifiedAccountPool({
               <Quota account={account} name="seven_day" label="每周额度" now={now} />
               {account.error && <p className="pool-account-error">{account.error}</p>}
               <footer className="pool-account-actions">
+                <button
+                  className="button secondary"
+                  disabled={working || fresh.kind !== 'ready' || !!pool.quotas[profile.id]?.error}
+                  title="下一轮优先使用；额度耗尽后自动接力"
+                  onClick={() => void act(() => prioritizeAccount(profile.id, account.id))}
+                >
+                  {preferred(profile.id, account.id) ? '优先使用中' : '切换使用'}
+                </button>
                 <button className="button secondary" onClick={() => select(profile.id)}>
                   连接管理
                 </button>

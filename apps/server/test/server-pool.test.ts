@@ -995,3 +995,55 @@ nativeTest(
     assert.equal(f.server.store.get(sessionId).session.messageQueue?.reason, undefined);
   },
 );
+
+nativeTest(
+  'manual account priority is honored on the next run and falls back when exhausted',
+  { timeout: 30000 },
+  async (t) => {
+    const f = await fixture(t, '');
+    const { sessionId } = await f.request({
+      type: 'session.create',
+      title: 'manual choice',
+      projectPath: '/local/project',
+    });
+    const send = async () => {
+      await f.request({ type: 'message.send', sessionId, text: 'continue the task' });
+      await f.wait(
+        (message) =>
+          message.type === 'session.event' &&
+          message.event.sessionId === sessionId &&
+          message.event.payload.type === 'run.status' &&
+          message.event.payload.status === 'completed',
+      );
+    };
+    await send();
+    assert.equal(f.server.store.get(sessionId!).session.accountId, 'default');
+    await f.request({
+      type: 'pool.configure',
+      values: { enabled: true, strategy: 'order', order: [f.id, 'default'] },
+    });
+    await send();
+    assert.equal(f.server.store.get(sessionId!).session.accountId, f.id);
+    const backup = join(f.dir, 'accounts', f.id, 'config', 'fixture.json');
+    writeFileSync(
+      backup,
+      JSON.stringify({ loggedIn: true, email: 'b@example.test', blocked: true, hours: 2 }),
+    );
+    await f.request({ type: 'pool.status', refresh: true });
+    await f.wait(
+      (message) =>
+        message.type === 'pool.state' &&
+        !message.refreshing &&
+        message.accounts.some(
+          (account) =>
+            account.id === f.id &&
+            account.limits?.windows.some(
+              (window) => window.name === 'five_hour' && window.utilization === 100,
+            ),
+        ),
+    );
+    await send();
+    assert.equal(f.server.store.get(sessionId!).session.accountId, 'default');
+    assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 3);
+  },
+);

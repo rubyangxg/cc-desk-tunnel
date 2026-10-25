@@ -136,7 +136,6 @@ export function usePoolRotation(options: {
       priority &&
       (!pool.config.enabled ||
         profiles.profiles.length < 2 ||
-        pool.config.strategy !== 'reset' ||
         options.terminalOpen ||
         text.trimStart().startsWith('/') ||
         text.length > 14500 ||
@@ -189,6 +188,7 @@ export function usePoolRotation(options: {
       // can still send there once; never fall back after switching or a possibly accepted send.
       if (
         priority &&
+        current.current.profiles.pool.config.strategy === 'reset' &&
         client.state.status === 'connected' &&
         client.state.connectionId === connection
       )
