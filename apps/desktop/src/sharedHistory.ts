@@ -1,7 +1,8 @@
 import type { Session, SessionEvent } from '@cc-desk-tunnel/protocol';
 import type { ConnectionProfile } from './connections.ts';
-import { RequestTimeoutError } from './client.ts';
+import { RequestTimeoutError, RequestRejectedError } from './client.ts';
 import type { ProxyClient } from './client.ts';
+import { cacheKey, readHistoryCache, saveHistoryCache } from './historyCache.ts';
 
 export type HistorySegment = {
   key: string;
@@ -168,10 +169,21 @@ export function transferBlock(
   return tools.size ? '仍有工具未返回结果，不能交接。' : null;
 }
 
+// Keep one archive checkpoint per live connection. A retry can reuse pages already verified,
+// without retaining every conversation or adding full transcripts to the visible React state.
+type HistoryCheckpoint = {
+  sessionId: string;
+  connection: string | null;
+  events: SessionEvent[];
+  hasEarlier: boolean;
+};
+const checkpoints = new WeakMap<ProxyClient, HistoryCheckpoint>();
+
 export async function completeHistory(
   client: ProxyClient,
   sessionId: string,
   progress: (count: number) => void = () => {},
+  profile?: ConnectionProfile,
 ) {
   const connection = client.state.connectionId;
   const connected = () => {
@@ -180,6 +192,35 @@ export async function completeHistory(
   };
   connected();
   if (client.state.selectedId !== sessionId) client.select(sessionId);
+  let disk: Awaited<ReturnType<typeof readHistoryCache>> = null;
+  if (profile && client.state.service) {
+    try {
+      disk = await readHistoryCache(cacheKey(profile, sessionId), client.state.service);
+    } catch {
+      /* Optional cache. */
+    }
+    connected();
+  }
+  const visible = client.state.events[sessionId] ?? [];
+  const history = client.state.history[sessionId];
+  const previous = checkpoints.get(client);
+  let cached =
+    previous?.connection === connection && previous.sessionId === sessionId ? previous : undefined;
+  if (
+    history &&
+    !history.loading &&
+    !history.loadingEarlier &&
+    visible.length &&
+    visible[0]!.sequence === history.firstSequence &&
+    visible.at(-1)!.sequence === history.lastSequence &&
+    (!cached || visible.length > cached.events.length)
+  ) {
+    cached = { sessionId, connection, events: [...visible], hasEarlier: history.hasEarlier };
+  }
+  if (disk && (!cached || disk.events.length > cached.events.length))
+    cached = { ...disk, sessionId, connection };
+  let afterSequence = cached?.events.at(-1)?.sequence ?? 0;
+  let replaceCache = false;
   // Retry only a read whose reply timed out, and only on the same connection. No send/stop/continue
   // command is repeated here. Each page has its own timeout, so a long but advancing archive can finish.
   const read = async (before?: number) => {
@@ -188,10 +229,22 @@ export async function completeHistory(
       try {
         return await client.fetch(
           before === undefined
-            ? { type: 'session.subscribe', sessionId, afterSequence: 0 }
+            ? { type: 'session.subscribe', sessionId, afterSequence }
             : { type: 'session.history', sessionId, beforeSequence: before },
         );
       } catch (error) {
+        if (
+          before === undefined &&
+          afterSequence &&
+          error instanceof RequestRejectedError &&
+          error.code === 'invalid_cursor'
+        ) {
+          cached = undefined;
+          replaceCache = true;
+          afterSequence = 0;
+          checkpoints.delete(client);
+          continue;
+        }
         if (!(error instanceof RequestTimeoutError) || attempt >= 2) throw error;
         await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
       }
@@ -211,18 +264,74 @@ export async function completeHistory(
     )
       throw new Error('读取历史期间会话已改变，未交接。');
     if (
-      page.mode !== (before === undefined ? 'replace' : 'prepend') ||
+      (before === undefined
+        ? !['replace', ...(afterSequence ? ['append'] : [])].includes(page.mode)
+        : page.mode !== 'prepend') ||
       (before !== undefined && page.firstSequence >= before) ||
       (page.hasEarlier && (page.firstSequence <= 0 || !page.events.length))
     )
       throw new Error('历史分页未前进，未交接。');
     for (const event of page.events) {
-      if (event.sessionId !== sessionId || (before !== undefined && event.sequence >= before))
+      if (
+        event.sessionId !== sessionId ||
+        (before !== undefined && event.sequence >= before) ||
+        (page.mode === 'append' && event.sequence <= afterSequence)
+      )
         throw new Error('历史分页范围不一致，未交接。');
       events.set(event.sequence, event);
     }
+    if (cached && page.mode === 'replace' && !page.hasEarlier) replaceCache = true;
+    let hasEarlier = page.hasEarlier;
+    let first = page.firstSequence;
+    if (page.mode === 'append') {
+      if (
+        !cached ||
+        page.lastSequence < afterSequence ||
+        page.hasEarlier ||
+        (page.events.at(-1)?.sequence ?? afterSequence) !== page.lastSequence
+      )
+        throw new Error('历史增量范围不一致，未交接。');
+      for (const event of cached.events) events.set(event.sequence, event);
+      first = cached.events[0]!.sequence;
+      hasEarlier = cached.hasEarlier;
+    } else if (cached && hasEarlier && page.events.length) {
+      // A large delta falls back to paging from the tail. Reuse the older cache only after
+      // an overlapping page proves continuity, including histories with nonconsecutive IDs.
+      const overlap = cached.events.filter((event) => events.has(event.sequence));
+      if (
+        overlap.length &&
+        overlap.every(
+          (event) => JSON.stringify(events.get(event.sequence)) === JSON.stringify(event),
+        )
+      ) {
+        for (const event of cached.events) events.set(event.sequence, event);
+        first = Math.min(first, cached.events[0]!.sequence);
+        hasEarlier = cached.hasEarlier && first > 0;
+      } else if (overlap.length) {
+        cached = undefined;
+        replaceCache = true;
+      }
+    }
+    const ordered = [...events.values()].sort((a, b) => a.sequence - b.sequence);
+    checkpoints.set(client, { sessionId, connection, events: ordered, hasEarlier });
     progress(events.size);
-    if (!page.hasEarlier) return [...events.values()].sort((a, b) => a.sequence - b.sequence);
-    before = page.firstSequence;
+    if (!hasEarlier) {
+      if (profile && client.state.service) {
+        try {
+          await saveHistoryCache(
+            cacheKey(profile, sessionId),
+            client.state.service,
+            ordered,
+            false,
+            replaceCache,
+          );
+        } catch {
+          /* The permanent handoff archive is still required below. */
+        }
+        connected();
+      }
+      return ordered;
+    }
+    before = first;
   }
 }

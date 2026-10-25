@@ -790,6 +790,8 @@ export class ProxyClient {
         ...this.state.history,
         [sessionId]: {
           ...previous,
+          // An empty snapshot starts at zero. Its first live record establishes the cache boundary.
+          firstSequence: previous.firstSequence || combined[0]?.sequence || 0,
           lastSequence: Math.max(previous.lastSequence, combined.at(-1)?.sequence ?? 0),
         },
       },

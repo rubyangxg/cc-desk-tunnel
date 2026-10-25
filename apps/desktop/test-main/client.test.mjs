@@ -167,6 +167,9 @@ test('stream notifications are batched and pending events cannot cross a disconn
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(notifications, 1);
   assert.equal(client.state.events[session.id].length, 200);
+  assert.equal(client.state.history[session.id].firstSequence, 1);
+  assert.equal(client.state.history[session.id].lastSequence, 200);
+  assert.equal(client.state.history[session.id].hasEarlier, false);
   socket.message({ type: 'session.event', event: event(session.id, 201) });
   socket.message({ type: 'session.deleted', sessionId: session.id });
   await new Promise((resolve) => setTimeout(resolve, 50));

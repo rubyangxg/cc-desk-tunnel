@@ -1,3 +1,4 @@
+import { useHistoryCache } from './historyCache.ts';
 import { RequestRejectedError } from './client.ts';
 import {
   lazy,
@@ -165,6 +166,7 @@ export function App({
   }, [state.status, state.sessions, state.error]);
   const serverPool = !browser && state.features.includes('account-pool');
   const [form, setForm] = useState<ConnectionProfile>(profiles.initial);
+  useHistoryCache(client, form, !browser);
   const [profileNotice, setProfileNotice] = useState<string | null>(null);
   const changeForm = useCallback(
     (values: Partial<ConnectionForm>) => setForm((current) => ({ ...current, ...values })),

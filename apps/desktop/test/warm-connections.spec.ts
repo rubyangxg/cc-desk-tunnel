@@ -168,6 +168,23 @@ for (const slow of [false, true])
     await expect(input).toHaveValue('服务器1的草稿');
     await page.getByRole('button', { name: /任务2 · 服务2/ }).click();
     await expect(input).toHaveValue('服务器2的草稿');
+    await expect
+      .poll(async () =>
+        page.evaluate(
+          async ({ id }) => {
+            const { cacheKey, readHistoryCache } = await import('../src/historyCache.ts');
+            // Saved fixture profiles remain in the desktop mock; use their exact endpoint identity.
+            const values = await window.desktop!.loadProfiles();
+            const a = values!.profiles.find((p) => p.id === 'a')!;
+            const b = values!.profiles.find((p) => p.id === 'b')!;
+            const first = await readHistoryCache(cacheKey(a, id), '0.4.25');
+            const second = await readHistoryCache(cacheKey(b, id), '0.4.25');
+            return [first?.events.length ?? 0, second?.events.length ?? 0];
+          },
+          { id: sessions[0]!.id },
+        ),
+      )
+      .toEqual([2, 1]);
     expect(dialogs).toBe(0);
     expect(
       sent.filter((item) =>

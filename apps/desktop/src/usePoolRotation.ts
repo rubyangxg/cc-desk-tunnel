@@ -68,8 +68,11 @@ export function usePoolRotation(options: {
     setNotice('正在读取会话历史，准备续接…');
     let events;
     try {
-      events = await completeHistory(client, session.id, (count) =>
-        setNotice(`正在准备续接，已读取 ${count} 条历史记录…`),
+      events = await completeHistory(
+        client,
+        session.id,
+        (count) => setNotice(`正在准备续接，已就绪 ${count} 条历史记录…`),
+        profiles.initial,
       );
     } finally {
       setNotice(null);
