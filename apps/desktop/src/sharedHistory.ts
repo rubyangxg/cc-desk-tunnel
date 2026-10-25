@@ -2,7 +2,14 @@ import type { Session, SessionEvent } from '@cc-desk-tunnel/protocol';
 import type { ConnectionProfile } from './connections.ts';
 import { RequestTimeoutError, RequestRejectedError } from './client.ts';
 import type { ProxyClient } from './client.ts';
-import { cacheKey, readHistoryCache, saveHistoryCache } from './historyCache.ts';
+import {
+  cacheKey,
+  progressKey,
+  clearHistoryProgress,
+  holdHistoryWarmup,
+  readHistoryCache,
+  saveHistoryCache,
+} from './historyCache.ts';
 
 export type HistorySegment = {
   key: string;
@@ -185,6 +192,20 @@ export async function completeHistory(
   progress: (count: number) => void = () => {},
   profile?: ConnectionProfile,
 ) {
+  const release = holdHistoryWarmup(client);
+  try {
+    return await readCompleteHistory(client, sessionId, progress, profile);
+  } finally {
+    release();
+  }
+}
+
+async function readCompleteHistory(
+  client: ProxyClient,
+  sessionId: string,
+  progress: (count: number) => void,
+  profile?: ConnectionProfile,
+) {
   const connection = client.state.connectionId;
   const connected = () => {
     if (client.state.status !== 'connected' || client.state.connectionId !== connection)
@@ -192,35 +213,51 @@ export async function completeHistory(
   };
   connected();
   if (client.state.selectedId !== sessionId) client.select(sessionId);
-  let disk: Awaited<ReturnType<typeof readHistoryCache>> = null;
+  const candidates: HistoryCheckpoint[] = [];
   if (profile && client.state.service) {
-    try {
-      disk = await readHistoryCache(cacheKey(profile, sessionId), client.state.service);
-    } catch {
-      /* Optional cache. */
-    }
+    const snapshots = await Promise.allSettled([
+      readHistoryCache(cacheKey(profile, sessionId), client.state.service),
+      readHistoryCache(progressKey(profile, sessionId), client.state.service),
+    ]);
+    for (const snapshot of snapshots)
+      if (snapshot.status === 'fulfilled' && snapshot.value?.events.length)
+        candidates.push({ ...snapshot.value, sessionId, connection });
     connected();
   }
   const visible = client.state.events[sessionId] ?? [];
   const history = client.state.history[sessionId];
   const previous = checkpoints.get(client);
-  let cached =
-    previous?.connection === connection && previous.sessionId === sessionId ? previous : undefined;
+  if (
+    previous?.connection === connection &&
+    previous.sessionId === sessionId &&
+    previous.events.length
+  )
+    candidates.push(previous);
   if (
     history &&
     !history.loading &&
     !history.loadingEarlier &&
     visible.length &&
     visible[0]!.sequence === history.firstSequence &&
-    visible.at(-1)!.sequence === history.lastSequence &&
-    (!cached || visible.length > cached.events.length)
-  ) {
-    cached = { sessionId, connection, events: [...visible], hasEarlier: history.hasEarlier };
-  }
-  if (disk && (!cached || disk.events.length > cached.events.length))
-    cached = { ...disk, sessionId, connection };
+    visible.at(-1)!.sequence === history.lastSequence
+  )
+    candidates.push({
+      sessionId,
+      connection,
+      events: [...visible],
+      hasEarlier: history.hasEarlier,
+    });
+  // Resume the newest tail even when an older complete cache contains more records. Keep the
+  // older ranges until a downloaded page proves the missing middle connects to them.
+  candidates.sort(
+    (a, b) =>
+      b.events.at(-1)!.sequence - a.events.at(-1)!.sequence ||
+      a.events[0]!.sequence - b.events[0]!.sequence,
+  );
+  let cached: HistoryCheckpoint | undefined = candidates[0];
   let afterSequence = cached?.events.at(-1)?.sequence ?? 0;
   let replaceCache = false;
+  let progressReplaced = false;
   // Retry only a read whose reply timed out, and only on the same connection. No send/stop/continue
   // command is repeated here. Each page has its own timeout, so a long but advancing archive can finish.
   const read = async (before?: number) => {
@@ -240,6 +277,7 @@ export async function completeHistory(
           error.code === 'invalid_cursor'
         ) {
           cached = undefined;
+          candidates.length = 0;
           replaceCache = true;
           afterSequence = 0;
           checkpoints.delete(client);
@@ -294,37 +332,61 @@ export async function completeHistory(
       for (const event of cached.events) events.set(event.sequence, event);
       first = cached.events[0]!.sequence;
       hasEarlier = cached.hasEarlier;
-    } else if (cached && hasEarlier && page.events.length) {
-      // A large delta falls back to paging from the tail. Reuse the older cache only after
-      // an overlapping page proves continuity, including histories with nonconsecutive IDs.
-      const overlap = cached.events.filter((event) => events.has(event.sequence));
+    }
+    for (let index = 0; hasEarlier && index < candidates.length; index++) {
+      const candidate = candidates[index]!;
+      // Sequence numbers may have gaps, so only verified overlap proves continuity.
+      const overlap = candidate.events.filter((event) => events.has(event.sequence));
+      if (!overlap.length) continue;
       if (
-        overlap.length &&
         overlap.every(
           (event) => JSON.stringify(events.get(event.sequence)) === JSON.stringify(event),
         )
       ) {
-        for (const event of cached.events) events.set(event.sequence, event);
-        first = Math.min(first, cached.events[0]!.sequence);
-        hasEarlier = cached.hasEarlier && first > 0;
-      } else if (overlap.length) {
-        cached = undefined;
+        for (const event of candidate.events) events.set(event.sequence, event);
+        first = Math.min(first, candidate.events[0]!.sequence);
+        hasEarlier = candidate.hasEarlier;
+      } else {
+        if (cached === candidate) cached = undefined;
         replaceCache = true;
       }
+      candidates.splice(index--, 1);
     }
     const ordered = [...events.values()].sort((a, b) => a.sequence - b.sequence);
     checkpoints.set(client, { sessionId, connection, events: ordered, hasEarlier });
     progress(events.size);
+    if (profile && client.state.service) {
+      try {
+        // Commit every validated page independently, before requesting the next one. A restarted
+        // app can continue from this range even if the preceding attempt never completed.
+        await saveHistoryCache(
+          progressKey(profile, sessionId),
+          client.state.service,
+          ordered,
+          hasEarlier,
+          replaceCache && !progressReplaced,
+          true,
+        );
+        progressReplaced ||= replaceCache;
+      } catch {
+        /* Progress is optional; the permanent archive is still mandatory. */
+      }
+      connected();
+    }
     if (!hasEarlier) {
       if (profile && client.state.service) {
         try {
-          await saveHistoryCache(
-            cacheKey(profile, sessionId),
-            client.state.service,
-            ordered,
-            false,
-            replaceCache,
-          );
+          if (
+            await saveHistoryCache(
+              cacheKey(profile, sessionId),
+              client.state.service,
+              ordered,
+              false,
+              replaceCache,
+              true,
+            )
+          )
+            await clearHistoryProgress(profile, sessionId);
         } catch {
           /* The permanent handoff archive is still required below. */
         }
