@@ -1047,3 +1047,91 @@ nativeTest(
     assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 3);
   },
 );
+
+nativeTest(
+  'weekly exhaustion waits for both windows, then continues once; manual stop cancels recovery',
+  { timeout: 60000 },
+  async (t) => {
+    for (const stop of [false, true])
+      await t.test(stop ? 'manual stop' : 'automatic continue', async (t) => {
+        const f = await fixture(t);
+        await f.request({ type: 'pool.account.update', accountId: f.id, enabled: false });
+        const file = join(f.config, 'fixture.json');
+        const fiveAt = Date.now() + 5000;
+        writeFileSync(
+          file,
+          JSON.stringify({
+            loggedIn: true,
+            email: 'a@example.test',
+            fail: 'quota',
+            quotaWindow: 'seven_day',
+            resetSeconds: 1,
+            weeklyBlocked: true,
+            weeklyResetsAt: new Date(Date.now() + 1000).toISOString(),
+            blocked: true,
+            resetsAt: new Date(fiveAt).toISOString(),
+          }),
+        );
+        const { sessionId } = await f.request({
+          type: 'session.create',
+          title: 'overnight weekly',
+          projectPath: '/local/weekly',
+        });
+        await f.request({ type: 'message.send', sessionId, text: 'finish overnight' });
+        await f.wait(
+          (m) =>
+            m.type === 'session.event' &&
+            m.event.payload.type === 'run.error' &&
+            m.event.payload.code === 'quota_weekly',
+        );
+        const waiting = await f.wait(
+          (m) =>
+            m.type === 'pool.state' &&
+            m.quotaWaits?.some((w) => w.sessionId === sessionId && w.at === fiveAt) === true,
+        );
+        assert.ok(waiting);
+        const calls = () =>
+          readFileSync(f.log, 'utf8')
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line));
+        assert.equal(calls().length, 1);
+        // Weekly quota recovers first. The five-hour quota must still prevent execution.
+        writeFileSync(
+          file,
+          JSON.stringify({
+            loggedIn: true,
+            email: 'a@example.test',
+            blocked: true,
+            resetsAt: new Date(fiveAt).toISOString(),
+          }),
+        );
+        await f.request({ type: 'pool.status', refresh: true });
+        assert.equal(calls().length, 1);
+        if (stop)
+          await f.request({
+            type: 'run.cancel',
+            sessionId,
+            runId: f.server.store.get(sessionId!).session.activeRun!.id,
+          });
+        writeFileSync(file, JSON.stringify({ loggedIn: true, email: 'a@example.test' }));
+        if (stop) {
+          await delay(5500);
+          await f.request({ type: 'pool.status', refresh: true });
+          assert.equal(calls().length, 1);
+        } else {
+          await f.wait(
+            (m) =>
+              m.type === 'session.event' &&
+              m.event.sessionId === sessionId &&
+              m.event.payload.type === 'run.status' &&
+              m.event.payload.status === 'completed',
+          );
+          assert.equal(calls().length, 2);
+          assert.equal(calls()[1].prompt, 'continue');
+          assert.equal(calls()[1].sessionId, calls()[0].sessionId);
+          assert.ok(calls()[1].at >= fiveAt);
+        }
+      });
+  },
+);

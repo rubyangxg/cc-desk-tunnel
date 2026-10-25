@@ -332,3 +332,21 @@ test('server selection uses weekly reset before five-hour reset without interrup
   pool.configure({ strategy: 'order', order: ['default', second] });
   assert.equal(pool.choose().id, 'default');
 });
+
+test('weekly rejection never overrides a later exhausted five-hour deadline', async (t) => {
+  const { nextAccountReset } = await import('../src/account-pool.ts');
+  const { pool } = fixture(t);
+  quota(pool, 'default', 2, 100);
+  const five = Date.parse(pool.get('default').limits!.windows[0].resetsAt!);
+  const weekly = Date.now() + 60_000;
+  pool.get('default').limits!.windows.push({
+    name: 'seven_day',
+    utilization: 100,
+    resetsAt: new Date(weekly).toISOString(),
+  });
+  pool.block('default', new Date(weekly).toISOString(), 'seven_day');
+  assert.equal(nextAccountReset(pool.accounts)?.at, five);
+  pool.get('default').limits!.windows[0].utilization = 10;
+  assert.equal(nextAccountReset(pool.accounts)?.at, weekly);
+  assert.equal(availableAccount(pool.get('default')), false);
+});

@@ -4,12 +4,13 @@ import { test } from 'node:test';
 import type { EventPayload } from '@cc-desk-tunnel/protocol';
 import { ClaudeStream } from '../src/claude-stream.ts';
 
-test('only a rejected five-hour quota with no allowed overage produces a pool exhaustion signal', () => {
+test('only a rejected five-hour or weekly quota with no allowed overage produces a pool exhaustion signal', () => {
   const events: EventPayload[] = [];
   const stream = new ClaudeStream((event) => events.push(event));
   for (const rate_limit_info of [
     { status: 'allowed_warning', rateLimitType: 'five_hour' },
-    { status: 'rejected', rateLimitType: 'seven_day' },
+    { status: 'allowed_warning', rateLimitType: 'seven_day' },
+    { status: 'rejected', rateLimitType: 'seven_day', overageStatus: 'allowed' },
     { status: 'rejected', rateLimitType: 'five_hour', overageStatus: 'allowed' },
   ])
     stream.accept({ type: 'rate_limit_event', rate_limit_info });
@@ -26,6 +27,20 @@ test('only a rejected five-hour quota with no allowed overage produces a pool ex
       resetsAt: new Date(2000000000000).toISOString(),
     },
   ]);
+  stream.accept({
+    type: 'rate_limit_event',
+    rate_limit_info: {
+      status: 'rejected',
+      rateLimitType: 'seven_day',
+      resetsAt: 2000000010,
+    },
+  });
+  assert.deepEqual(events.at(-1), {
+    type: 'run.error',
+    code: 'quota_weekly',
+    message: 'Claude 周额度已耗尽。',
+    resetsAt: new Date(2000000010000).toISOString(),
+  });
 });
 
 test('native partial text/thinking are not duplicated by complete assistant events', () => {

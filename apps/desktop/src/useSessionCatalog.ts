@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { ClientState } from './client.ts';
 import type { Session } from '@cc-desk-tunnel/protocol';
 import type { ConnectionProfile } from './connections.ts';
 import {
@@ -15,6 +16,7 @@ export function useSessionCatalog(
   profiles: ConnectionProfile[],
   connected: boolean,
   sessions: Session[],
+  live: Record<string, Pick<ClientState, 'status' | 'sessions' | 'error'>> = {},
 ) {
   const pending = useRef(false);
   const currentProfiles = useRef(profiles);
@@ -81,6 +83,7 @@ export function useSessionCatalog(
       // Reading greetings is deliberately sequential and has no device registration or quota query.
       for (const profile of configured) {
         if (
+          live[profile.id]?.status === 'connected' ||
           profile.id === active.id ||
           !profile.remember ||
           !profile.token ||
@@ -117,7 +120,25 @@ export function useSessionCatalog(
   }, [connected, key, known]);
   return {
     others: source
-      ? otherSessions(entries, sessionSource(source), configured.map(sessionSource))
+      ? otherSessions(
+          [
+            ...entries.filter((entry) => live[entry.source.id]?.status !== 'connected'),
+            ...configured.flatMap((profile) =>
+              live[profile.id]?.status === 'connected'
+                ? [
+                    {
+                      source: sessionSource(profile),
+                      sessions: live[profile.id]!.sessions,
+                      checkedAt: Date.now(),
+                      live: true,
+                    },
+                  ]
+                : [],
+            ),
+          ],
+          sessionSource(source),
+          configured.map(sessionSource),
+        )
       : [],
     refreshing,
     failure,

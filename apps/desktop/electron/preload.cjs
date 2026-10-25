@@ -10,7 +10,7 @@ contextBridge.exposeInMainWorld('desktop', {
     ipcRenderer.on('shared:changed', listener);
     return () => ipcRenderer.removeListener('shared:changed', listener);
   },
-  setBusy: (runs) => ipcRenderer.invoke('busy:set', runs),
+  setBusy: (runs, profileId) => ipcRenderer.invoke('busy:set', runs, profileId),
   connections: () => ipcRenderer.invoke('connections:list'),
   createConnection: (name) => ipcRenderer.invoke('connections:create', name),
   openConnection: (id) => ipcRenderer.invoke('connections:open', id),
@@ -69,7 +69,7 @@ contextBridge.exposeInMainWorld('desktop', {
   version: () => ipcRenderer.invoke('app:version'),
   releaseNotes: (version) => ipcRenderer.invoke('release:notes', version),
   device: () => ipcRenderer.invoke('device:get'),
-  installUpdate: (version) => ipcRenderer.invoke('update:install', version),
+  installUpdate: (version, profileId) => ipcRenderer.invoke('update:install', version, profileId),
   onUpdateProgress: (callback) => {
     const listener = (_event, progress) => callback(progress);
     ipcRenderer.on('update:progress', listener);
@@ -82,9 +82,9 @@ contextBridge.exposeInMainWorld('desktop', {
     return () => ipcRenderer.removeListener('service:upgrade-progress', listener);
   },
   connectProxy: (config) => ipcRenderer.invoke('proxy:connect', config),
-  disconnectProxy: () => ipcRenderer.invoke('proxy:disconnect'),
+  disconnectProxy: (profileId) => ipcRenderer.invoke('proxy:disconnect', profileId),
   onProxyClosed: (callback) => {
-    const listener = () => callback();
+    const listener = (_event, profileId) => callback(profileId);
     ipcRenderer.on('proxy:closed', listener);
     return () => ipcRenderer.removeListener('proxy:closed', listener);
   },

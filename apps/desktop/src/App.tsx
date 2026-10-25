@@ -127,8 +127,16 @@ export function App({
   browser?: { selfSigned: boolean; expired: () => void; logout: () => Promise<void> };
 }) {
   const profileId = profiles.initial.id;
+  const foreground = !profiles.background;
   const host = hostCapabilities(!!browser);
   const [client] = useState(() => new ProxyClient());
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   useEffect(() => {
     if (!browser) return;
     client.connectBrowser(
@@ -152,6 +160,9 @@ export function App({
     </Suspense>
   );
   const state = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  useEffect(() => {
+    profiles.report?.({ status: state.status, sessions: state.sessions, error: state.error });
+  }, [state.status, state.sessions, state.error]);
   const serverPool = !browser && state.features.includes('account-pool');
   const [form, setForm] = useState<ConnectionProfile>(profiles.initial);
   const [profileNotice, setProfileNotice] = useState<string | null>(null);
@@ -212,6 +223,16 @@ export function App({
   const [renameSession, setRenameSession] = useState<Session | null>(null);
   const [renameProject, setRenameProject] = useState<string | null>(null);
   const [repointProject, setRepointProject] = useState<string | null>(null);
+  useEffect(() => {
+    if (foreground) return;
+    setMenu(null);
+    setNotes(null);
+    setCreateOpen(false);
+    setDeleteSession(null);
+    setRenameSession(null);
+    setRenameProject(null);
+    setRepointProject(null);
+  }, [foreground]);
 
   const nativeMode = state.adapter === 'claude-code';
   const connected = state.status === 'connected';
@@ -243,7 +264,13 @@ export function App({
       current = false;
     };
   }, [unplaced]);
-  const catalog = useSessionCatalog(form, profiles.profiles, connected, state.sessions);
+  const catalog = useSessionCatalog(
+    form,
+    profiles.profiles,
+    connected,
+    state.sessions,
+    profiles.live,
+  );
   const catalogRows = new Map(catalog.others.map((item) => [item.display.id, item]));
   const onThis = (session: Session) => !browser && isHere(session, state.device, absent);
   const sessions = state.sessions.filter((session) => onThis(session));
@@ -265,21 +292,35 @@ export function App({
       : [],
   );
   useEffect(() => {
-    void window.desktop?.setBusy(JSON.parse(running));
+    void window.desktop?.setBusy(JSON.parse(running), profileId);
   }, [running]);
   const overlaps = (one: string, other: string) =>
     pathKey(one) === pathKey(other) || isInside(one, [other]) || isInside(other, [one]);
   const beside =
     selected && !away
-      ? othersBusy
-          .filter((entry) =>
-            entry.runs.some(
-              (run) =>
-                !state.sessions.some((session) => session.id === run.id) &&
-                overlaps(run.folder, selected.projectPath),
-            ),
-          )
-          .map((entry) => `“${entry.name}”`)
+      ? [
+          ...othersBusy
+            .filter((entry) =>
+              entry.runs.some(
+                (run) =>
+                  !state.sessions.some((session) => session.id === run.id) &&
+                  overlaps(run.folder, selected.projectPath),
+              ),
+            )
+            .map((entry) => `“${entry.name}”`),
+          ...profiles.profiles
+            .filter(
+              (profile) =>
+                profile.id !== profileId &&
+                profiles.live?.[profile.id]?.sessions.some(
+                  (session) =>
+                    session.activeRun &&
+                    isHere(session, state.device) &&
+                    overlaps(session.projectPath, selected.projectPath),
+                ),
+            )
+            .map((profile) => `“${profile.name}”`),
+        ]
       : [];
   const recorded = selected ? state.events[selected.id] : undefined;
   const unfinished = selected ? state.live[selected.id] : undefined;
@@ -344,9 +385,10 @@ export function App({
     busy: busy || refreshing,
     terminalOpen: !!terminalSessionId,
     close: async () => {
+      if (profiles.persistent) return;
       signedIn.current = false;
       client.disconnect();
-      await window.desktop?.disconnectProxy();
+      await window.desktop?.disconnectProxy(profileId);
     },
     show: (id) => show(id),
     draft: setDraft,
@@ -444,7 +486,7 @@ export function App({
   const install = (version?: string) => {
     void act(async () => {
       try {
-        await window.desktop!.installUpdate(version);
+        await window.desktop!.installUpdate(version, profileId);
       } finally {
         setDownloaded(null);
       }
@@ -507,10 +549,18 @@ export function App({
   // A selected saved account connects once; a missing token leaves its form ready to fill.
   const loaded = useRef(false);
   useEffect(() => {
-    if (loaded.current) return;
+    if (!profiles.autoConnect) {
+      loaded.current = false;
+      return;
+    }
+    if (
+      client.state.status !== 'disconnected' ||
+      (loaded.current && !profiles.focusSession && !profiles.connectRequest)
+    )
+      return;
     loaded.current = true;
-    if (profiles.autoConnect && form.token) void login(form);
-  }, []);
+    if (form.token) void login(form);
+  }, [profiles.autoConnect, profiles.focusSession, profiles.connectRequest]);
   useEffect(() => {
     if (connected) void profiles.save(form).catch((error: Error) => setError(error.message));
   }, [connected, form.remember, form.autoLogin]);
@@ -523,7 +573,10 @@ export function App({
     return () => {
       window.removeEventListener('beforeunload', close);
       window.removeEventListener('online', retry);
+      const active = client.state.status !== 'disconnected';
       client.disconnect();
+      if (active) void window.desktop?.disconnectProxy(profileId);
+      void window.desktop?.setBusy([], profileId);
     };
   }, [client, changeForm]);
   // A connection that breaks is made again by the client, and the window stays where it is. It comes back to
@@ -536,7 +589,7 @@ export function App({
     }
     if (state.status !== 'disconnected' || !signedIn.current) return;
     signedIn.current = false;
-    void window.desktop?.disconnectProxy();
+    void window.desktop?.disconnectProxy(profileId);
     setForm((current) => (current.remember ? current : { ...current, token: '' }));
     if (client.state.error)
       notifications.push({
@@ -641,13 +694,16 @@ export function App({
     try {
       if (!form.name.trim()) throw new Error('请输入服务名称。');
       validateConnection(form);
+      profiles.completeManagement?.();
+      const device = await thisDevice();
+      if (!mounted.current) return;
       if (form.mode === 'remote') {
         setProxyConnecting(true);
         // The address here only has to be a loopback one; each attempt gets its own from the bridge it opens.
         client.connect(
           'ws://127.0.0.1/ws',
           form.token,
-          await thisDevice(),
+          device,
           true,
           async () =>
             (
@@ -660,11 +716,11 @@ export function App({
             ).url,
         );
       } else {
-        client.connect(form.url, form.token, await thisDevice());
+        client.connect(form.url, form.token, device);
       }
       localStorage.setItem('proxy-url', form.url);
     } catch (error) {
-      if (form.mode === 'remote') await window.desktop?.disconnectProxy();
+      if (form.mode === 'remote') await window.desktop?.disconnectProxy(profileId);
       setError(error instanceof Error ? error.message : '连接失败。');
     } finally {
       setProxyConnecting(false);
@@ -684,7 +740,7 @@ export function App({
     }
     client.disconnect();
     setForm((current) => (current.remember ? current : { ...current, token: '' }));
-    void window.desktop?.disconnectProxy();
+    void window.desktop?.disconnectProxy(profileId);
   }
   async function switchProfile(
     id: string,
@@ -696,11 +752,13 @@ export function App({
       if (sessionId) show(sessionId);
       return;
     }
-    if (!confirmSwitch()) return;
     await act(async () => {
-      signedIn.current = false;
-      client.disconnect();
-      await window.desktop?.disconnectProxy();
+      if (!profiles.persistent) {
+        if (!confirmSwitch()) return;
+        signedIn.current = false;
+        client.disconnect();
+        await window.desktop?.disconnectProxy(profileId);
+      }
       await profiles.select(id, connect, undefined, sessionId, accountPage);
     });
   }
@@ -837,11 +895,13 @@ export function App({
   // never queued into a run, and waits while this window's native terminal is open.
   const notifications = useNotifications(
     client,
-    () => (place.page === 'chat' ? client.state.selectedId : null),
+    () => (foreground && place.page === 'chat' ? client.state.selectedId : null),
     profileId,
   );
   useEffect(() =>
-    window.desktop?.onNotifyClicked((sessionId) => sessionId && show(sessionId), profileId),
+    window.desktop?.onNotifyClicked((sessionId) => {
+      if (sessionId) void profiles.select(profileId, true, undefined, sessionId);
+    }, profileId),
   );
   const schedules = useSchedules(
     async (task, due) => {
@@ -1254,7 +1314,7 @@ export function App({
         icon: <Download />,
         disabled: busy || state.sessions.some((item) => !!item.activeRun),
         run: () => {
-          void act(() => window.desktop!.installUpdate());
+          void act(() => window.desktop!.installUpdate(undefined, profileId));
         },
       }
     : null;
@@ -1430,7 +1490,7 @@ export function App({
   // native terminal or an open dialog, is left alone.
   const keys = useRef<(event: KeyboardEvent) => void>(() => {});
   keys.current = (event) => {
-    if (event.defaultPrevented || !prefs.shortcuts.enabled) return;
+    if (!foreground || event.defaultPrevented || !prefs.shortcuts.enabled) return;
     if (!connected && state.status !== 'reconnecting') return;
     if (
       (event.target as Element | null)?.closest?.('.native-terminal') ||
@@ -1494,7 +1554,7 @@ export function App({
       </main>
     );
 
-  if (state.status === 'disconnected' || state.status === 'connecting')
+  if (profiles.managing || state.status === 'disconnected' || state.status === 'connecting')
     return localSettings ? (
       <div className="settings-only">
         <div className="window-drag" />

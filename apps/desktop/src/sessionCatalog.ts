@@ -3,7 +3,12 @@ import type { ConnectionProfile } from './connections.ts';
 
 // Only routing metadata and session titles are cached. Never store a connection token here.
 export type SessionSource = Pick<ConnectionProfile, 'id' | 'url' | 'fingerprint' | 'name'>;
-export type CatalogEntry = { source: SessionSource; sessions: Session[]; checkedAt: number };
+export type CatalogEntry = {
+  source: SessionSource;
+  sessions: Session[];
+  checkedAt: number;
+  live?: boolean;
+};
 export type OtherSession = { source: SessionSource; session: Session; display: Session };
 export const sessionSource = (profile: ConnectionProfile): SessionSource => ({
   id: profile.id,
@@ -36,7 +41,11 @@ export function otherSessions(
         source,
         session,
         // These IDs belong to the sidebar only and must never be sent to a server.
-        display: { ...session, id: `catalog:${identity}`, activeRun: null },
+        display: {
+          ...session,
+          id: `catalog:${identity}`,
+          activeRun: entry.live ? session.activeRun : null,
+        },
       });
     }
   }

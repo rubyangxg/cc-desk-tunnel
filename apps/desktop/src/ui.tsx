@@ -1,6 +1,8 @@
-import { Fragment, useEffect, useLayoutEffect, useRef } from 'react';
+import { createContext, useContext, Fragment, useEffect, useLayoutEffect, useRef } from 'react';
 import type { MouseEvent, ReactNode } from 'react';
 import { Check, X } from 'lucide-react';
+
+export const WorkspaceVisible = createContext(true);
 
 export function IconButton({
   title,
@@ -62,11 +64,13 @@ export function Modal({
   onClose: () => void;
   children: ReactNode;
 }) {
+  const visible = useContext(WorkspaceVisible);
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
-    ref.current?.showModal();
+    if (visible) ref.current?.showModal();
+    else ref.current?.close();
     return () => ref.current?.close();
-  }, []);
+  }, [visible]);
   return (
     <dialog
       ref={ref}

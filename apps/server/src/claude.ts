@@ -136,7 +136,11 @@ export async function runClaude(
   let quotaRejected = false;
   const mapper = new ClaudeStream(
     (event) => {
-      if (event.type === 'run.error' && event.code === 'quota_five_hour') quotaRejected = true;
+      if (
+        event.type === 'run.error' &&
+        (event.code === 'quota_five_hour' || event.code === 'quota_weekly')
+      )
+        quotaRejected = true;
       run.emit(event);
     },
     run.permissionMode,

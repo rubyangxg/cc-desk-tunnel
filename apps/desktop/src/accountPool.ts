@@ -110,7 +110,7 @@ export function quotaFailure(events: SessionEvent[]) {
       (event) =>
         event.runId === ended.runId &&
         event.payload.type === 'run.error' &&
-        event.payload.code === 'quota_five_hour',
+        (event.payload.code === 'quota_five_hour' || event.payload.code === 'quota_weekly'),
     ) ??
     (ended.payload.status === 'failed'
       ? events.findLast(

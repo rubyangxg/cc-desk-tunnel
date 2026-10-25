@@ -67,11 +67,14 @@ export function nextAccountReset(accounts: ServerPoolAccount[], excluded: string
               ['five_hour', 'seven_day'].includes(window.name) && (window.utilization ?? 0) >= 100,
           ) ?? [];
         const times = blocked.map((window) =>
-          window.name === 'five_hour' && account.quotaResetAt
+          window.name === (account.quotaResetWindow ?? 'five_hour') && account.quotaResetAt
             ? account.quotaResetAt
             : Date.parse(window.resetsAt ?? ''),
         );
-        if (account.blockedUntil && !blocked.some((window) => window.name === 'five_hour'))
+        if (
+          account.blockedUntil &&
+          !blocked.some((window) => window.name === (account.quotaResetWindow ?? 'five_hour'))
+        )
           times.push(account.quotaResetAt ?? NaN);
         if (!times.length || times.some((at) => !Number.isFinite(at))) return [];
         return [{ accountId: account.id, at: Math.max(...times) }];
@@ -198,13 +201,15 @@ export class AccountPool {
       error: error ?? (limits?.available ? undefined : '额度暂不可用，请重新检测'),
       blockedUntil,
       quotaResetAt: blockedUntil ? account.quotaResetAt : null,
+      quotaResetWindow: blockedUntil ? account.quotaResetWindow : null,
     });
   }
-  block(id: string, resetsAt?: string) {
+  block(id: string, resetsAt?: string, window: 'five_hour' | 'seven_day' = 'five_hour') {
     const reset = Date.parse(resetsAt ?? '');
     this.update(id, {
       blockedUntil: reset > Date.now() ? reset : Date.now() + 300_000,
       quotaResetAt: Number.isFinite(reset) ? reset : null,
+      quotaResetWindow: window,
     });
   }
   choose(current?: string, excluded: string[] = []) {

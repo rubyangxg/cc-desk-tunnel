@@ -13,7 +13,7 @@ declare global {
         callback: (key: keyof import('./shared.ts').Shared, value: unknown) => void,
       ) => () => void;
       // The sessions running in this window, for the other connections' windows to warn about.
-      setBusy: (runs: import('./shared.ts').Run[]) => Promise<void>;
+      setBusy: (runs: import('./shared.ts').Run[], profileId?: string) => Promise<void>;
       // Each connection is a window of its own; `open` tells whether it is running now.
       connections: () => Promise<import('./shared.ts').ListedConnection[]>;
       createConnection: (name: string) => Promise<import('./shared.ts').ListedConnection[]>;
@@ -99,7 +99,7 @@ declare global {
       device: () => Promise<import('@cc-desk-tunnel/protocol').Device>;
       // Fetches and runs an installer: the one the connected service holds, or, given a version, that
       // version's from the release page.
-      installUpdate: (version?: string) => Promise<void>;
+      installUpdate: (version?: string, profileId?: string) => Promise<void>;
       onUpdateProgress: (
         callback: (progress: { received: number; size: number }) => void,
       ) => () => void;
@@ -122,8 +122,8 @@ declare global {
         // Seconds allowed for reaching the service, for the local SSH service to start, and for the whole.
         waits?: { connect: number; ssh: number; ready: number };
       }) => Promise<{ url: string }>;
-      disconnectProxy: () => Promise<void>;
-      onProxyClosed: (callback: () => void) => () => void;
+      disconnectProxy: (profileId?: string) => Promise<void>;
+      onProxyClosed: (callback: (profileId: string) => void) => () => void;
     };
   }
 }

@@ -148,7 +148,9 @@ test('all servers share one account page with scoped controls, costs and honest 
   });
   await page.goto('/');
   await page.getByRole('button', { name: 'Claude 账号池', exact: true }).click();
-  await expect(page.locator('.server-account-card')).toHaveCount(3);
+  await expect(page.locator('.service-workspace:not([hidden]) .server-account-card')).toHaveCount(
+    3,
+  );
   expect(
     await page.evaluate(() => JSON.parse(localStorage.getItem('proxy-account-pool')!).disabled),
   ).not.toContain('b');
@@ -199,12 +201,14 @@ test('all servers share one account page with scoped controls, costs and honest 
     page.getByRole('article', { name: 'Claude 账号 · 服务器 2 · 备用账号', exact: true }),
   ).toContainText('离线 · 上次数据');
   await expect(backupCard.getByRole('button', { name: '切换使用', exact: true })).toBeDisabled();
-  await expect(page.locator('.server-account-card')).toHaveCount(3);
+  await expect(page.locator('.service-workspace:not([hidden]) .server-account-card')).toHaveCount(
+    3,
+  );
   expect(
     (await page.evaluate(() => (window as unknown as { testLog: string[] }).testLog)).filter(
       (line) => line.startsWith('connect:'),
     ),
-  ).toEqual(['connect:a']);
+  ).toEqual(['connect:a', 'connect:b']);
   local.accounts[0]!.limits!.windows[0]!.utilization = 100;
   local.nextReset = { accountId: 'default', at: Date.now() + 100000 };
   await page.evaluate(() => (window as unknown as { exhaustRemote: () => void }).exhaustRemote());
@@ -214,8 +218,13 @@ test('all servers share one account page with scoped controls, costs and honest 
   );
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.getByLabel('管理服务器', { exact: true }).selectOption('b');
-  await expect(page.getByLabel('管理服务器', { exact: true })).toHaveValue('b');
+  await page
+    .locator('.service-workspace:not([hidden])')
+    .getByLabel('管理服务器', { exact: true })
+    .selectOption('b');
+  await expect(
+    page.locator('.service-workspace:not([hidden])').getByLabel('管理服务器', { exact: true }),
+  ).toHaveValue('b');
   await expect(
     page.getByRole('article', { name: 'Claude 账号 · 备用账号', exact: true }),
   ).toBeVisible();

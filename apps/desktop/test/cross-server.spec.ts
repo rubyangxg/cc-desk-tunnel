@@ -19,7 +19,11 @@ for (const {
   prioritySend = false,
   priorityBlocked = false,
   manualPriority = false,
+  overnight = false,
+  otherRunning = false,
 } of [
+  { manual: false, loseAck: false, otherRunning: true },
+  { manual: false, loseAck: false, overnight: true },
   { manual: false, loseAck: false, prioritySend: true },
   { manual: false, loseAck: false, prioritySend: true, manualPriority: true },
   {
@@ -45,7 +49,7 @@ for (const {
   { manual: false, loseAck: false, away: true },
   { manual: false, loseAck: false, queued: true, loseQueueAck: true },
 ])
-  test(`cross-server ${manual ? 'manual' : 'quota'}${loseAck ? ' lost acknowledgement' : ''}${paginated ? ' paginated' : ''}${localAvailable ? ' available local account' : ''}${queued ? ' queued' : ''}${paused ? ' paused' : ''}${stoppedSend ? ' stopped resend' : ''}${away ? ' other device' : ''}${loseQueueAck ? ' lost queue acknowledgement' : ''}${quotaQueue ? ' idle quota queue' : ''}${legacyQueue ? ' legacy' : ''}${userPaused ? ' user paused' : ''}${prioritySend ? ' weekly priority send' : ''}${priorityBlocked ? ' unresolved tool' : ''}${manualPriority ? ' manual preference' : ''} handoff retains history, submits once and survives reload`, async ({
+  test(`cross-server ${manual ? 'manual' : 'quota'}${loseAck ? ' lost acknowledgement' : ''}${paginated ? ' paginated' : ''}${localAvailable ? ' available local account' : ''}${queued ? ' queued' : ''}${paused ? ' paused' : ''}${stoppedSend ? ' stopped resend' : ''}${away ? ' other device' : ''}${loseQueueAck ? ' lost queue acknowledgement' : ''}${quotaQueue ? ' idle quota queue' : ''}${legacyQueue ? ' legacy' : ''}${userPaused ? ' user paused' : ''}${prioritySend ? ' weekly priority send' : ''}${priorityBlocked ? ' unresolved tool' : ''}${manualPriority ? ' manual preference' : ''}${overnight ? ' overnight weekly recovery' : ''}${otherRunning ? ' other active task' : ''} handoff retains history, submits once and survives reload`, async ({
     page,
   }) => {
     const device = { id: randomUUID(), name: 'test computer', platform: 'linux' as const };
@@ -86,6 +90,13 @@ for (const {
         manual || localAvailable || stoppedSend || quotaQueue || prioritySend
           ? null
           : { id: runId, connectionId, status: 'running', surface: 'chat' },
+    };
+    const companion: Session = {
+      ...source,
+      id: randomUUID(),
+      title: '其他正在执行的任务',
+      projectPath: '/other',
+      activeRun: { id: randomUUID(), connectionId, status: 'running', surface: 'chat' },
     };
     let target: Session | undefined;
     const sent: { server: number; type: string; text?: string }[] = [];
@@ -166,7 +177,10 @@ for (const {
               version: '0.4.13',
               connectionId,
               adapter: 'claude-code',
-              sessions: current ? [current] : [],
+              sessions: [
+                ...(current ? [current] : []),
+                ...(server === 1 && otherRunning ? [companion] : []),
+              ],
               features: [
                 'account-pool',
                 'cross-server-handoff',
@@ -316,7 +330,7 @@ for (const {
         });
       });
     await page.addInitScript(
-      ({ device, manual, prioritySend, manualPriority }) => {
+      ({ device, manual, prioritySend, manualPriority, overnight }) => {
         const profiles = [1, 2].map((n) => ({
           id: n === 1 ? 'default' : 'second',
           name: `服务器${n}`,
@@ -374,7 +388,9 @@ for (const {
             probeQuota: async (id: string) => {
               const initial = firstProbe;
               if (id === 'default') firstProbe = false;
-              const remoteUnavailable = manualPriority && id === 'second' && firstRemoteProbe;
+              const remoteUnavailable =
+                (manualPriority && id === 'second' && firstRemoteProbe) ||
+                (overnight && !(window as unknown as { recovered?: boolean }).recovered);
               if (id === 'second') firstRemoteProbe = false;
               return {
                 available: true,
@@ -392,11 +408,11 @@ for (const {
                           : 10,
                     resetsAt: null,
                   },
-                  ...(prioritySend
+                  ...(prioritySend || overnight
                     ? [
                         {
                           name: 'seven_day',
-                          utilization: 20,
+                          utilization: overnight && remoteUnavailable ? 100 : 20,
                           resetsAt: new Date(
                             Date.now() + (id === 'default' ? (initial ? 1 : 158) : 11) * 3600000,
                           ).toISOString(),
@@ -409,9 +425,20 @@ for (const {
           },
         });
       },
-      { device, manual, prioritySend, manualPriority },
+      { device, manual, prioritySend, manualPriority, overnight },
     );
+    if (overnight) await page.clock.install();
     await page.goto('/');
+    if (overnight) {
+      await expect(
+        page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }),
+      ).toBeVisible();
+      await page.clock.runFor(1000);
+      expect(sent.filter((m) => ['run.handoff', 'message.send'].includes(m.type))).toHaveLength(0);
+      await page.evaluate(() => Object.assign(window, { recovered: true }));
+      await page.clock.fastForward(61_000);
+      await page.clock.runFor(1000);
+    }
     if (away) {
       await page.getByRole('button', { name: '展开其他设备的会话', exact: true }).click();
       await page
@@ -465,10 +492,18 @@ for (const {
     }
     if (localAvailable) {
       await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
-      await expect(page.locator('.message.user')).toContainText('保留原来的任务和对话');
+      await expect(page.locator('.service-workspace:not([hidden]) .message.user')).toContainText(
+        '保留原来的任务和对话',
+      );
       await page.waitForTimeout(700); // The legacy fallback used to start after 150 ms.
       await expect(page.getByLabel('当前服务器：服务器1', { exact: true })).toBeVisible();
-      expect(sent.some((message) => message.server === 2)).toBe(false);
+      expect(
+        sent.some(
+          (message) =>
+            message.server === 2 &&
+            ['session.create', 'message.send', 'run.handoff'].includes(message.type),
+        ),
+      ).toBe(false);
       expect(
         sent.filter((message) =>
           ['run.handoff', 'message.send', 'run.continue'].includes(message.type),
@@ -496,13 +531,21 @@ for (const {
       expect(sent.filter((m) => m.type === 'message.send')).toHaveLength(0);
       return;
     }
-    await expect(page.locator('.message.user')).toContainText('保留原来的任务和对话');
-    await expect(page.getByText('已经完成第一步', { exact: true })).toBeVisible();
+    await expect(page.locator('.service-workspace:not([hidden]) .message.user')).toContainText(
+      '保留原来的任务和对话',
+    );
+    await expect(
+      page.locator('.service-workspace:not([hidden])').getByText('已经完成第一步', { exact: true }),
+    ).toBeVisible();
     await expect(page.getByText('服务器2继续完成第二步', { exact: true })).toBeVisible();
     expect(sent.filter((m) => m.type === 'run.handoff')).toHaveLength(
       manual || stoppedSend || quotaQueue || prioritySend ? 0 : 1,
     );
     expect(sent.filter((m) => m.type === 'message.send' && m.server === 2)).toHaveLength(1);
+    if (otherRunning) {
+      expect(companion.activeRun?.status).toBe('running');
+      expect(sent.filter((m) => m.type === 'run.cancel')).toHaveLength(0);
+    }
     if (prioritySend) {
       expect(sent.filter((m) => m.type === 'message.send' && m.server === 1)).toHaveLength(0);
       expect(sent.find((m) => m.type === 'message.send' && m.server === 2)?.text).toContain(
@@ -538,14 +581,18 @@ for (const {
       );
     await page.reload();
     await page.getByRole('button', { name: '同一个任务 · 服务器2', exact: true }).click();
-    await expect(page.locator('.message.user')).toContainText('保留原来的任务和对话');
+    await expect(page.locator('.service-workspace:not([hidden]) .message.user')).toContainText(
+      '保留原来的任务和对话',
+    );
     await expect(page.getByText('服务器2继续完成第二步', { exact: true })).toBeVisible();
     expect(sent.filter((m) => m.type === 'message.send' && m.server === 2)).toHaveLength(1);
     await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
     await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeDisabled();
     await page.getByRole('button', { name: '前往当前会话', exact: true }).click();
     await expect(page.getByLabel('当前服务器：服务器2', { exact: true })).toBeVisible();
-    await expect(page.locator('.message.user')).toContainText('保留原来的任务和对话');
+    await expect(page.locator('.service-workspace:not([hidden]) .message.user')).toContainText(
+      '保留原来的任务和对话',
+    );
     expect(sent.filter((m) => m.type === 'message.send' && m.server === 2)).toHaveLength(1);
     expect(errors).toEqual([]);
   });

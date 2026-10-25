@@ -4651,3 +4651,25 @@ dialog:has(.web-settings-form) {
 .web-proxy-trust > pre {
   margin-top: 10px;
 }
+
+/* Hidden workspaces keep their connections and execution state without receiving input. */
+.service-workspace[hidden] {
+  display: none !important;
+}
+.service-workspace {
+  height: 100%;
+}
+.service-opening {
+  position: fixed;
+  z-index: 1000;
+  top: 48px;
+  right: 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--raised);
+  box-shadow: var(--shadow);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}

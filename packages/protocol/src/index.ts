@@ -164,6 +164,7 @@ export const serverPoolAccountSchema = z.object({
   checkedAt: z.number().nonnegative().nullable(),
   blockedUntil: z.number().nonnegative().nullable(),
   quotaResetAt: z.number().nonnegative().nullable().optional(),
+  quotaResetWindow: z.enum(['five_hour', 'seven_day']).nullable().optional(),
   usage: z
     .array(z.object({ name: z.string(), requests: z.number(), costUsd: z.number() }))
     .optional(),

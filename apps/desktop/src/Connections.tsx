@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { WorkspaceVisible } from './ui.tsx';
 import { App as Workspace } from './App.tsx';
 import type { ConnectionProfile, ConnectionProfiles } from './connections.ts';
 import { useAccountPool } from './useAccountPool.ts';
 import type { AccountPool } from './useAccountPool.ts';
 import type { Handoff } from './accountPool.ts';
+import type { ClientState } from './client.ts';
 import { poolCandidates } from './accountPool.ts';
 
 const storageKey = 'proxy-connection-profiles';
@@ -20,10 +22,30 @@ function blankProfile(id: string, name: string): ConnectionProfile {
   };
 }
 
+function connectionPeer(profile: ConnectionProfile) {
+  if (profile.mode !== 'remote' || !profile.token) return null;
+  try {
+    return JSON.stringify([
+      new URL(profile.url).href,
+      profile.fingerprint.replaceAll(':', '').toLowerCase(),
+      profile.token,
+    ]);
+  } catch {
+    return null;
+  }
+}
+
 export type ProfileControls = {
   profiles: ConnectionProfile[];
   initial: ConnectionProfile;
   autoConnect: boolean;
+  connectRequest?: number;
+  persistent?: boolean;
+  managing?: boolean;
+  completeManagement?: () => void;
+  background?: boolean;
+  live?: Record<string, Pick<ClientState, 'status' | 'sessions' | 'error'>>;
+  report?: (state: Pick<ClientState, 'status' | 'sessions' | 'error'>) => void;
   save: (profile: ConnectionProfile) => Promise<void>;
   select: (
     id: string,
@@ -43,14 +65,39 @@ export type ProfileControls = {
   completeHandoff: () => void;
 };
 
-// Replacing the workspace on a switch drops its client, navigation and in-memory account data together.
+// Workspaces remain mounted: each service retains its socket, SSH execution channel and history.
 export function App() {
   const [collection, setCollection] = useState<ConnectionProfiles | null>(null);
-  const [autoConnect, setAutoConnect] = useState(false);
+  const latest = useRef<ConnectionProfiles | null>(null);
+  const writes = useRef(Promise.resolve());
+  type View = {
+    connect: boolean;
+    attempt: number;
+    handoff: Handoff | null;
+    sessionId: string | null;
+    account: boolean;
+    managing: boolean;
+  };
+  const emptyView = (connect = false): View => ({
+    connect,
+    attempt: 0,
+    handoff: null,
+    sessionId: null,
+    account: false,
+    managing: false,
+  });
+  const [views, setViews] = useState<Record<string, View>>({});
+  const viewsRef = useRef(views);
+  viewsRef.current = views;
+  type Live = Pick<ClientState, 'status' | 'sessions' | 'error'>;
+  const [live, setLive] = useState<Record<string, Live>>({});
+  const liveRef = useRef(live);
+  liveRef.current = live;
+  const [opening, setOpening] = useState<string | null>(null);
+  const openingRef = useRef<string | null>(null);
+  const [openError, setOpenError] = useState('');
+  const [activated, setActivated] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [handoff, setHandoff] = useState<Handoff | null>(null);
-  const [focusAccount, setFocusAccount] = useState(false);
-  const [focusSession, setFocusSession] = useState<string | null>(null);
   const pool = useAccountPool(collection?.profiles ?? []);
   useEffect(() => {
     let cancelled = false;
@@ -64,22 +111,19 @@ export function App() {
           : { profiles: [blankProfile('default', '默认代理服务')], activeId: 'default' };
         if (window.desktop && !window.desktop.dev)
           next.profiles = next.profiles.map((profile) => ({ ...profile, mode: 'remote' }));
-        const auto =
-          next.profiles.find((profile) => profile.id === next.activeId)?.autoLogin ?? false;
-        let shouldConnect = auto;
+        const auto = next.profiles.some(
+          (profile) => profile.autoLogin && profile.remember && !!profile.token,
+        );
         if (auto && pool.config.enabled) {
           const quotas = await pool.refresh(next.profiles);
           const preferred = poolCandidates(next.profiles, quotas, pool.config)[0];
-          // Stay connected for history and automatic quota recovery even when all accounts are limited.
-          shouldConnect = auto;
-          if (preferred) {
-            next.activeId = preferred.id;
-            await window.desktop?.saveProfiles(next);
-          }
+          if (preferred) next.activeId = preferred.id;
         }
         if (cancelled) return;
+        latest.current = next;
         setCollection(next);
-        setAutoConnect(shouldConnect);
+        setViews({ [next.activeId]: emptyView(auto) });
+        setActivated(auto);
       } catch {
         if (!cancelled) setError('代理服务配置读取失败，请重启客户端后重试。');
       }
@@ -88,71 +132,208 @@ export function App() {
       cancelled = true;
     };
   }, []);
-
+  useEffect(() => {
+    if (!activated || !collection || !window.desktop) return;
+    setViews((current) => {
+      const next = { ...current };
+      const peers = new Set(
+        collection.profiles.filter((profile) => next[profile.id]).map(connectionPeer),
+      );
+      for (const profile of collection.profiles)
+        if (
+          !next[profile.id] &&
+          profile.mode === 'remote' &&
+          profile.remember &&
+          profile.token &&
+          !peers.has(connectionPeer(profile))
+        ) {
+          next[profile.id] = emptyView(true);
+          peers.add(connectionPeer(profile));
+        }
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+  }, [activated, collection]);
+  // Background sockets save concurrently. Serialize writes against the latest collection.
+  function persist(change: (value: ConnectionProfiles) => ConnectionProfiles) {
+    const result = writes.current.then(async () => {
+      const next = change(latest.current!);
+      if (window.desktop) await window.desktop.saveProfiles(next);
+      const retained = {
+        ...next,
+        profiles: next.profiles.map((profile) =>
+          window.desktop && profile.remember
+            ? profile
+            : { ...profile, token: '', remember: false, autoLogin: false },
+        ),
+      };
+      if (!window.desktop) localStorage.setItem(storageKey, JSON.stringify(retained));
+      latest.current = retained;
+      setCollection(retained);
+    });
+    writes.current = result.catch(() => {});
+    return result;
+  }
   if (!collection)
     return (
       <main className="login-page">
         <p role={error ? 'alert' : 'status'}>{error ?? '读取代理服务配置…'}</p>
       </main>
     );
-  const initial =
-    collection.profiles.find((profile) => profile.id === collection.activeId) ??
-    collection.profiles[0]!;
-  async function persist(next: ConnectionProfiles) {
-    if (window.desktop) await window.desktop.saveProfiles(next);
-    // Browser simulation saves addresses and labels only. Tokens never enter browser storage.
-    const retained = {
-      ...next,
-      profiles: next.profiles.map((profile) =>
-        window.desktop && profile.remember
-          ? profile
-          : { ...profile, token: '', remember: false, autoLogin: false },
-      ),
+  function changeView(id: string, values: Partial<View>) {
+    const next = {
+      ...viewsRef.current,
+      [id]: { ...(viewsRef.current[id] ?? emptyView()), ...values },
     };
-    if (!window.desktop) localStorage.setItem(storageKey, JSON.stringify(retained));
-    setCollection(retained);
+    viewsRef.current = next;
+    setViews(next);
   }
-  const controls: ProfileControls = {
-    profiles: collection.profiles,
-    initial,
-    autoConnect,
-    pool,
-    handoff,
-    focusSession,
-    focusAccount,
-    completeAccountFocus: () => setFocusAccount(false),
-    completeFocus: () => setFocusSession(null),
-    completeHandoff: () => setHandoff(null),
-    save: async (profile) => {
-      await persist({
-        ...collection,
-        profiles: collection.profiles.map((item) => (item.id === profile.id ? profile : item)),
-      });
-    },
-    select: async (id, connect, nextHandoff, sessionId, accountPage) => {
-      await persist({ ...collection, activeId: id });
-      setAutoConnect(connect);
-      setHandoff(nextHandoff ?? null);
-      setFocusSession(sessionId ?? null);
-      setFocusAccount(accountPage ?? false);
-    },
-    add: async () => {
-      const profile = blankProfile(
-        crypto.randomUUID(),
-        `代理服务 ${collection.profiles.length + 1}`,
-      );
-      await persist({ profiles: [...collection.profiles, profile], activeId: profile.id });
-      setAutoConnect(false);
-      setHandoff(null);
-    },
-    remove: async () => {
-      const profiles = collection.profiles.filter((profile) => profile.id !== initial.id);
-      await persist({ profiles, activeId: profiles[0]!.id });
-      setAutoConnect(false);
-      setHandoff(null);
-    },
-  };
-  return <Workspace key={initial.id} profiles={controls} />;
+  return (
+    <>
+      {(opening || openError) && (
+        <div className="service-opening" role={openError ? 'alert' : 'status'}>
+          {openError || '正在打开会话…'}
+          <button
+            className="button secondary"
+            onClick={() => {
+              openingRef.current = null;
+              setOpening(null);
+              setOpenError('');
+            }}
+          >
+            取消
+          </button>
+        </div>
+      )}
+      {collection.profiles
+        .filter((profile) => views[profile.id] || profile.id === collection.activeId)
+        .map((initial) => {
+          const view = views[initial.id] ?? emptyView();
+          const foreground = initial.id === collection.activeId;
+          const controls: ProfileControls = {
+            profiles: collection.profiles,
+            initial,
+            autoConnect: view.connect,
+            connectRequest: view.attempt,
+            persistent: true,
+            managing: view.managing,
+            completeManagement: () => changeView(initial.id, { managing: false }),
+            background: !foreground,
+            live,
+            report: (value) => {
+              setLive((current) =>
+                current[initial.id]?.status === value.status &&
+                current[initial.id]?.sessions === value.sessions &&
+                current[initial.id]?.error === value.error
+                  ? current
+                  : { ...current, [initial.id]: value },
+              );
+              if (openingRef.current !== initial.id) return;
+              if (value.status === 'connected' || value.status === 'reconnecting') {
+                openingRef.current = null;
+                setOpening(null);
+                void persist((current) => ({ ...current, activeId: initial.id })).catch((error) =>
+                  setOpenError(error.message),
+                );
+              } else if (value.status === 'disconnected' && value.error) {
+                openingRef.current = null;
+                setOpening(null);
+                setOpenError('暂时无法打开会话，原任务仍在运行。请稍后重试。');
+              }
+            },
+            pool,
+            handoff: view.handoff,
+            focusSession: view.sessionId,
+            focusAccount: view.account,
+            completeAccountFocus: () => changeView(initial.id, { account: false }),
+            completeFocus: () => changeView(initial.id, { sessionId: null }),
+            completeHandoff: () => changeView(initial.id, { handoff: null }),
+            save: async (profile) => {
+              await persist((value) => ({
+                ...value,
+                profiles: value.profiles.map((item) => (item.id === profile.id ? profile : item)),
+              }));
+              if (profile.token) setActivated(true);
+            },
+            select: async (id, connect, handoff, sessionId, account) => {
+              const requested = latest.current?.profiles.find((profile) => profile.id === id);
+              if (requested && connect) {
+                const peer = connectionPeer(requested);
+                const warm = latest.current?.profiles.find(
+                  (profile) =>
+                    viewsRef.current[profile.id] &&
+                    peer !== null &&
+                    connectionPeer(profile) === peer,
+                );
+                if (warm) id = warm.id;
+              }
+              if (handoff && viewsRef.current[id]?.handoff)
+                throw new Error('已有续接正在处理，请稍后重试。');
+              // Navigation waits in the existing workspace until the destination is ready.
+              // Background handoffs never steal the foreground conversation.
+              if (!handoff || latest.current?.activeId === initial.id) {
+                openingRef.current = null;
+                setOpening(null);
+                setOpenError('');
+                if (
+                  connect &&
+                  !!requested?.token &&
+                  liveRef.current[id]?.status !== 'connected' &&
+                  liveRef.current[id]?.status !== 'reconnecting'
+                ) {
+                  openingRef.current = id;
+                  setOpening(id);
+                } else await persist((value) => ({ ...value, activeId: id }));
+              }
+              changeView(id, {
+                connect,
+                attempt: (viewsRef.current[id]?.attempt ?? 0) + 1,
+                handoff: handoff ?? null,
+                sessionId: sessionId ?? null,
+                account: account ?? false,
+                managing: !connect && !sessionId,
+              });
+              if (connect) setActivated(true);
+            },
+            add: async () => {
+              const profile = blankProfile(
+                crypto.randomUUID(),
+                `代理服务 ${collection.profiles.length + 1}`,
+              );
+              await persist((value) => ({
+                profiles: [...value.profiles, profile],
+                activeId: profile.id,
+              }));
+              changeView(profile.id, emptyView());
+            },
+            remove: async () => {
+              await persist((value) => {
+                const profiles = value.profiles.filter((profile) => profile.id !== initial.id);
+                return { profiles, activeId: profiles[0]!.id };
+              });
+              await window.desktop?.disconnectProxy(initial.id);
+              setViews((current) => {
+                const next = { ...current };
+                delete next[initial.id];
+                return next;
+              });
+            },
+          };
+          return (
+            <div
+              key={initial.id}
+              hidden={!foreground}
+              inert={!foreground}
+              className="service-workspace"
+              data-service={initial.id}
+            >
+              <WorkspaceVisible.Provider value={foreground}>
+                <Workspace profiles={controls} />
+              </WorkspaceVisible.Provider>
+            </div>
+          );
+        })}
+    </>
+  );
 }
 
 // Browser sessions stay on their authenticated origin; desktop profiles are never loaded here.

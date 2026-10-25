@@ -9,7 +9,12 @@ import type { IncomingMessage, RequestListener } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { WebSocket, WebSocketServer } from 'ws';
 import { nativeStore } from './native-store.ts';
-import { AccountPool, orderedAccounts, nextAccountReset } from './account-pool.ts';
+import {
+  AccountPool,
+  availableAccount,
+  orderedAccounts,
+  nextAccountReset,
+} from './account-pool.ts';
 import { poolHandoff, handoffBlockReason } from './pool-handoff.ts';
 import { accountStatus, accountLogout, NativeLogin } from './native-account.ts';
 import {
@@ -801,10 +806,6 @@ export function createProxyServer(options: ServerOptions) {
   // The CLI has exited before this timer is armed; no process or tool is replayed while waiting.
   async function waitForQuotaReset(run: Run, resetsAt: string | undefined) {
     const reset = Date.parse(resetsAt ?? '');
-    if (!Number.isFinite(reset)) {
-      emit(run, { type: 'native.notice', text: '未取得额度重置时间，请检测账号额度后手动继续。' });
-      return false;
-    }
     // A stale rejection must not create a tight loop of billable requests.
     const deadline = reset > Date.now() ? reset + 1000 : Date.now() + 30_000;
     run.quotaWaiting = true;
@@ -878,7 +879,11 @@ export function createProxyServer(options: ServerOptions) {
           signal: run.controller.signal,
           ssh: ssh ? sessionSsh(store.directory, run.sessionId, ssh) : undefined,
           emit: (event) => {
-            if (event.type === 'run.error' && event.code === 'quota_five_hour') quota = event;
+            if (
+              event.type === 'run.error' &&
+              (event.code === 'quota_five_hour' || event.code === 'quota_weekly')
+            )
+              quota = event;
             emit(run, event);
           },
           approve: (toolId, waiting) => {
@@ -901,7 +906,11 @@ export function createProxyServer(options: ServerOptions) {
         });
         const events = store.runEvents(run.sessionId, run.id);
         if (quota) {
-          pool!.block(accountId, quota.resetsAt);
+          pool!.block(
+            accountId,
+            quota.resetsAt,
+            quota.code === 'quota_weekly' ? 'seven_day' : 'five_hour',
+          );
           publishPool();
         }
         const blocked = handoffBlockReason(events, run.id);
@@ -945,20 +954,19 @@ export function createProxyServer(options: ServerOptions) {
           (pool!.settings.enabled || resumesAfterQuota(run))
         ) {
           if (resumesAfterQuota(run) && !pool!.settings.enabled) {
-            const resetsAt =
-              quota.resetsAt ??
-              pool!.get(accountId).limits?.windows.find((window) => window.name === 'five_hour')
-                ?.resetsAt ??
-              undefined;
+            const reset = nextAccountReset([pool!.get(accountId)]);
+            const resetsAt = reset ? new Date(reset.at).toISOString() : undefined;
             if (!(await waitForQuotaReset(run, resetsAt))) {
               finish(run, 'cancelled', run.cancelReason ?? '已取消额度重置后自动继续。');
               return;
             }
+            await refreshFor(run);
             const account = pool!.get(accountId);
             if (!account.enabled || account.loggedIn !== true || pool!.locked.has(accountId)) {
               finish(run, 'failed', '账号已停用或未登录，请手动继续。');
               return;
             }
+            if (!availableAccount(account)) continue;
             next = account;
             resumedAfterReset = true;
             break;

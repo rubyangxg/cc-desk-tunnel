@@ -36,10 +36,9 @@ const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { mkdir, readdir, rmdir, unlink } = require('node:fs/promises');
 const { pathToFileURL } = require('node:url');
-let bridge;
-// The last connection, kept for its installer download after a service refused this client's version.
-let lastBridge;
-let connectionGeneration = 0;
+const { BridgePool } = require('./bridge-pool.cjs');
+const bridges = new BridgePool((count) => keepAwake(count > 0));
+const busyProfiles = new Map();
 const connections = require('./connections.cjs');
 const sharedDocument = require('./shared-document.cjs');
 // See connections.cjs. The profile is chosen before anything is read from it, the instance lock included:
@@ -234,7 +233,7 @@ handle('web:open', async (_event, target) => {
     url.password ||
     url.hash ||
     url.search ||
-    bridge?.webUrl() !== url.href
+    ![...bridges.entries.values()].some((bridge) => bridge.webUrl() === url.href)
   )
     throw new Error('Unexpected Web address');
   await shell.openExternal(url.href);
@@ -304,11 +303,7 @@ handle('workspace:remove', async (event, directory) => {
 handle('proxy:connect', async (event, config) => {
   if (!config || typeof config.url !== 'string' || typeof config.fingerprint !== 'string')
     throw new Error('Invalid proxy configuration');
-  const generation = ++connectionGeneration;
-  const previous = bridge;
-  bridge = null;
-  await previous?.close();
-  if (generation !== connectionGeneration) throw new Error('Connection cancelled');
+  const profileId = String(config.profileId ?? 'default');
   const { openProxyBridge } = await import(
     pathToFileURL(path.join(__dirname, 'proxy-bridge.mjs')).href
   );
@@ -319,37 +314,34 @@ handle('proxy:connect', async (event, config) => {
       : path.join(__dirname, '../vendor'));
   const openssh = process.env.PROXY_OPENSSH_DIR ?? path.join(vendor, 'openssh');
   const powershell = app.isPackaged ? path.join(vendor, 'pwsh/pwsh.exe') : 'pwsh.exe';
-  const connection = await openProxyBridge(
-    config,
-    {
-      openssh,
-      powershell,
-      scriptDirectory: app.isPackaged
-        ? path.join(process.resourcesPath, 'app.asar.unpacked/electron')
-        : undefined,
-      // Where Claude finds the scheduled tasks to edit; the service names the variable, not the path.
-      environment: {
-        CC_DESK_TUNNEL_SCHEDULES: schedulesPath(config.profileId),
-        CC_DESK_TUNNEL_SHARED_DOCUMENT: sharedDocument.documentPath(base),
-      },
-      log,
-      // The system's proxy settings (manual, script or automatic detection) as Chromium reads them.
-      resolveProxy: (url) => session.defaultSession.resolveProxy(url),
-    },
+  const connection = await bridges.connect(
+    profileId,
+    (closed) =>
+      openProxyBridge(
+        config,
+        {
+          openssh,
+          powershell,
+          scriptDirectory: app.isPackaged
+            ? path.join(process.resourcesPath, 'app.asar.unpacked/electron')
+            : undefined,
+          // Where Claude finds the scheduled tasks to edit; the service names the variable, not the path.
+          environment: {
+            CC_DESK_TUNNEL_SCHEDULES: schedulesPath(config.profileId),
+            CC_DESK_TUNNEL_SHARED_DOCUMENT: sharedDocument.documentPath(base),
+          },
+          log,
+          // The system's proxy settings (manual, script or automatic detection) as Chromium reads them.
+          resolveProxy: (url) => session.defaultSession.resolveProxy(url),
+        },
+        closed,
+      ),
     () => {
-      if (bridge !== connection) return;
-      bridge = null;
-      keepAwake(false);
-      if (!event.sender.isDestroyed()) event.sender.send('proxy:closed');
+      busyProfiles.delete(profileId);
+      if (!event.sender.isDestroyed()) event.sender.send('proxy:closed', profileId);
     },
   );
-  if (generation !== connectionGeneration) {
-    await connection.close();
-    throw new Error('Connection cancelled');
-  }
-  bridge = lastBridge = connection;
-  keepAwake(true);
-  return { url: bridge.url };
+  return { url: connection.url };
 });
 // A service older than this client refuses it at sign-in; it is asked to upgrade over a connection of its own.
 handle('service:upgrade', async (event, config) => {
@@ -570,12 +562,14 @@ nativeTheme.on('updated', () => {
   }
 });
 // The sessions this connection has running, with their folders: see `busy` in connections.cjs.
-handle('busy:set', (_event, runs) => {
+handle('busy:set', (_event, runs, profileId = 'default') => {
+  busyProfiles.set(String(profileId), Array.isArray(runs) ? runs : []);
   connections.mark(
     base,
     connectionId,
     true,
-    (Array.isArray(runs) ? runs : [])
+    [...busyProfiles.values()]
+      .flat()
       .slice(0, 200)
       .map((run) => ({ id: String(run?.id), folder: String(run?.folder) })),
   );
@@ -650,7 +644,8 @@ handle('notify:show', (event, notice) => {
 // Upgrades in place: the installer runs silently over the current install and starts the new version. It
 // comes from the connected service, or, when the user chooses so, straight from the release page: `version`
 // is then the one to fetch, which the service's refusal of this client named.
-handle('update:install', async (event, version) => {
+handle('update:install', async (event, version, profileId = 'default') => {
+  const lastBridge = bridges.last.get(String(profileId));
   if (!app.isPackaged) throw new Error('源码运行不支持自升级；请重新打包安装。');
   // Only the Windows installer can be run over an installation. Elsewhere the user installs a new package.
   if (process.platform !== 'win32')
@@ -688,12 +683,9 @@ handle('update:install', async (event, version) => {
   spawn(installer, ['/S', '--force-run'], { detached: true, stdio: 'ignore' }).unref();
   app.quit();
 });
-ipcMain.handle('proxy:disconnect', async () => {
-  keepAwake(false);
-  connectionGeneration++;
-  const previous = bridge;
-  bridge = null;
-  await previous?.close();
+ipcMain.handle('proxy:disconnect', async (_event, profileId = 'default') => {
+  busyProfiles.delete(String(profileId));
+  await bridges.disconnect(String(profileId));
 });
 
 // Windows files notifications under this identity; the installer gives the shortcut the same one.
@@ -864,10 +856,10 @@ let quitting = false;
 let exiting = false;
 app.on('before-quit', (event) => {
   quitting = true;
-  if (exiting || !bridge) return;
+  if (exiting || !bridges.generations.size) return;
   event.preventDefault();
   exiting = true;
-  bridge.close().finally(() => app.quit());
+  bridges.close().finally(() => app.quit());
 });
 app.on('window-all-closed', () => app.quit());
 app.on('quit', () => {

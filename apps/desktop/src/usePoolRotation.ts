@@ -41,6 +41,7 @@ export function usePoolRotation(options: {
   const mountedAt = useRef(Date.now());
   const rotating = useRef(false);
   const resuming = useRef(false);
+  const currentHandoff = useRef(profiles.handoff);
   const hasConnected = useRef(false);
   const failedConnectionHandled = useRef(false);
   const resumedSession = useRef<string | null>(null);
@@ -59,7 +60,10 @@ export function usePoolRotation(options: {
     manual = false,
     allowQueueHandoff = false,
   ) {
-    if (client.state.sessions.some((item) => item.activeRun && isHere(item, client.state.device)))
+    if (
+      !profiles.persistent &&
+      client.state.sessions.some((item) => item.activeRun && isHere(item, client.state.device))
+    )
       throw new Error('任务仍在运行，未切换服务器。');
     setNotice('正在读取会话历史，准备续接…');
     let events;
@@ -74,7 +78,10 @@ export function usePoolRotation(options: {
     if (!live) throw new Error('原会话已不存在。');
     const blocked = transferBlock(live, events, allowQueueHandoff);
     if (blocked) throw new Error(blocked);
-    if (client.state.sessions.some((item) => item.activeRun && isHere(item, client.state.device)))
+    if (
+      !profiles.persistent &&
+      client.state.sessions.some((item) => item.activeRun && isHere(item, client.state.device))
+    )
       throw new Error('其他任务仍在运行，请结束后再切换服务器。');
     const key = historyKey(profiles.initial, session.id);
     const archive = await sharedHistory(key);
@@ -102,11 +109,12 @@ export function usePoolRotation(options: {
         },
       ],
     };
-    // Write the entire transcript before closing the only live connection to the source.
+    // Archive the transcript before transferring execution ownership.
     await saveSharedHistory(`pending:${key}`, handoff.history);
     if (
       client.state.sessions.find((item) => item.id === session.id)?.updatedAt !== live.updatedAt ||
-      client.state.sessions.some((item) => item.activeRun && isHere(item, client.state.device))
+      (!profiles.persistent &&
+        client.state.sessions.some((item) => item.activeRun && isHere(item, client.state.device)))
     )
       throw new Error('保存历史期间任务状态已改变，未交接。');
     return handoff;
@@ -319,8 +327,9 @@ export function usePoolRotation(options: {
     const active = state.sessions.filter(
       (session) => session.activeRun && isHere(session, state.device),
     );
-    if (active.length !== 1 || !waits.some((wait) => wait.sessionId === active[0]!.id)) return;
-    const session = active[0]!;
+    if (!profiles.persistent && active.length !== 1) return;
+    const session = active.find((item) => waits.some((wait) => wait.sessionId === item.id));
+    if (!session) return;
     const runId = session.activeRun!.id;
     if (cancelledRuns.current.has(runId) || Date.now() < nextAttempt.current) return;
     const timer = setTimeout(() => {
@@ -370,7 +379,7 @@ export function usePoolRotation(options: {
       })();
     }, 150);
     return () => clearTimeout(timer);
-  }, [state, pool.config.enabled, options.busy, options.terminalOpen]);
+  }, [state, pool.quotas, pool.config.enabled, options.busy, options.terminalOpen]);
 
   useEffect(() => {
     if (state.status === 'connected') {
@@ -389,6 +398,7 @@ export function usePoolRotation(options: {
   // Once a session request may have reached it, keep the normal reconnect/no-replay behavior.
   useEffect(() => {
     if (
+      profiles.background ||
       !profiles.autoConnect ||
       !pool.config.enabled ||
       state.status !== 'disconnected' ||
@@ -452,6 +462,7 @@ export function usePoolRotation(options: {
     state.status,
     state.error,
     profiles.autoConnect,
+    profiles.background,
     pool.config.enabled,
     pool.refresh,
     id,
@@ -465,6 +476,16 @@ export function usePoolRotation(options: {
 
   useEffect(() => {
     const handoff = profiles.handoff;
+    if (handoff !== currentHandoff.current) {
+      currentHandoff.current = handoff;
+      resuming.current = false;
+      resumedSession.current = null;
+    }
+    if (!handoff) {
+      resuming.current = false;
+      resumedSession.current = null;
+      return;
+    }
     if (
       !handoff ||
       (!handoff.manual && !pool.config.enabled) ||
@@ -573,7 +594,9 @@ export function usePoolRotation(options: {
         continue;
       const events = client.shown(session.id).filter((event) => event.runId === run.id);
       const rejection = events.findLast(
-        (event) => event.payload.type === 'run.error' && event.payload.code === 'quota_five_hour',
+        (event) =>
+          event.payload.type === 'run.error' &&
+          (event.payload.code === 'quota_five_hour' || event.payload.code === 'quota_weekly'),
       );
       if (!rejection || Date.parse(rejection.createdAt) < mountedAt.current) continue;
       if (transcript(events).some((item) => item.kind === 'tool' && !item.resolved)) continue;
@@ -613,6 +636,7 @@ export function usePoolRotation(options: {
           Date.parse(event.createdAt) >= mountedAt.current &&
           event.payload.type === 'run.error' &&
           (event.payload.code === 'quota_five_hour' ||
+            event.payload.code === 'quota_weekly' ||
             (exhausted(pool.quotas[id]) &&
               /hit your limit|usage limit|rate.?limit|额度.*(?:耗尽|用完)/i.test(
                 event.payload.message,

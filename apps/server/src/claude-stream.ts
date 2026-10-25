@@ -218,15 +218,18 @@ export class ClaudeStream {
       const info = jsonObject.parse(message.rate_limit_info);
       if (
         info.status === 'rejected' &&
-        info.rateLimitType === 'five_hour' &&
+        (info.rateLimitType === 'five_hour' || info.rateLimitType === 'seven_day') &&
         info.overageStatus !== 'allowed' &&
         info.overageStatus !== 'allowed_warning'
       ) {
         const reset = typeof info.resetsAt === 'number' ? new Date(info.resetsAt * 1000) : null;
         this.emit({
           type: 'run.error',
-          code: 'quota_five_hour',
-          message: 'Claude 5 小时额度已耗尽。',
+          code: info.rateLimitType === 'seven_day' ? 'quota_weekly' : 'quota_five_hour',
+          message:
+            info.rateLimitType === 'seven_day'
+              ? 'Claude 周额度已耗尽。'
+              : 'Claude 5 小时额度已耗尽。',
           ...(reset && Number.isFinite(reset.getTime()) ? { resetsAt: reset.toISOString() } : {}),
         });
       }

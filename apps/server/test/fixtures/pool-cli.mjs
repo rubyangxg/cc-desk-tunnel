@@ -66,8 +66,8 @@ if (process.argv.includes('auth')) {
                 new Date(Date.now() + (config.hours ?? 1) * 3600_000).toISOString(),
             },
             seven_day: {
-              utilization: 20,
-              resets_at: new Date(Date.now() + 86400_000).toISOString(),
+              utilization: config.weeklyBlocked ? 100 : 20,
+              resets_at: config.weeklyResetsAt ?? new Date(Date.now() + 86400_000).toISOString(),
             },
           },
         };
@@ -165,7 +165,7 @@ if (process.argv.includes('auth')) {
           session_id: sessionId,
           rate_limit_info: {
             status: 'rejected',
-            rateLimitType: 'five_hour',
+            rateLimitType: config.quotaWindow ?? 'five_hour',
             resetsAt: Math.ceil(Date.now() / 1000) + (config.resetSeconds ?? 3600),
           },
         });
