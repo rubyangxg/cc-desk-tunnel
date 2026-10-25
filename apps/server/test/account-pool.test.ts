@@ -298,3 +298,37 @@ test('reset forecast waits for all exhausted windows and excludes unavailable or
   );
   assert.equal(nextAccountReset(pool.accounts, [id]), null);
 });
+
+test('server selection uses weekly reset before five-hour reset without interrupting an existing run', (t) => {
+  const { pool } = fixture(t);
+  const second = randomUUID();
+  pool.add(second, 'weekly first');
+  quota(pool, 'default', 1);
+  quota(pool, second, 4);
+  for (const [id, hours] of [
+    ['default', 158],
+    [second, 11],
+  ] as const) {
+    const limits = pool.get(id).limits!;
+    pool.observe(id, {
+      ...limits,
+      windows: [
+        ...limits.windows,
+        {
+          name: 'seven_day',
+          utilization: 20,
+          resetsAt: new Date(Date.now() + hours * 3600_000).toISOString(),
+        },
+      ],
+    });
+  }
+  pool.configure({ enabled: true, strategy: 'reset' });
+  assert.equal(pool.choose().id, second);
+  assert.equal(
+    pool.choose('default').id,
+    'default',
+    'an ongoing operation may retain its current account',
+  );
+  pool.configure({ strategy: 'order', order: ['default', second] });
+  assert.equal(pool.choose().id, 'default');
+});

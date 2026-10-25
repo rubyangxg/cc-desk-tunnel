@@ -130,7 +130,22 @@ export function usePoolRotation(options: {
     session: Session,
     text: string,
     scenario: NonNullable<Session['messageQueue']>['items'][number]['scenario'],
+    priority = false,
   ) {
+    if (
+      priority &&
+      (!pool.config.enabled ||
+        profiles.profiles.length < 2 ||
+        pool.config.strategy !== 'reset' ||
+        options.terminalOpen ||
+        text.trimStart().startsWith('/') ||
+        text.length > 14500 ||
+        session.messageQueue?.items.length ||
+        session.messageQueue?.paused ||
+        !isHere(session, client.state.device) ||
+        client.state.sessions.some((item) => item.activeRun && isHere(item, client.state.device)))
+    )
+      return false;
     if (text.length > 14500)
       throw new Error('这条消息过长，无法同时携带续接上下文；请缩短后重试，原文保留在草稿中。');
     if (!pool.config.enabled) throw new Error('本服务器额度已耗尽，请开启自动接力或手动续接。');
@@ -139,6 +154,7 @@ export function usePoolRotation(options: {
         `请在项目所在设备 ${session.device?.name ?? ''} 上发送或续接；当前窗口不能代替该设备跨服交接。`,
       );
     if (rotating.current || working) throw new Error('正在交接，请稍后再试。');
+    const connection = client.state.connectionId;
     rotating.current = true;
     setWorking(true);
     try {
@@ -147,8 +163,10 @@ export function usePoolRotation(options: {
         current.current.profiles.profiles,
         quotas,
         current.current.profiles.pool.config,
-        [id],
+        priority ? [] : [id],
       )[0];
+      if (priority && (!next || next.id === id || !current.current.profiles.pool.config.enabled))
+        return false;
       if (!next) throw new Error('暂无可用的其他服务器，消息保留在草稿中。');
       await freezeQueue(session);
       const handoff = await prepare(session, [id], true, true);
@@ -165,6 +183,17 @@ export function usePoolRotation(options: {
       }
       await current.current.close();
       await current.current.profiles.select(next.id, true, handoff);
+      return true;
+    } catch (error) {
+      // Priority is an optimization. If preparation fails before leaving the source, the caller
+      // can still send there once; never fall back after switching or a possibly accepted send.
+      if (
+        priority &&
+        client.state.status === 'connected' &&
+        client.state.connectionId === connection
+      )
+        return false;
+      throw error;
     } finally {
       rotating.current = false;
       setWorking(false);
@@ -241,7 +270,7 @@ export function usePoolRotation(options: {
             quotas,
             live.profiles.pool.config,
           );
-          if (candidates.some((item) => item.id === id)) {
+          if (candidates[0]?.id === id) {
             await client.request({
               type: 'message.queue.pause',
               sessionId: session.id,

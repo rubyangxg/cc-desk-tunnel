@@ -107,3 +107,38 @@ test('multi-account telemetry finds B when A is exhausted, honors fixed account 
   state.accounts[1] = { ...account('b', 20), checkedAt: now - 121000 };
   assert.equal(poolQuota(state), null);
 });
+
+test('background pool probe advertises the weekly-first usable account', () => {
+  const now = Date.now();
+  const accounts = [158, 11].map((hours, index) => ({
+    id: String(index),
+    enabled: true,
+    loggedIn: true,
+    login: null,
+    error: null,
+    checkedAt: now,
+    limits: {
+      available: true,
+      windows: [
+        {
+          name: 'five_hour',
+          utilization: 10,
+          resetsAt: index ? null : new Date(now + 3600000).toISOString(),
+        },
+        {
+          name: 'seven_day',
+          utilization: 20,
+          resetsAt: new Date(now + hours * 3600000).toISOString(),
+        },
+      ],
+    },
+  }));
+  const state = {
+    serverTime: now,
+    settings: { enabled: true, strategy: 'reset', order: ['0', '1'] },
+    accounts,
+  };
+  assert.equal(poolQuota(state), accounts[1].limits);
+  accounts[1].limits.windows[0].utilization = 100;
+  assert.equal(poolQuota(state), accounts[0].limits);
+});

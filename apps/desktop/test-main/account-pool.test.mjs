@@ -160,3 +160,26 @@ test('handoff carries the project, permissions, task and tool progress within th
   events.at(-1).payload.status = 'completed';
   assert.equal(quotaFailure(events), null);
 });
+
+test('global reset priority spends the soonest weekly allowance across services before five-hour reset', () => {
+  const weekly = (fiveHours, weekHours, used = 20) => {
+    const value = quota(used, fiveHours);
+    value.limits.windows.push({
+      name: 'seven_day',
+      utilization: 19,
+      resetsAt: new Date(now + weekHours * 3600_000).toISOString(),
+    });
+    return value;
+  };
+  const quotas = { a: weekly(4.9, 158), b: weekly(2.9, 16, 100), c: weekly(0, 11) };
+  quotas.c.limits.windows[0].resetsAt = null;
+  assert.deepEqual(
+    poolCandidates(profiles, quotas, settings, [], now).map((p) => p.id),
+    ['c', 'a'],
+  );
+  quotas.a.limits.windows[1].resetsAt = quotas.c.limits.windows[1].resetsAt;
+  assert.deepEqual(
+    poolCandidates(profiles, quotas, settings, [], now).map((p) => p.id),
+    ['a', 'c'],
+  );
+});

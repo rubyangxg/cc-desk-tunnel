@@ -940,6 +940,7 @@ export function App({
     setSlashOpen(false);
     await act(async () => {
       try {
+        if (await rotation.sendAfterQuota(selected, text, scenario, true)) return;
         await client.request({
           type: mode === 'queue' && queueEnabled ? 'message.enqueue' : 'message.send',
           sessionId,

@@ -2,7 +2,11 @@ import { mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
-import { serverPoolAccountSchema, serverPoolSettingsSchema } from '@cc-desk-tunnel/protocol';
+import {
+  compareQuotaReset,
+  serverPoolAccountSchema,
+  serverPoolSettingsSchema,
+} from '@cc-desk-tunnel/protocol';
 import type {
   ServerPoolAccount,
   ServerPoolSettings,
@@ -35,17 +39,11 @@ export function orderedAccounts(state: ServerPoolState, excluded: string[] = [],
   const order = [
     ...new Set([...state.settings.order, ...state.accounts.map((account) => account.id)]),
   ];
-  const reset = (account: ServerPoolAccount) => {
-    const at = Date.parse(
-      account.limits?.windows.find((window) => window.name === 'five_hour')?.resetsAt ?? '',
-    );
-    return at > now ? at : Infinity;
-  };
   return state.accounts
     .filter((account) => !excluded.includes(account.id) && availableAccount(account, now))
     .sort(
       (a, b) =>
-        (state.settings.strategy === 'reset' ? reset(a) - reset(b) : 0) ||
+        (state.settings.strategy === 'reset' ? compareQuotaReset(a.limits, b.limits, now) : 0) ||
         order.indexOf(a.id) - order.indexOf(b.id),
     );
 }

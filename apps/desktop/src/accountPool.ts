@@ -1,3 +1,4 @@
+import { compareQuotaReset } from '@cc-desk-tunnel/protocol';
 import type { NativeMetrics, Session, SessionEvent } from '@cc-desk-tunnel/protocol';
 import type { ConnectionProfile } from './connections.ts';
 import { transcript } from './transcript.ts';
@@ -56,10 +57,6 @@ export function poolCandidates(
   now = Date.now(),
 ) {
   const order = [...new Set([...settings.order, ...profiles.map((profile) => profile.id)])];
-  const reset = (id: string) => {
-    const end = Date.parse(fiveHour(quotas[id])?.resetsAt ?? '');
-    return end > now ? end : Infinity;
-  };
   return profiles
     .filter((profile) => {
       const quota = quotas[profile.id];
@@ -79,8 +76,9 @@ export function poolCandidates(
     })
     .sort(
       (a, b) =>
-        (settings.strategy === 'reset' ? reset(a.id) - reset(b.id) : 0) ||
-        order.indexOf(a.id) - order.indexOf(b.id),
+        (settings.strategy === 'reset'
+          ? compareQuotaReset(quotas[a.id]?.limits, quotas[b.id]?.limits, now)
+          : 0) || order.indexOf(a.id) - order.indexOf(b.id),
     );
 }
 

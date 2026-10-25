@@ -16,7 +16,11 @@ for (const {
   quotaQueue = false,
   legacyQueue = false,
   userPaused = false,
+  prioritySend = false,
+  priorityBlocked = false,
 } of [
+  { manual: false, loseAck: false, prioritySend: true },
+  { manual: false, loseAck: false, prioritySend: true, priorityBlocked: true },
   { manual: false, loseAck: false, queued: true, quotaQueue: true },
   { manual: false, loseAck: false, queued: true, quotaQueue: true, legacyQueue: true },
   { manual: false, loseAck: false, queued: true, quotaQueue: true, userPaused: true },
@@ -32,7 +36,7 @@ for (const {
   { manual: false, loseAck: false, away: true },
   { manual: false, loseAck: false, queued: true, loseQueueAck: true },
 ])
-  test(`cross-server ${manual ? 'manual' : 'quota'}${loseAck ? ' lost acknowledgement' : ''}${paginated ? ' paginated' : ''}${localAvailable ? ' available local account' : ''}${queued ? ' queued' : ''}${paused ? ' paused' : ''}${stoppedSend ? ' stopped resend' : ''}${away ? ' other device' : ''}${loseQueueAck ? ' lost queue acknowledgement' : ''}${quotaQueue ? ' idle quota queue' : ''}${legacyQueue ? ' legacy' : ''}${userPaused ? ' user paused' : ''} handoff retains history, submits once and survives reload`, async ({
+  test(`cross-server ${manual ? 'manual' : 'quota'}${loseAck ? ' lost acknowledgement' : ''}${paginated ? ' paginated' : ''}${localAvailable ? ' available local account' : ''}${queued ? ' queued' : ''}${paused ? ' paused' : ''}${stoppedSend ? ' stopped resend' : ''}${away ? ' other device' : ''}${loseQueueAck ? ' lost queue acknowledgement' : ''}${quotaQueue ? ' idle quota queue' : ''}${legacyQueue ? ' legacy' : ''}${userPaused ? ' user paused' : ''}${prioritySend ? ' weekly priority send' : ''}${priorityBlocked ? ' unresolved tool' : ''} handoff retains history, submits once and survives reload`, async ({
     page,
   }) => {
     const device = { id: randomUUID(), name: 'test computer', platform: 'linux' as const };
@@ -70,7 +74,7 @@ for (const {
           }
         : undefined,
       activeRun:
-        manual || localAvailable || stoppedSend || quotaQueue
+        manual || localAvailable || stoppedSend || quotaQueue || prioritySend
           ? null
           : { id: runId, connectionId, status: 'running', surface: 'chat' },
     };
@@ -100,6 +104,18 @@ for (const {
       old,
     );
     event(source, { type: 'text.delta', messageId: randomUUID(), text: '已经完成第一步' }, old);
+    if (priorityBlocked)
+      event(
+        source,
+        {
+          type: 'tool.result',
+          toolId: 'unconfirmed',
+          status: 'unknown',
+          output: 'pending verification',
+          exitCode: null,
+        },
+        old,
+      );
     if (paginated)
       for (let i = 0; i < 60; i++)
         event(source, { type: 'native.notice', text: `历史记录 ${i}` }, old);
@@ -113,7 +129,7 @@ for (const {
           ? 'failed'
           : stoppedSend
             ? 'cancelled'
-            : manual || quotaQueue
+            : manual || quotaQueue || prioritySend
               ? 'completed'
               : 'running',
         connectionId,
@@ -177,7 +193,7 @@ for (const {
                     windows: [
                       {
                         name: 'five_hour',
-                        utilization: server === 1 && !localAvailable ? 100 : 10,
+                        utilization: server === 1 && !localAvailable && !prioritySend ? 100 : 10,
                         resetsAt: null,
                       },
                     ],
@@ -291,7 +307,7 @@ for (const {
         });
       });
     await page.addInitScript(
-      ({ device, manual }) => {
+      ({ device, manual, prioritySend }) => {
         const profiles = [1, 2].map((n) => ({
           id: n === 1 ? 'default' : 'second',
           name: `服务器${n}`,
@@ -305,7 +321,11 @@ for (const {
         if (!localStorage.getItem('proxy-account-pool'))
           localStorage.setItem(
             'proxy-account-pool',
-            JSON.stringify({ enabled: !manual, strategy: 'manual', order: ['default', 'second'] }),
+            JSON.stringify({
+              enabled: !manual,
+              strategy: prioritySend ? 'reset' : 'manual',
+              order: ['default', 'second'],
+            }),
           );
         let firstProbe = !localStorage.getItem('test-profiles');
         const noop = async () => {};
@@ -341,22 +361,36 @@ for (const {
             onNotifyClicked: subscription,
             onUpdateProgress: subscription,
             notify: noop,
-            probeQuota: async (id: string) => ({
-              available: true,
-              measuredAt: new Date().toISOString(),
-              windows: [
-                {
-                  name: 'five_hour',
-                  utilization:
-                    id === 'default' ? (firstProbe ? ((firstProbe = false), 0) : 100) : 10,
-                  resetsAt: null,
-                },
-              ],
-            }),
+            probeQuota: async (id: string) => {
+              const initial = firstProbe;
+              if (id === 'default') firstProbe = false;
+              return {
+                available: true,
+                measuredAt: new Date().toISOString(),
+                windows: [
+                  {
+                    name: 'five_hour',
+                    utilization: id === 'default' ? (initial || prioritySend ? 0 : 100) : 10,
+                    resetsAt: null,
+                  },
+                  ...(prioritySend
+                    ? [
+                        {
+                          name: 'seven_day',
+                          utilization: 20,
+                          resetsAt: new Date(
+                            Date.now() + (id === 'default' ? (initial ? 1 : 158) : 11) * 3600000,
+                          ).toISOString(),
+                        },
+                      ]
+                    : []),
+                ],
+              };
+            },
           },
         });
       },
-      { device, manual },
+      { device, manual, prioritySend },
     );
     await page.goto('/');
     if (away) {
@@ -380,6 +414,22 @@ for (const {
       ).toBe(false);
       expect(source.messageQueue?.items).toHaveLength(2);
       return;
+    }
+    if (prioritySend) {
+      await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
+      await page.getByRole('textbox', { name: '消息', exact: true }).fill('优先使用快重置的周额度');
+      await page.getByRole('textbox', { name: '消息', exact: true }).press('Control+Enter');
+      if (priorityBlocked) {
+        await expect
+          .poll(() => sent.filter((m) => m.type === 'message.send' && m.server === 1).length)
+          .toBe(1);
+        expect(
+          sent.filter((m) => m.server === 2 && ['session.create', 'message.send'].includes(m.type)),
+        ).toHaveLength(0);
+        await expect(page.getByLabel('当前服务器：服务器1', { exact: true })).toBeVisible();
+        await expect(page.getByRole('textbox', { name: '消息', exact: true })).toHaveValue('');
+        return;
+      }
     }
     if (stoppedSend) {
       await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
@@ -423,9 +473,15 @@ for (const {
     await expect(page.getByText('已经完成第一步', { exact: true })).toBeVisible();
     await expect(page.getByText('服务器2继续完成第二步', { exact: true })).toBeVisible();
     expect(sent.filter((m) => m.type === 'run.handoff')).toHaveLength(
-      manual || stoppedSend || quotaQueue ? 0 : 1,
+      manual || stoppedSend || quotaQueue || prioritySend ? 0 : 1,
     );
     expect(sent.filter((m) => m.type === 'message.send' && m.server === 2)).toHaveLength(1);
+    if (prioritySend) {
+      expect(sent.filter((m) => m.type === 'message.send' && m.server === 1)).toHaveLength(0);
+      expect(sent.find((m) => m.type === 'message.send' && m.server === 2)?.text).toContain(
+        '优先使用快重置的周额度',
+      );
+    }
     expect(sent.find((m) => m.type === 'message.send' && m.server === 2)?.text).toContain(
       '保留原来的任务和对话',
     );

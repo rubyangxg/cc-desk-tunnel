@@ -423,6 +423,28 @@ export type NativeSession = Payload<'native.session'>;
 export type NativeContext = Payload<'native.context'>;
 export type NativeCapabilities = Payload<'native.capabilities'>;
 export type NativeMetrics = Payload<'native.metrics'>;
+
+// Spend a usable weekly allowance before it expires; five-hour reset breaks ties.
+// Missing, invalid and already elapsed deadlines rank last until fresh telemetry arrives.
+export function compareQuotaReset(
+  left: NativeMetrics['rateLimits'] | undefined,
+  right: NativeMetrics['rateLimits'] | undefined,
+  now = Date.now(),
+) {
+  const at = (limits: NativeMetrics['rateLimits'] | undefined, name: string) => {
+    const value = Date.parse(
+      limits?.windows.find((window) => window.name === name)?.resetsAt ?? '',
+    );
+    return value > now ? value : Infinity;
+  };
+  for (const name of ['seven_day', 'five_hour']) {
+    const a = at(left, name);
+    const b = at(right, name);
+    if (a !== b) return a < b ? -1 : 1;
+  }
+  return 0;
+}
+
 // Output that arrives in pieces. While it arrives, each piece goes to those watching as a `session.fragment`,
 // which is neither stored nor numbered; once the stretch is over it is recorded as one event of the same
 // type holding all of its text.

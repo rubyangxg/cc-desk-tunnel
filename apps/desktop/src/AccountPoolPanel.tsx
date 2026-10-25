@@ -57,7 +57,7 @@ export default function AccountPoolPanel({
             pool.configure({ strategy: event.target.value as 'reset' | 'manual' })
           }
         >
-          <option value="reset">5 小时额度快重置的优先</option>
+          <option value="reset">周额度即将重置优先</option>
           <option value="manual">自定义顺序</option>
         </select>
       </label>

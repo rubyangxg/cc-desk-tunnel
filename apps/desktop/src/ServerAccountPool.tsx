@@ -302,7 +302,7 @@ export default function ServerAccountPool({
                       configure({ strategy: event.target.value as 'reset' | 'order' })
                     }
                   >
-                    <option value="reset">5 小时额度最快重置</option>
+                    <option value="reset">周额度即将重置优先</option>
                     <option value="order">自定义顺序</option>
                   </select>
                 </label>

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
 import {
+  compareQuotaReset,
   MAX_FRAME_BYTES,
   PROTOCOL_VERSION,
   clientServerMessageSchema,
@@ -80,13 +81,9 @@ export function poolQuota(state) {
         (window) => ['five_hour', 'seven_day'].includes(window.name) && window.utilization >= 100,
       ),
   );
-  const reset = (account) =>
-    Date.parse(
-      account.limits.windows.find((window) => window.name === 'five_hour')?.resetsAt ?? '',
-    ) || Infinity;
   ready.sort(
     (a, b) =>
-      (state.settings.strategy === 'reset' ? reset(a) - reset(b) : 0) ||
+      (state.settings.strategy === 'reset' ? compareQuotaReset(a.limits, b.limits, now) : 0) ||
       order.indexOf(a.id) - order.indexOf(b.id),
   );
   return ready[0]?.limits ?? null;
