@@ -1721,7 +1721,10 @@ export function App({
       />
       {rotation.notice && (
         <div className="pool-notice" role="status">
-          {rotation.notice}
+          <span>{rotation.notice}</span>
+          <IconButton title="关闭提示" onClick={rotation.dismissNotice}>
+            <X aria-hidden="true" />
+          </IconButton>
         </div>
       )}
       {sideOpen && (

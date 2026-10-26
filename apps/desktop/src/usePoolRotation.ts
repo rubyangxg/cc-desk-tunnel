@@ -732,5 +732,6 @@ export function usePoolRotation(options: {
         (pool.config.enabled || profiles.handoff.manual === true) &&
         !resuming.current),
     notice,
+    dismissNotice: () => setNotice(null),
   };
 }

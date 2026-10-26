@@ -973,6 +973,9 @@ button.chip.danger:hover:not(:disabled) {
   flex-shrink: 0;
 }
 .pool-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   position: fixed;
   top: 48px;
   right: 16px;
@@ -983,6 +986,10 @@ button.chip.danger:hover:not(:disabled) {
   border-radius: 10px;
   background: var(--chrome);
   font-size: 13px;
+}
+.pool-notice > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .login-options {
   display: flex;
