@@ -106,6 +106,8 @@ export class ClaudeStream {
           messageId: randomUUID(),
           text: printed(String(message.content ?? '')),
         });
+      } else if (message.subtype === 'status' && message.status === null) {
+        // The status the CLI was in is over; what it was over for (a compaction) says so itself.
       } else if (['status', 'informational'].includes(String(message.subtype))) {
         const text =
           typeof message.content === 'string'

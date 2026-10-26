@@ -4,12 +4,21 @@ import type { ConnectionProfile } from './connections.ts';
 import { historyKey, joinedHistory, sharedHistory } from './sharedHistory.ts';
 import { conversation } from './transcript.ts';
 import type { Step } from './transcript.ts';
+import { pictureNote, toolPictures } from './pictures.ts';
 
 // A fence longer than any run of backticks inside, so the content cannot close it early.
 function fenced(text: string) {
   const longest = Math.max(2, ...[...text.matchAll(/`+/g)].map((match) => match[0].length));
   const fence = '`'.repeat(longest + 1);
   return `${fence}\n${text}\n${fence}`;
+}
+
+// A picture a tool looked at is named by its type and size, not written out as its data.
+function toolOutput(output: string) {
+  const pictures = toolPictures(output);
+  return pictures
+    ? [pictures.text, ...pictures.pictures.map(pictureNote)].filter(Boolean).join('\n')
+    : output;
 }
 
 // The whole session as one Markdown document: questions, answers, and under each answer what was done to
@@ -21,16 +30,20 @@ export function markdown(session: Session, events: SessionEvent[]) {
   ];
   const step = (item: Step): string[] => {
     if (item.kind === 'assistant') return [item.text];
+    if (item.kind === 'notice' || item.kind === 'note') return [`> ${item.text}`];
+    if (item.kind === 'compact')
+      return [
+        `> ${item.endedAt ? '上下文已压缩' : '上下文压缩未完成'}${item.previousTokens == null ? '' : ` · 压缩前 ${item.previousTokens.toLocaleString()} tokens`}`,
+      ];
     if (item.kind !== 'work') return [];
     return item.items.map((work) =>
       work.kind === 'tool'
-        ? `<details>\n<summary>工具 ${work.name} · ${work.status}</summary>\n\n${fenced(work.input)}\n\n${work.output ? fenced(work.output) : ''}\n</details>`
+        ? `<details>\n<summary>工具 ${work.name} · ${work.status}</summary>\n\n${fenced(work.input)}\n\n${work.output ? fenced(toolOutput(work.output)) : ''}\n</details>`
         : `<details>\n<summary>思考</summary>\n\n${work.text}\n</details>`,
     );
   };
   for (const turn of conversation(events)) {
-    if (turn.question?.continued) parts.push('> 继续');
-    else if (turn.question)
+    if (turn.question && !turn.question.continued)
       parts.push(
         `## 你 · ${new Date(turn.question.at).toLocaleString('zh-CN')}`,
         turn.question.text,

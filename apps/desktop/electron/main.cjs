@@ -14,6 +14,7 @@ const {
   clipboard,
   net,
   nativeTheme,
+  protocol,
 } = require('electron');
 const path = require('node:path');
 const {
@@ -26,8 +27,9 @@ const {
   writeFileSync,
   writeSync,
 } = require('node:fs');
-const { mkdtemp, stat, writeFile } = require('node:fs/promises');
+const { copyFile, mkdtemp, readFile, stat, writeFile } = require('node:fs/promises');
 const { gitBranch } = require('./git-branch.cjs');
+const fileLinks = require('./file-links.cjs');
 const { asOnDisk } = require('./disk-path.cjs');
 const { openLog } = require('./client-log.cjs');
 const { loadProfiles, encodeProfiles, profileFile } = require('./connection-profiles.cjs');
@@ -41,6 +43,10 @@ const bridges = new BridgePool((count) => keepAwake(count > 0));
 const busyProfiles = new Map();
 const connections = require('./connections.cjs');
 const sharedDocument = require('./shared-document.cjs');
+// See file-links.cjs: the address that pictures on this computer reach the page by.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'local-image', privileges: { standard: true, secure: true } },
+]);
 // See connections.cjs. The profile is chosen before anything is read from it, the instance lock included:
 // each connection is then a single instance of its own.
 const base = app.getPath('userData');
@@ -223,6 +229,106 @@ handle('external:open', async (event, target) => {
   )
     throw new Error('Unexpected link');
   await shell.openExternal(url.toString());
+});
+// Links in replies, which the user clicked. A web address goes to the browser. A file is opened, shown in its
+// folder or given to a code editor at its line, as file-links.cjs allows; what is said back is for the user.
+handle('link:open', async (_event, target) => {
+  const url = new URL(String(target));
+  if (!['http:', 'https:', 'mailto:'].includes(url.protocol)) throw new Error('Unexpected link');
+  await shell.openExternal(url.href);
+});
+// The installed editors, the one chosen last from a link's menu first. Asking the system blocks (on Linux it runs
+// xdg-mime for each), so the answer is kept a minute.
+let installedEditors = { at: 0, editors: [] };
+function linkEditors() {
+  if (Date.now() - installedEditors.at > 60_000)
+    installedEditors = {
+      at: Date.now(),
+      editors: fileLinks.editors.filter(({ scheme }) =>
+        app.getApplicationNameForProtocol(`${scheme}://`),
+      ),
+    };
+  const installed = installedEditors.editors;
+  const chosen = installed.find(({ scheme }) => scheme === readComputer().editor);
+  return chosen ? [chosen, ...installed.filter((editor) => editor !== chosen)] : installed;
+}
+async function linkedPath(target) {
+  const file = fileLinks.localPath(target, path.isAbsolute);
+  if (!file) throw new Error('Unexpected path');
+  const found = await stat(file).catch(() => null);
+  if (!found) return { file, kind: 'missing', runs: false, size: 0 };
+  const directory = found.isDirectory();
+  const runs = fileLinks.runs(file, {
+    platform: process.platform,
+    directory,
+    mode: found.mode,
+    pathext: process.env.PATHEXT,
+  });
+  return { file, kind: directory ? 'directory' : 'file', runs, size: found.size };
+}
+handle('path:inspect', async (_event, target) => {
+  const { kind, runs } = await linkedPath(target);
+  return { kind, runs, editors: linkEditors(), openWith: process.platform === 'win32' };
+});
+handle('path:act', async (event, action, target, options) => {
+  const { file, kind, runs, size } = await linkedPath(target);
+  const { line, column, editor } = options ?? {};
+  const position = [line, column].map((value) =>
+    Number.isInteger(value) && value > 0 ? value : undefined,
+  );
+  if (kind === 'missing') return '本机找不到这个路径，它可能在服务端或另一台电脑上。';
+  const open = async () => {
+    const failure = await shell.openPath(file);
+    return failure ? `没能打开：${failure}` : '';
+  };
+  const edit = async (chosen) => {
+    await shell.openExternal(fileLinks.editorUrl(chosen.scheme, file, ...position));
+    return '';
+  };
+  if (action === 'open') {
+    const [first] = linkEditors();
+    if (kind === 'file' && position[0] && first) return edit(first);
+    if (!runs) return open();
+    shell.showItemInFolder(file);
+    return '它会运行程序，没有直接打开，已在文件夹中显示。';
+  }
+  if (action === 'reveal') {
+    shell.showItemInFolder(file);
+    return '';
+  }
+  if (kind !== 'file') throw new Error('Not a file');
+  if (action === 'editor') {
+    const chosen = linkEditors().find(({ scheme }) => scheme === editor);
+    if (!chosen) throw new Error('Unknown editor');
+    writeComputer({ editor: chosen.scheme });
+    return edit(chosen);
+  }
+  if (action === 'content') {
+    if (size > 1024 * 1024) return '文件超过 1 MB，没有复制。';
+    const bytes = await readFile(file);
+    if (bytes.includes(0)) return '这不是文本文件，没有复制。';
+    clipboard.writeText(bytes.toString('utf8'));
+    return '已复制文件内容';
+  }
+  if (action === 'save') {
+    const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {
+      title: '另存为',
+      defaultPath: path.join(app.getPath('downloads'), path.basename(file)),
+    });
+    if (result.canceled || !result.filePath) return '';
+    await copyFile(file, result.filePath);
+    return '已另存';
+  }
+  if (runs) throw new Error('Refused to run');
+  if (action === 'default') return open();
+  if (action === 'with' && process.platform === 'win32') {
+    const chooser = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'OpenWith.exe');
+    spawn(chooser, [file], { detached: true, stdio: 'ignore' })
+      .on('error', () => {})
+      .unref();
+    return '';
+  }
+  throw new Error('Unexpected action');
 });
 // Only an address announced by the currently authenticated service may leave the application here.
 handle('web:open', async (_event, target) => {
@@ -766,6 +872,17 @@ app.whenReady().then(() => {
       // Only a build run from the source tree offers the login page's simulation mode.
       additionalArguments: app.isPackaged ? [] : ['--cc-desk-tunnel-dev'],
     },
+  });
+  // See file-links.cjs. Nothing but a picture of the right size is served, and nothing is kept.
+  protocol.handle('local-image', async (request) => {
+    const picture = fileLinks.pictureOf(request.url);
+    const file = picture && fileLinks.localPath(picture.file, path.isAbsolute);
+    const found = file && (await stat(file).catch(() => null));
+    if (!found?.isFile() || found.size > fileLinks.pictureLimit)
+      return new Response(null, { status: 404 });
+    return new Response(await readFile(file), {
+      headers: { 'Content-Type': picture.type, 'Cache-Control': 'no-store' },
+    });
   });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   // Electron does not provide an editing menu by default. Native roles keep text selection, undo and paste

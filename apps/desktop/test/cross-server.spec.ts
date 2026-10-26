@@ -565,6 +565,11 @@ for (const {
     await expect(page.locator('.service-workspace:not([hidden]) .message.user')).toContainText(
       '保留原来的任务和对话',
     );
+    // Upstream groups continuation into the original turn. Earlier replies remain in its process fold.
+    const earlierTurns = page.locator(
+      '.service-workspace:not([hidden]) .turn-process:not([open]) > summary',
+    );
+    while (await earlierTurns.count()) await earlierTurns.first().click();
     await expect(
       page.locator('.service-workspace:not([hidden])').getByText('已经完成第一步', { exact: true }),
     ).toBeVisible();

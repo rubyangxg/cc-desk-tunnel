@@ -2007,6 +2007,7 @@ export function App({
             <Conversation
               findRequest={findRequest}
               session={selected}
+              here={!!selected && onThis(selected)}
               events={visibleEvents}
               history={history}
               connected={connected}

@@ -1,13 +1,15 @@
-import Markdown from 'react-markdown';
+import Markdown, { defaultUrlTransform } from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
-import { isValidElement, memo, useRef, useState } from 'react';
+import { isValidElement, memo, useContext, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Code, Image } from 'lucide-react';
 import { CopyButton } from './copy.tsx';
+import { isPicture, LinkPlace, linkTarget, localPicture } from './links.ts';
+import { Picture } from './Picture.tsx';
 
 // A finished drawing in a block of `svg` is shown as the picture it is, its source one click away. As an image
 // it runs no script and loads nothing from elsewhere.
@@ -52,13 +54,61 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   );
 }
 
-const components: Components = {
-  pre: CodeBlock,
-  a: ({ children, ...props }) => (
-    <a {...props} target="_blank" rel="noopener noreferrer">
+// A picture from the user's computer is shown in the conversation of a session there. Any other is a link:
+// one from the web would be fetched just by being shown, and so tell its server what the reply put in its address.
+function Figure({ src, alt }: { src: string; alt: string }) {
+  const target = linkTarget(src, useContext(LinkPlace));
+  const [broken, setBroken] = useState(false);
+  if (target?.kind === 'path' && isPicture(target.path) && !broken)
+    return (
+      <Picture
+        src={localPicture(target.path)}
+        alt={alt}
+        link={src}
+        onError={() => setBroken(true)}
+      />
+    );
+  return (
+    <a className="picture-link" href={src} data-link={src || undefined}>
+      <Image />
+      {alt || '图片'}
+    </a>
+  );
+}
+
+// A link keeps the address it was written with, a path on the user's computer too; the conversation follows it
+// (see links.ts), as the window itself opens nothing. Addresses of other kinds are dropped.
+const urlTransform = (url: string) =>
+  /^(?:[a-z]:(?:[\\/]|%5c)|file:)/i.test(url) ? url : defaultUrlTransform(url);
+function decoded(text: string) {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
+// A path this window cannot open still reads as a link, a quieter one; its menu can copy it. Where a link leads is
+// shown beside it by the conversation; outside one, as the browser's own tip.
+function Anchor({ href, children }: { href?: string; children?: ReactNode }) {
+  const place = useContext(LinkPlace);
+  const elsewhere = href && linkTarget(href, place)?.kind === 'elsewhere';
+  return (
+    <a
+      href={href}
+      className={elsewhere ? 'link-elsewhere' : undefined}
+      data-link={href || undefined}
+      title={place ? undefined : href && decoded(href)}
+    >
       {children}
     </a>
-  ),
+  );
+}
+
+const components: Components = {
+  pre: CodeBlock,
+  a: ({ href, children }) => <Anchor href={href}>{children}</Anchor>,
+  img: ({ src, alt }) => <Figure src={typeof src === 'string' ? src : ''} alt={alt ?? ''} />,
 };
 
 // Formulas are also written as \( … \) and \[ … \], which Markdown would read as escaped brackets; outside of
@@ -131,6 +181,7 @@ export default memo(function RichText({ text }: { text: string }) {
       remarkPlugins={remarkPlugins}
       rehypePlugins={rehypePlugins}
       skipHtml
+      urlTransform={urlTransform}
       components={components}
     >
       {dollars(text)}

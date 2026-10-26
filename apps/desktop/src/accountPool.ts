@@ -133,7 +133,9 @@ export function handoffFor(
     .map((item) =>
       item.kind === 'tool'
         ? `工具 ${item.name} [${item.state}]\n输入：${item.input}\n结果：${item.output ?? item.liveOutput ?? '结果未确认'}`
-        : `${item.kind}：${item.text}`,
+        : item.kind === 'compact'
+          ? `上下文压缩：${item.endedAt ? '已完成' : '未确认完成'}${item.previousTokens == null ? '' : `，压缩前 ${item.previousTokens} tokens`}`
+          : `${item.kind}：${item.text}`,
     )
     .join('\n\n')
     .slice(-10500);

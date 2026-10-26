@@ -47,6 +47,22 @@ declare global {
       copyText: (text: string) => Promise<void>;
       openExternal: (url: string) => Promise<void>;
       openWeb: (url: string) => Promise<void>;
+      // A web address a reply links to, in the user's browser.
+      openLink: (url: string) => Promise<void>;
+      // What a path a reply links to is on this computer; `runs` when opening it would run something.
+      // `editors` are the installed code editors, the one to use first.
+      inspectPath: (path: string) => Promise<{
+        kind: 'file' | 'directory' | 'missing';
+        runs: boolean;
+        editors: { scheme: string; name: string }[];
+        openWith: boolean;
+      }>;
+      // Does something with a linked path; what to tell the user, or ''.
+      actOnPath: (
+        action: 'open' | 'default' | 'editor' | 'with' | 'reveal' | 'content' | 'save',
+        path: string,
+        options?: { line?: number; column?: number; editor?: string },
+      ) => Promise<string>;
       // The folders holding sessions without a project; new ones are made in the first.
       workspaceRoots: () => Promise<string[]>;
       // Asks for another folder, or goes back to the one under Documents; the folders as they are afterwards.

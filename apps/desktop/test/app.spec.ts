@@ -68,8 +68,10 @@ test('desktop login, chat, allow/deny, stop, errors and delete', async ({ page }
   // The stopped turn is taken up again from the message box, with nothing written.
   const resume = page.getByRole('button', { name: '接着上一轮继续', exact: true });
   await resume.click();
-  await expect(page.locator('.run-notice').filter({ hasText: /^继续$/ })).toBeVisible();
   await settled(page);
+  // It goes on in the turn it took up, with no message or mark of its own.
+  await expect(page.locator('.run-notice').filter({ hasText: /^继续$/ })).toHaveCount(0);
+  await expect(page.locator('.message.user').filter({ hasText: /^继续$/ })).toHaveCount(0);
   await expect(resume).toHaveCount(0);
   await send(page, '错误测试', 'error');
   await expect(

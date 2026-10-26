@@ -130,6 +130,8 @@ test('handoff carries the project, permissions, task and tool progress within th
       output: 'already changed',
       exitCode: 0,
     },
+    { type: 'native.notice', text: 'compacting' },
+    { type: 'native.compact', trigger: 'auto', previousTokens: 468496 },
     { type: 'run.error', code: 'quota_five_hour', message: 'quota' },
     { type: 'run.error', code: 'error_during_execution', message: 'generic final result' },
     { type: 'run.status', status: 'failed' },
@@ -146,6 +148,8 @@ test('handoff carries the project, permissions, task and tool progress within th
   assert.deepEqual(handoff.attempted, ['a']);
   assert.match(handoff.prompt, /完成用户指定的功能/);
   assert.match(handoff.prompt, /already changed/);
+  assert.match(handoff.prompt, /上下文压缩：已完成，压缩前 468496 tokens/);
+  assert.doesNotMatch(handoff.prompt, /compact：undefined/);
   assert.doesNotMatch(handoff.prompt, /不传递的思考/);
   assert.match(handoff.prompt, /不要重复执行/);
   assert.equal(quotaFailure(events).payload.code, 'quota_five_hour');

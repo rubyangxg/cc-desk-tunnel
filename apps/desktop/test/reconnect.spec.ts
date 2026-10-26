@@ -25,8 +25,9 @@ test('an upgrade outage shows one retry notice and recovers the session without 
   const title = await createSession(page, '重启后恢复');
   await send(page, '只发一次', 'tool');
   await expect(page.getByRole('button', { name: '允许', exact: true })).toBeVisible();
-  await page.clock.install();
-  await page.clock.pauseAt(new Date());
+  const clockStart = Date.now();
+  await page.clock.install({ time: clockStart });
+  await page.clock.pauseAt(clockStart + 60_000);
   unavailable = true;
   current!.send(JSON.stringify({ type: 'service.update', state: 'restarting', latest: '0.4.17' }));
   current!.close();

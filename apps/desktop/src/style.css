@@ -2132,6 +2132,100 @@ kbd {
   border-radius: var(--radius-s);
   background: white;
 }
+/* A link to a path this window cannot open, and a picture shown as the link it is. */
+a.link-elsewhere {
+  color: var(--muted);
+  text-decoration-style: dashed;
+}
+.picture-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.picture-link svg {
+  width: 14px;
+  height: 14px;
+}
+/* Where a link leads, beside it; after a click, what came of it. */
+.link-card {
+  position: fixed;
+  z-index: 20;
+  display: grid;
+  gap: 5px;
+  max-width: 360px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--raised);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  pointer-events: none;
+}
+.link-card.above {
+  transform: translateY(-100%);
+}
+.link-card-target {
+  font-family: Consolas, 'Cascadia Code', monospace;
+  font-size: 11.5px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.link-card small {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.link-card small.link-card-warn {
+  color: var(--warn-text);
+}
+.link-card strong {
+  font-weight: 600;
+}
+/* A picture stands small in the conversation and opens whole in a dialog. */
+.picture {
+  display: inline-block;
+  max-width: 100%;
+  margin: 4px 0;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-s);
+  background: none;
+  vertical-align: top;
+  cursor: zoom-in;
+}
+.picture img {
+  display: block;
+  max-width: min(100%, 420px);
+  max-height: 280px;
+  border-radius: inherit;
+}
+.tool-pictures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line-soft);
+}
+.tool-pictures .picture img {
+  max-width: 180px;
+  max-height: 135px;
+}
+.tool-picture-mark {
+  width: 14px;
+  height: 14px;
+  color: var(--tool-icon);
+}
+dialog:has(.picture-view) {
+  width: min(1100px, calc(100vw - 32px));
+}
+.picture-view {
+  display: flex;
+  justify-content: center;
+}
+.picture-view img {
+  max-width: 100%;
+  max-height: calc(100vh - 150px);
+  object-fit: contain;
+}
 .message-content .katex-display {
   overflow-x: auto;
   overflow-y: hidden;
@@ -2756,6 +2850,39 @@ details[open] > summary > .fold-chevron {
 .run-notice.failed {
   color: var(--danger-text);
   border-color: var(--danger);
+}
+/* A compaction divides the work before it from the work after it. */
+.compact-mark {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: -4px 0 18px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.compact-mark::before,
+.compact-mark::after {
+  content: '';
+  flex: 1;
+  border-top: 1px dashed var(--line-strong);
+}
+.compact-mark > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.compact-mark svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+.compact-mark.running {
+  color: var(--accent);
+}
+.compact-mark.running::before,
+.compact-mark.running::after {
+  border-top-color: var(--accent);
 }
 .run-indicator {
   display: flex;

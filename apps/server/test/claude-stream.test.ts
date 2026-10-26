@@ -174,6 +174,12 @@ test('identical concurrent native calls keep their IDs and progress uses real SD
         event.type === 'tool.progress' && event.toolId === 'call-2' && event.elapsedSeconds === 3,
     ),
   );
+  stream.accept({ type: 'system', subtype: 'status', status: 'compacting' });
+  stream.accept({ type: 'system', subtype: 'status', status: null });
+  assert.deepEqual(
+    events.filter((event) => event.type === 'native.notice').map((event) => event.text),
+    ['compacting'],
+  );
   stream.accept({ type: 'system', subtype: 'informational', content: 'Native notice' });
   assert.ok(
     events.some((event) => event.type === 'native.notice' && event.text === 'Native notice'),

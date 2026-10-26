@@ -23,6 +23,18 @@ export type TranscriptItem =
       doneAt?: string;
     }
   | { kind: 'notice'; id: string; runId: string; text: string; error: boolean; at: string }
+  // What the CLI said along the way, in its place among the steps.
+  | { kind: 'note'; id: string; runId: string; text: string; at: string }
+  | {
+      kind: 'compact';
+      id: string;
+      runId: string;
+      trigger?: string;
+      at: string;
+      // Set once the CLI reported the context compacted; without it the compaction is under way, or was cut off.
+      endedAt?: string;
+      previousTokens?: number | null;
+    }
   | {
       kind: 'tool';
       id: string;
@@ -47,6 +59,7 @@ export function transcript(events: SessionEvent[]): TranscriptItem[] {
   const items: TranscriptItem[] = [];
   const byId = new Map<string, TranscriptItem>();
   const byApproval = new Map<string, Extract<TranscriptItem, { kind: 'tool' }>>();
+  let compacting: Compact | undefined;
   function add(item: TranscriptItem) {
     items.push(item);
     byId.set(item.id, item);
@@ -158,24 +171,29 @@ export function transcript(events: SessionEvent[]): TranscriptItem[] {
         tool.state = 'running';
       }
     }
-    if (payload.type === 'native.notice' && !['null', 'requesting', 'idle'].includes(payload.text))
-      items.push({
-        kind: 'notice',
-        id: `native-${sequence}`,
-        runId,
-        text: payload.text,
-        error: false,
-        at,
-      });
-    if (payload.type === 'native.compact')
-      items.push({
-        kind: 'notice',
-        id: `compact-${sequence}`,
-        runId,
-        error: false,
-        at,
-        text: `原生上下文已压缩${payload.previousTokens === null ? '' : ` · 压缩前 ${payload.previousTokens.toLocaleString()} tokens`}`,
-      });
+    // The CLI tells of a compaction with a status, often several times over, and of its end with a boundary: one
+    // mark from the first to the boundary. A status that is no longer compacting says nothing; sessions recorded
+    // earlier hold it as the word "status".
+    if (payload.type === 'native.notice') {
+      if (payload.text === 'compacting') {
+        if (compacting?.runId !== runId) {
+          compacting = { kind: 'compact', id: `compact-${sequence}`, runId, at };
+          add(compacting);
+        }
+      } else if (!['null', 'status', 'requesting', 'idle'].includes(payload.text))
+        add({ kind: 'note', id: `native-${sequence}`, runId, text: payload.text, at });
+    }
+    if (payload.type === 'native.compact') {
+      let mark = compacting?.runId === runId ? compacting : undefined;
+      if (!mark) {
+        mark = { kind: 'compact', id: `compact-${sequence}`, runId, at };
+        add(mark);
+      }
+      mark.trigger = payload.trigger;
+      mark.previousTokens = payload.previousTokens;
+      mark.endedAt = at;
+      compacting = undefined;
+    }
     if (payload.type === 'run.error')
       items.push({
         kind: 'notice',
@@ -200,9 +218,12 @@ export function transcript(events: SessionEvent[]): TranscriptItem[] {
 
 type Tool = Extract<TranscriptItem, { kind: 'tool' }>;
 type Text = Extract<TranscriptItem, { kind: 'user' | 'assistant' | 'thinking' }>;
+export type Compact = Extract<TranscriptItem, { kind: 'compact' }>;
+export type Notice = Extract<TranscriptItem, { kind: 'notice' | 'note' }>;
 // What happened between two pieces of text the reader was shown: tools and thinking, folded into one line.
 export type Work = { kind: 'work'; id: string; items: (Tool | Text)[] };
-export type Step = Text | Work;
+// A compaction is part of the work on a question, between the steps before and after it.
+export type Step = Text | Work | Compact | Notice;
 // One question and everything up to the next one. Once finished, only the question, the time taken and the
 // answer stay in view; `steps` holds the rest.
 export type Turn = {
@@ -215,6 +236,9 @@ export type Turn = {
   notices: Extract<TranscriptItem, { kind: 'notice' }>[];
   startedAt: string;
   endedAt?: string;
+  // The "continue" button takes a stopped turn up again: the messages it sent, and how long the turn stood stopped.
+  continuations: string[];
+  pausedMs: number;
   tools: number;
   // What the turn used, reported by the service a moment after it ended.
   stats?: TurnStats;
@@ -250,6 +274,25 @@ export function conversation(events: SessionEvent[]): Turn[] {
   let runId = '';
   for (const item of transcript(events)) {
     let turn = turns.at(-1);
+    // What the turn was told on stopping stays where it was said, and the work goes on under it.
+    if (turn && item.kind === 'user' && item.continued) {
+      turn.steps.push(...turn.notices);
+      turn.notices = [];
+      // Keep the personal edition's delivery receipt even when continuation joins the original turn.
+      if (item.delivery)
+        turn.steps.push({
+          kind: 'note',
+          id: `continue-${item.id}`,
+          runId: item.runId,
+          text: `继续 · ${item.delivery}`,
+          at: item.at,
+        });
+      turn.continuations.push(item.id);
+      const stopped = ended.get(runId);
+      if (stopped) turn.pausedMs += Math.max(0, Date.parse(item.at) - Date.parse(stopped));
+      runId = item.runId;
+      continue;
+    }
     if (!turn || item.kind === 'user') {
       const joined = !!turn && item.runId === runId;
       // The next question closes the turn before it. One put in while the same run goes on closes it where the run
@@ -261,13 +304,23 @@ export function conversation(events: SessionEvent[]): Turn[] {
         turn.endedAt = ended.get(runId) ?? item.at;
         turn.outcome = outcome(runId);
       }
-      turn = { id: item.id, joined, steps: [], notices: [], startedAt: item.at, tools: 0 };
+      turn = {
+        id: item.id,
+        joined,
+        steps: [],
+        notices: [],
+        startedAt: item.at,
+        continuations: [],
+        pausedMs: 0,
+        tools: 0,
+      };
       turns.push(turn);
     }
     runId = item.runId;
     if (item.kind === 'user') turn.question = item;
     else if (item.kind === 'notice') turn.notices.push(item);
-    else if (item.kind === 'assistant') turn.steps.push(item);
+    else if (item.kind === 'assistant' || item.kind === 'note' || item.kind === 'compact')
+      turn.steps.push(item);
     else {
       const last = turn.steps.at(-1);
       if (last?.kind === 'work') last.items.push(item);
@@ -280,14 +333,17 @@ export function conversation(events: SessionEvent[]): Turn[] {
     last.endedAt = ended.get(runId);
     if (last.endedAt) last.outcome = outcome(runId);
   }
-  const answered = new Map(
-    turns.flatMap((turn) => (turn.question ? [[turn.question.id, turn]] : [])),
-  );
-  // A page of history may start after the question a report belongs to.
-  for (const { payload } of events) {
-    const turn =
-      payload.type === 'turn.stats' && payload.messageId && answered.get(payload.messageId);
-    if (turn) turn.stats = payload as TurnStats;
+  // A page of history may start after the question a report belongs to. A turn taken up again is reported once
+  // for each of its messages, and each report may come several times: the last one counts.
+  const reports = new Map<string, TurnStats>();
+  for (const { payload } of events)
+    if (payload.type === 'turn.stats' && payload.messageId) reports.set(payload.messageId, payload);
+  for (const turn of turns) {
+    const parts = [turn.question?.id ?? '', ...turn.continuations].flatMap((id) => {
+      const report = reports.get(id);
+      return report ? [report] : [];
+    });
+    if (parts.length) turn.stats = parts.length === 1 ? parts[0] : combined(parts);
   }
   for (const turn of turns) {
     if (!turn.endedAt) continue;
@@ -295,4 +351,35 @@ export function conversation(events: SessionEvent[]): Turn[] {
     if (final?.kind === 'assistant') turn.answer = turn.steps.pop() as Text;
   }
   return turns;
+}
+
+// The figures of the runs of one turn, as one. The averages are weighed by what they average over.
+function combined(parts: TurnStats[]): TurnStats {
+  const sum = (value: (part: TurnStats) => number) =>
+    parts.reduce((total, part) => total + value(part), 0);
+  const timed = parts.filter((part) => part.ttftMs != null);
+  const weight = (part: TurnStats) => Math.max(1, part.requests);
+  const fast = parts.filter((part) => part.outputPerSecond);
+  const seconds = fast.reduce(
+    (total, part) => total + part.outputTokens / part.outputPerSecond!,
+    0,
+  );
+  return {
+    type: 'turn.stats',
+    messageId: parts[0].messageId,
+    requests: sum((part) => part.requests),
+    inputTokens: sum((part) => part.inputTokens),
+    outputTokens: sum((part) => part.outputTokens),
+    cacheReadTokens: sum((part) => part.cacheReadTokens),
+    cacheCreationTokens: sum((part) => part.cacheCreationTokens),
+    modelMs: sum((part) => part.modelMs),
+    ttftMs: timed.length
+      ? timed.reduce((total, part) => total + part.ttftMs! * weight(part), 0) /
+        timed.reduce((total, part) => total + weight(part), 0)
+      : null,
+    outputPerSecond: seconds
+      ? fast.reduce((total, part) => total + part.outputTokens, 0) / seconds
+      : null,
+    partial: parts.some((part) => part.partial),
+  };
 }

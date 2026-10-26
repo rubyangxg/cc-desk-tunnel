@@ -91,6 +91,7 @@ async function phone(
               connections.set(args.socketId, ws);
               ws.onopen = () => receive({ id: args.socketId, event: 'open' });
               ws.onmessage = (e) => {
+                if (typeof e.data !== 'string') return;
                 const message = JSON.parse(e.data);
                 if (message.type === 'response' && message.requestId === lostRequest) {
                   ws.close();
