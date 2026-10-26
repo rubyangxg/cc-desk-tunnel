@@ -91,6 +91,10 @@ export class SessionStore {
         native_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         account_id TEXT NOT NULL, root TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS continuation_contexts (
+        native_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        context TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS native_roots (
         device_id TEXT NOT NULL, path_key TEXT NOT NULL, root TEXT NOT NULL,
         PRIMARY KEY (device_id, path_key)
@@ -419,6 +423,22 @@ export class SessionStore {
       )
       .get(sessionId, nativeId);
   }
+  // A /goal starts work itself, so its handoff excerpt is supplied with the native system prompt.
+  // Keep it stable on later resumes too, without bloating every public session-list snapshot.
+  continuationContext(sessionId: string, text?: string): string | undefined {
+    const { session } = this.get(sessionId);
+    const nativeId = session.nativeSessionId ?? session.id;
+    if (text !== undefined)
+      this.database
+        .prepare(
+          'INSERT INTO continuation_contexts VALUES (?, ?, ?) ON CONFLICT(native_id) DO NOTHING',
+        )
+        .run(nativeId, sessionId, text);
+    const row = this.database
+      .prepare('SELECT context FROM continuation_contexts WHERE native_id = ? AND session_id = ?')
+      .get(nativeId, sessionId);
+    return row ? String(row.context) : undefined;
+  }
   selectAccount(sessionId: string, accountId: string) {
     const { session } = this.get(sessionId);
     const previous = session.accountId ?? 'default';
@@ -582,6 +602,8 @@ export class SessionStore {
     const session: Session = {
       ...source,
       messageQueue: undefined,
+      // Forks are independent tasks. A copied native hook is cleared before the next ordinary message.
+      goal: source.goal ? { ...source.goal, status: 'paused' } : undefined,
       id,
       title,
       device: place.device,
@@ -606,6 +628,11 @@ export class SessionStore {
       this.database
         .prepare('INSERT INTO sessions VALUES (?, ?, ?)')
         .run(id, JSON.stringify(session), requestId);
+      const context = this.continuationContext(sourceId);
+      if (native && context)
+        this.database
+          .prepare('INSERT INTO continuation_contexts VALUES (?, ?, ?)')
+          .run(id, id, context);
       const insert = this.database.prepare('INSERT INTO events VALUES (?, ?, ?, ?)');
       events.forEach((event, index) => {
         const payload =
@@ -708,6 +735,7 @@ export class SessionStore {
       payload,
     };
     if (!stateReadings.has(payload.type)) session.updatedAt = event.createdAt;
+    if (payload.type === 'native.goal') session.goal = payload.goal;
     if (payload.type === 'run.status')
       session.activeRun = terminalStatuses.has(payload.status)
         ? null
@@ -744,12 +772,16 @@ export class SessionStore {
     permissionMode: PermissionMode,
     model?: string | null,
     effort?: Effort | null,
+    goal?: Session['goal'],
   ) {
     const { session } = this.get(sessionId);
     if (session.activeRun) throw new DomainError('run_active', '请先结束当前运行再修改审批模式。');
+    if (goal && (this.lastSequence(sessionId) || session.goal))
+      throw new DomainError('goal_import_conflict', '目标只能导入新建的空会话。');
     session.permissionMode = permissionMode;
     if (model !== undefined) session.model = model;
     if (effort !== undefined) session.effort = effort;
+    if (goal) session.goal = goal;
     session.updatedAt = new Date().toISOString();
     this.save(session);
     return session;

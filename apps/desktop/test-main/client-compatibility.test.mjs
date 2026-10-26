@@ -28,13 +28,15 @@ async function fixture(t, protocolVersion, { deny = false, refuseAgain = false }
                 ? {}
                 : {
                     service:
-                      protocolVersion === 19
-                        ? '0.4.20'
-                        : protocolVersion === 18
-                          ? '0.4.10'
-                          : protocolVersion === 17
-                            ? '0.4.9'
-                            : '0.3.1',
+                      protocolVersion === 20
+                        ? '0.4.29'
+                        : protocolVersion === 19
+                          ? '0.4.20'
+                          : protocolVersion === 18
+                            ? '0.4.10'
+                            : protocolVersion === 17
+                              ? '0.4.9'
+                              : '0.3.1',
                   }),
             }),
           );
@@ -91,7 +93,7 @@ async function fixture(t, protocolVersion, { deny = false, refuseAgain = false }
   return { client, seen, sockets, waitFor, bridges: () => bridges };
 }
 
-for (const version of [16, 17, 18, 19]) {
+for (const version of [16, 17, 18, 19, 20]) {
   test(`connects to protocol ${version}, creates a fresh bridge if needed and sends each command once`, async (t) => {
     const f = await fixture(t, version);
     await f.waitFor('connected');

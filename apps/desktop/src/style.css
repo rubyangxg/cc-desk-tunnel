@@ -4680,3 +4680,21 @@ dialog:has(.web-settings-form) {
   align-items: center;
   gap: 12px;
 }
+/* Goal state is independent of the visible history page and remains compact at handoff. */
+.session-goal {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: min(100% - 32px, 860px);
+  margin: 0 auto 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.session-goal strong {
+  flex-shrink: 0;
+}
+.session-goal span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

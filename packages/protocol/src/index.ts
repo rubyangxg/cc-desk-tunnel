@@ -4,7 +4,7 @@ import { webCertificateStateSchema } from './web-certificate.ts';
 export * from './web.ts';
 export * from './web-certificate.ts';
 
-export const PROTOCOL_VERSION = 20;
+export const PROTOCOL_VERSION = 21;
 // The release each protocol version began with, from 0.2.4 on: a client newer than its service signs in with
 // the service's number to have it upgrade (see the README). A new number adds its line here.
 export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
@@ -22,10 +22,20 @@ export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
   '0.4.10': 18,
   '0.4.11': 19,
   '0.4.21': 20,
+  '0.4.30': 21,
 };
 export const MAX_FRAME_BYTES = 256 * 1024;
 // The longest global instructions edited here, in characters; it keeps a frame of them within MAX_FRAME_BYTES.
 export const INSTRUCTIONS_LIMIT = 64_000;
+// Independent of the truncated conversation excerpt used for account/server handoffs.
+export const goalSchema = z.object({
+  condition: z.string().min(1).max(4000),
+  status: z.enum(['active', 'paused', 'finished', 'cleared']),
+  iterations: z.number().int().nonnegative(),
+  lastReason: z.string().max(8000).optional(),
+  updatedAt: z.iso.datetime(),
+});
+export type SessionGoal = z.infer<typeof goalSchema>;
 const id = z.uuid();
 // A path tells its own system: a Windows one begins with a drive letter or two backslashes, anything else is
 // a POSIX one. Sessions of both kinds can be in one list, each from the computer it is on.
@@ -324,6 +334,7 @@ export const eventPayloadSchema = z.discriminatedUnion('type', [
     updatedAt: timestamp.optional(),
   }),
   z.object({ type: z.literal('native.notice'), text: z.string() }),
+  z.object({ type: z.literal('native.goal'), goal: goalSchema }),
   // The background tasks alive in the run's CLI; each list replaces the one before.
   z.object({
     type: z.literal('native.tasks'),
@@ -527,6 +538,7 @@ export const sessionSchema = z.object({
   accountId: poolAccountIdSchema.optional(),
   nativeSessionId: id.optional(),
   accountHandoff: z.boolean().optional(),
+  goal: goalSchema.optional(),
   messageQueue: messageQueueSchema.optional(),
   // What the system prompt of the session's native runs says. It is kept word for word until a compaction,
   // which loses the prompt cache anyway: a move to another project or another computer is told to Claude
@@ -741,6 +753,8 @@ export const commandSchema = z.discriminatedUnion('type', [
       permissionMode: permissionModeSchema,
       model: z.string().trim().min(1).max(200).nullable().optional(),
       effort: effortSchema.nullable().optional(),
+      // Import only into an empty destination session. Native confirmation is still required.
+      goal: goalSchema.optional(),
     })
     .strict(),
   // Points a session at a project directory on the computer that asks, which the session is on from then.
@@ -1058,22 +1072,30 @@ export type ServerMessage = z.infer<typeof serverMessageSchema>;
 export const clientServerMessageSchema = z.union([
   serverMessageSchema,
   readyMessageSchema.extend({
-    protocolVersion: z.union([z.literal(16), z.literal(17), z.literal(18), z.literal(19)]),
+    protocolVersion: z.union([
+      z.literal(16),
+      z.literal(17),
+      z.literal(18),
+      z.literal(19),
+      z.literal(20),
+    ]),
   }),
 ]);
 export type ClientServerMessage = z.infer<typeof clientServerMessageSchema>;
 
 export function fallbackServerProtocol(message: ClientServerMessage, attempted: number) {
   if (message.type !== 'connection.error' || message.code !== 'version_mismatch') return null;
-  if ([17, 18, 19, 20].includes(attempted) && message.service === '0.3.1') return 16;
+  if ([17, 18, 19, 20, 21].includes(attempted) && message.service === '0.3.1') return 16;
   if (
-    [18, 19, 20].includes(attempted) &&
+    [18, 19, 20, 21].includes(attempted) &&
     /^(?:0\.3\.[25]|0\.4\.[0-9])$/.test(message.service ?? '')
   )
     return 17;
-  if ([19, 20].includes(attempted) && /^(?:0\.3\.[34]|0\.4\.10)$/.test(message.service ?? ''))
+  if ([19, 20, 21].includes(attempted) && /^(?:0\.3\.[34]|0\.4\.10)$/.test(message.service ?? ''))
     return 18;
-  if (attempted === 20 && /^0\.4\.(?:1[1-9]|20)$/.test(message.service ?? '')) return 19;
+  if ([20, 21].includes(attempted) && /^0\.4\.(?:1[1-9]|20)$/.test(message.service ?? ''))
+    return 19;
+  if (attempted === 21 && /^0\.4\.2[1-9]$/.test(message.service ?? '')) return 20;
   return null;
 }
 

@@ -20,7 +20,7 @@ export type QuotaSnapshot = {
 export type Quotas = Record<string, QuotaSnapshot>;
 export type Handoff = {
   source: string;
-  session: Pick<Session, 'title' | 'projectPath' | 'permissionMode' | 'model' | 'effort'>;
+  session: Pick<Session, 'title' | 'projectPath' | 'permissionMode' | 'model' | 'effort' | 'goal'>;
   prompt: string;
   attempted: string[];
   history?: SharedHistory;
@@ -152,6 +152,7 @@ export function handoffFor(
       permissionMode: session.permissionMode,
       model: session.model,
       effort: session.effort,
+      ...(session.goal ? { goal: session.goal } : {}),
     },
     prompt,
     attempted,

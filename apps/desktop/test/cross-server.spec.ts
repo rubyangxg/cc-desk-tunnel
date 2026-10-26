@@ -21,7 +21,11 @@ for (const {
   manualPriority = false,
   overnight = false,
   otherRunning = false,
+  goal = false,
+  legacyGoal = false,
 } of [
+  { manual: false, loseAck: false, goal: true },
+  { manual: false, loseAck: false, goal: true, legacyGoal: true },
   { manual: false, loseAck: false, otherRunning: true },
   { manual: false, loseAck: false, overnight: true },
   { manual: false, loseAck: false, prioritySend: true },
@@ -49,7 +53,7 @@ for (const {
   { manual: false, loseAck: false, away: true },
   { manual: false, loseAck: false, queued: true, loseQueueAck: true },
 ])
-  test(`cross-server ${manual ? 'manual' : 'quota'}${loseAck ? ' lost acknowledgement' : ''}${paginated ? ' paginated' : ''}${localAvailable ? ' available local account' : ''}${queued ? ' queued' : ''}${paused ? ' paused' : ''}${stoppedSend ? ' stopped resend' : ''}${away ? ' other device' : ''}${loseQueueAck ? ' lost queue acknowledgement' : ''}${quotaQueue ? ' idle quota queue' : ''}${legacyQueue ? ' legacy' : ''}${userPaused ? ' user paused' : ''}${prioritySend ? ' weekly priority send' : ''}${priorityBlocked ? ' unresolved tool' : ''}${manualPriority ? ' manual preference' : ''}${overnight ? ' overnight weekly recovery' : ''}${otherRunning ? ' other active task' : ''} handoff retains history, submits once and survives reload`, async ({
+  test(`cross-server ${manual ? 'manual' : 'quota'}${goal ? ' goal' : ''}${legacyGoal ? ' legacy goal' : ''}${loseAck ? ' lost acknowledgement' : ''}${paginated ? ' paginated' : ''}${localAvailable ? ' available local account' : ''}${queued ? ' queued' : ''}${paused ? ' paused' : ''}${stoppedSend ? ' stopped resend' : ''}${away ? ' other device' : ''}${loseQueueAck ? ' lost queue acknowledgement' : ''}${quotaQueue ? ' idle quota queue' : ''}${legacyQueue ? ' legacy' : ''}${userPaused ? ' user paused' : ''}${prioritySend ? ' weekly priority send' : ''}${priorityBlocked ? ' unresolved tool' : ''}${manualPriority ? ' manual preference' : ''}${overnight ? ' overnight weekly recovery' : ''}${otherRunning ? ' other active task' : ''} handoff retains history, submits once and survives reload`, async ({
     page,
   }) => {
     const device = { id: randomUUID(), name: 'test computer', platform: 'linux' as const };
@@ -66,6 +70,17 @@ for (const {
       permissionMode: 'default',
       model: null,
       effort: null,
+      ...(goal
+        ? {
+            goal: {
+              condition: '不在历史摘录里的原始验收条件',
+              status: 'active' as const,
+              iterations: 7,
+              lastReason: '还差验证',
+              updatedAt: now,
+            },
+          }
+        : {}),
       device: away ? { ...device, id: randomUUID(), name: 'home-win11' } : device,
       messageQueue: queued
         ? {
@@ -186,6 +201,7 @@ for (const {
                 'cross-server-handoff',
                 'cross-server-queue-handoff',
                 'message-queue',
+                ...(!legacyGoal || server === 1 ? ['goal-continuation'] : []),
               ],
             });
             return;
@@ -267,9 +283,15 @@ for (const {
               id: randomUUID(),
               activeRun: null,
               messageQueue: undefined,
+              goal: undefined,
               device,
               title: m.title,
             };
+            send({ type: 'session.updated', session: target });
+          }
+          if (m.type === 'session.configure' && target) {
+            if (goal) expect(m.goal).toEqual(source.goal);
+            target.goal = m.goal;
             send({ type: 'session.updated', session: target });
           }
           if (m.type === 'message.send' && server === 1 && stoppedSend) {
@@ -297,6 +319,7 @@ for (const {
             send({ type: 'session.updated', session: target });
           }
           if (m.type === 'message.send' && target && server === 2) {
+            if (goal) expect(target.goal).toEqual(source.goal);
             expect(source.activeRun).toBeNull();
             send({
               type: 'session.event',
@@ -517,6 +540,14 @@ for (const {
       await page.getByLabel('续接到服务器', { exact: true }).selectOption('second');
     }
     await expect(page.getByLabel('当前服务器：服务器2', { exact: true })).toBeVisible();
+    if (legacyGoal) {
+      await expect(page.getByText(/目标服务器不支持 \/goal 续接/)).toBeVisible();
+      expect(sent.filter((m) => ['session.create', 'message.send'].includes(m.type))).toHaveLength(
+        0,
+      );
+      expect(source.goal?.condition).toBe('不在历史摘录里的原始验收条件');
+      return;
+    }
     if (loseQueueAck) {
       await expect(page.getByText(/自动续接已暂停：排队请求超时/)).toBeVisible({ timeout: 15000 });
       expect(target?.messageQueue?.items.map((item) => item.text)).toEqual(['后续任务1']);
@@ -538,6 +569,10 @@ for (const {
       page.locator('.service-workspace:not([hidden])').getByText('已经完成第一步', { exact: true }),
     ).toBeVisible();
     await expect(page.getByText('服务器2继续完成第二步', { exact: true })).toBeVisible();
+    if (goal)
+      await expect(page.getByRole('status', { name: '会话目标' }).last()).toContainText(
+        '不在历史摘录里的原始验收条件',
+      );
     expect(sent.filter((m) => m.type === 'run.handoff')).toHaveLength(
       manual || stoppedSend || quotaQueue || prioritySend ? 0 : 1,
     );

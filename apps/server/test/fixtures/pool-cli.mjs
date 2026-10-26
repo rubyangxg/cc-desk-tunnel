@@ -36,14 +36,19 @@ if (process.argv.includes('auth')) {
     process.argv.find((value) => value.startsWith(`${name}=`))?.slice(name.length + 1) ??
     (process.argv.includes(name) ? process.argv[process.argv.indexOf(name) + 1] : undefined);
   const sessionId = arg('--resume') ?? arg('--session-id') ?? randomUUID();
+  let appendSystemPrompt;
   input.on('line', async (line) => {
     const message = JSON.parse(line);
     if (message.type === 'control_request') {
       let response = {};
       const config = state();
       if (message.request.subtype === 'initialize')
+        appendSystemPrompt = message.request.appendSystemPrompt;
+      if (message.request.subtype === 'initialize')
         response = {
-          commands: config.commands ?? [],
+          commands: config.commands ?? [
+            { name: 'goal', description: 'Set goal', argumentHint: '<condition>' },
+          ],
           models: [{ value: 'test', displayName: 'Test', description: '' }],
           account: { email: config.email, subscriptionType: 'pro' },
         };
@@ -87,6 +92,7 @@ if (process.argv.includes('auth')) {
             sessionId,
             args: process.argv.slice(2),
             prompt: message.message.content,
+            appendSystemPrompt,
             apiKeyPresent: !!process.env.ANTHROPIC_API_KEY,
           }) + '\n',
         );
@@ -115,6 +121,48 @@ if (process.argv.includes('auth')) {
         slash_commands: config.commands?.map((command) => command.name),
         terminal_slash_commands: config.terminalCommands,
       });
+      const goalFile = join(directory, `goal-${sessionId}.json`);
+      const goal = () => (existsSync(goalFile) ? JSON.parse(readFileSync(goalFile, 'utf8')) : null);
+      const goalArgs = /^\/goal(?:\s+([\s\S]*))?$/.exec(message.message.content)?.[1]?.trim() ?? '';
+      const isGoal = /^\/goal(?:\s|$)/.test(message.message.content);
+      const clearsGoal = ['clear', 'stop', 'off', 'reset', 'none', 'cancel'].includes(goalArgs);
+      if (isGoal) {
+        let text;
+        if (!goalArgs)
+          text = goal()
+            ? `Goal active: ${goal().condition} (${goal().iterations ?? 0} turns)`
+            : 'No goal set. Usage: `/goal <condition>`';
+        else if (clearsGoal) {
+          text = goal() ? `Goal cleared: ${goal().condition}` : 'No goal set';
+          writeFileSync(goalFile, 'null');
+        } else if (config.rejectGoal) text = '/goal cannot run while hooks are restricted';
+        else {
+          writeFileSync(goalFile, JSON.stringify({ condition: goalArgs, iterations: 0 }));
+          text = `Goal set: ${goalArgs}`;
+        }
+        emit({
+          type: 'assistant',
+          session_id: sessionId,
+          parent_tool_use_id: null,
+          local_command_source: `<local-command-stdout>${text}</local-command-stdout>`,
+          local_command_run: { command: 'goal', args: goalArgs },
+          message: { model: '<synthetic>', content: [{ type: 'text', text }] },
+        });
+        if (!goalArgs || clearsGoal || config.rejectGoal) {
+          emit({
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            session_id: sessionId,
+            user_message_uuid: message.uuid,
+            result: text,
+            modelUsage: {},
+            usage: { output_tokens: 0 },
+            num_turns: 0,
+          });
+          return;
+        }
+      }
       if (config.commandOutput && message.message.content.startsWith('/')) {
         emit({
           type: 'system',
@@ -177,6 +225,7 @@ if (process.argv.includes('auth')) {
           user_message_uuid: message.uuid,
           message: { content: [{ type: 'text', text: `Completed by ${config.email}` }] },
         });
+      if (!config.fail && config.finishGoal && goal()) writeFileSync(goalFile, 'null');
       emit({
         type: 'result',
         subtype: config.fail ? 'error_during_execution' : 'success',

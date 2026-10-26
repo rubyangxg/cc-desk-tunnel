@@ -2124,6 +2124,21 @@ export function App({
                 <p>设备“{selected.device?.name ?? '未知设备'}”未连接，当前只能查看会话。</p>
               </div>
             )}
+            {selected &&
+              (!away || remote) &&
+              !terminalSessionId &&
+              selected.goal &&
+              ['active', 'paused'].includes(selected.goal.status) && (
+                <div
+                  className="session-goal"
+                  role="status"
+                  aria-label="会话目标"
+                  title={selected.goal.condition}
+                >
+                  <strong>{selected.goal.status === 'active' ? '目标进行中' : '目标已暂停'}</strong>
+                  <span>{selected.goal.condition}</span>
+                </div>
+              )}
             {selected && (!away || remote) && !terminalSessionId && (
               <Composer
                 openAccount={() => open('settings', 'account')}

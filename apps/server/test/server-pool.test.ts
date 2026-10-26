@@ -620,8 +620,13 @@ nativeTest(
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line));
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
     assert.equal(calls[0].prompt, text);
+    assert.equal(
+      calls[1].prompt,
+      '/goal',
+      'completion probes native state without another model turn',
+    );
     const events = f.server.store.snapshot(sessionId!).events;
     assert.ok(
       events.some(
@@ -655,7 +660,7 @@ nativeTest(
     assert.ok(
       rejected.type === 'response' && !rejected.ok && rejected.code === 'command_context_changed',
     );
-    assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 1);
+    assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 2);
   },
 );
 
@@ -1050,88 +1055,334 @@ nativeTest(
 
 nativeTest(
   'weekly exhaustion waits for both windows, then continues once; manual stop cancels recovery',
+  { timeout: 120000 },
+  async (t) => {
+    for (const goal of [false, true])
+      for (const stop of [false, true])
+        await t.test(
+          `${goal ? 'goal ' : ''}${stop ? 'manual stop' : 'automatic continue'}`,
+          async (t) => {
+            const f = await fixture(t);
+            await f.request({ type: 'pool.account.update', accountId: f.id, enabled: false });
+            const file = join(f.config, 'fixture.json');
+            const fiveAt = Date.now() + 5000;
+            writeFileSync(
+              file,
+              JSON.stringify({
+                loggedIn: true,
+                email: 'a@example.test',
+                fail: 'quota',
+                quotaWindow: 'seven_day',
+                resetSeconds: 1,
+                weeklyBlocked: true,
+                weeklyResetsAt: new Date(Date.now() + 1000).toISOString(),
+                blocked: true,
+                resetsAt: new Date(fiveAt).toISOString(),
+              }),
+            );
+            const { sessionId } = await f.request({
+              type: 'session.create',
+              title: 'overnight weekly',
+              projectPath: '/local/weekly',
+            });
+            await f.request({
+              type: 'message.send',
+              sessionId,
+              text: goal ? '/goal finish overnight' : 'finish overnight',
+            });
+            await f.wait(
+              (m) =>
+                m.type === 'session.event' &&
+                m.event.payload.type === 'run.error' &&
+                m.event.payload.code === 'quota_weekly',
+            );
+            const waiting = await f.wait(
+              (m) =>
+                m.type === 'pool.state' &&
+                m.quotaWaits?.some((w) => w.sessionId === sessionId && w.at === fiveAt) === true,
+            );
+            assert.ok(waiting);
+            const calls = () =>
+              readFileSync(f.log, 'utf8')
+                .trim()
+                .split('\n')
+                .map((line) => JSON.parse(line))
+                .filter((call) => call.prompt !== '/goal');
+            assert.equal(calls().length, 1);
+            // Weekly quota recovers first. The five-hour quota must still prevent execution.
+            writeFileSync(
+              file,
+              JSON.stringify({
+                loggedIn: true,
+                email: 'a@example.test',
+                blocked: true,
+                resetsAt: new Date(fiveAt).toISOString(),
+              }),
+            );
+            await f.request({ type: 'pool.status', refresh: true });
+            assert.equal(calls().length, 1);
+            if (stop)
+              await f.request({
+                type: 'run.cancel',
+                sessionId,
+                runId: f.server.store.get(sessionId!).session.activeRun!.id,
+              });
+            writeFileSync(file, JSON.stringify({ loggedIn: true, email: 'a@example.test' }));
+            if (stop) {
+              await delay(5500);
+              await f.request({ type: 'pool.status', refresh: true });
+              assert.equal(calls().length, 1);
+              if (goal) assert.equal(f.server.store.get(sessionId!).session.goal?.status, 'paused');
+            } else {
+              await f.wait(
+                (m) =>
+                  m.type === 'session.event' &&
+                  m.event.sessionId === sessionId &&
+                  m.event.payload.type === 'run.status' &&
+                  m.event.payload.status === 'completed',
+              );
+              assert.equal(calls().length, 2);
+              assert.equal(calls()[1].prompt, 'continue');
+              assert.equal(calls()[1].sessionId, calls()[0].sessionId);
+              assert.ok(calls()[1].at >= fiveAt);
+            }
+          },
+        );
+  },
+);
+
+nativeTest(
+  'goal survives quota rotation with native confirmation and one continuation',
+  { timeout: 30000 },
+  async (t) => {
+    const f = await fixture(t);
+    const { sessionId } = await f.request({
+      type: 'session.create',
+      title: 'goal rotation',
+      projectPath: '/local/project',
+    });
+    await f.request({ type: 'message.send', sessionId, text: '/goal 完成所有回归再提交' });
+    await f.wait(
+      (m) =>
+        m.type === 'session.event' &&
+        m.event.sessionId === sessionId &&
+        m.event.payload.type === 'run.status' &&
+        m.event.payload.status === 'completed',
+    );
+    const session = f.server.store.get(sessionId!).session;
+    assert.equal(session.accountId, f.id);
+    assert.equal(session.goal?.condition, '完成所有回归再提交');
+    assert.equal(session.goal?.status, 'active');
+    const calls = readFileSync(f.log, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(
+      calls.map((call) => call.prompt),
+      ['/goal 完成所有回归再提交', '/goal 完成所有回归再提交', '/goal'],
+    );
+    assert.notEqual(calls[0].sessionId, calls[1].sessionId);
+    assert.ok(
+      calls[1].appendSystemPrompt.includes('continuation below') &&
+        calls[1].appendSystemPrompt.includes('continue'),
+    );
+    const events = f.server.store.snapshot(sessionId!).events;
+    const received = events.filter(
+      (e) => e.payload.type === 'message.delivery' && e.payload.status === 'received',
+    );
+    assert.equal(
+      received.length,
+      1,
+      'only the target model acknowledges its continuation; local probes do not',
+    );
+    assert.ok(
+      events.filter((e) => e.payload.type === 'native.goal' && e.payload.goal.status === 'active')
+        .length >= 2,
+    );
+    const context = f.server.store.continuationContext(sessionId!);
+    assert.ok(context?.includes('continue'));
+    await f.request({ type: 'pool.configure', values: { enabled: false } });
+    await f.request({ type: 'run.continue', sessionId });
+    await f.wait(
+      (m) =>
+        m.type === 'session.event' &&
+        m.event.sessionId === sessionId &&
+        m.event.payload.type === 'run.status' &&
+        m.event.payload.status === 'completed',
+    );
+    const resumed = readFileSync(f.log, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .slice(calls.length);
+    assert.equal(
+      resumed.filter((call) => call.prompt.startsWith('/goal ')).length,
+      0,
+      'same native segment retains its hook',
+    );
+    assert.ok(
+      resumed.every((call) => call.appendSystemPrompt.includes(context)),
+      'the original handoff context survives later native resumes',
+    );
+    writeFileSync(
+      join(f.config, 'fixture.json'),
+      JSON.stringify({ loggedIn: true, email: 'a@example.test', hours: 1 }),
+    );
+    await f.request({ type: 'pool.configure', values: { enabled: true } });
+    await f.request({ type: 'pool.status', refresh: true });
+    const nativeId = f.server.store.get(sessionId!).session.nativeSessionId;
+    await f.request({ type: 'message.send', sessionId, text: '/goal' });
+    await f.wait(
+      (m) =>
+        m.type === 'session.event' &&
+        m.event.sessionId === sessionId &&
+        m.event.payload.type === 'run.status' &&
+        m.event.payload.status === 'completed',
+    );
+    assert.equal(
+      f.server.store.get(sessionId!).session.nativeSessionId,
+      nativeId,
+      'status queries stay with the goal even when another account has higher priority',
+    );
+    assert.equal(f.server.store.get(sessionId!).session.goal?.condition, '完成所有回归再提交');
+  },
+);
+
+nativeTest(
+  'goal completion, clear and manual stop stay stopped across later messages',
   { timeout: 60000 },
   async (t) => {
-    for (const stop of [false, true])
-      await t.test(stop ? 'manual stop' : 'automatic continue', async (t) => {
-        const f = await fixture(t);
-        await f.request({ type: 'pool.account.update', accountId: f.id, enabled: false });
+    for (const ending of ['finished', 'cleared', 'paused'] as const)
+      await t.test(ending, async (t) => {
+        const f = await fixture(t, '');
+        await f.request({ type: 'pool.configure', values: { enabled: false } });
         const file = join(f.config, 'fixture.json');
-        const fiveAt = Date.now() + 5000;
-        writeFileSync(
-          file,
-          JSON.stringify({
-            loggedIn: true,
-            email: 'a@example.test',
-            fail: 'quota',
-            quotaWindow: 'seven_day',
-            resetSeconds: 1,
-            weeklyBlocked: true,
-            weeklyResetsAt: new Date(Date.now() + 1000).toISOString(),
-            blocked: true,
-            resetsAt: new Date(fiveAt).toISOString(),
-          }),
-        );
+        const config = {
+          loggedIn: true,
+          email: 'a@example.test',
+          finishGoal: ending === 'finished',
+          pauseBeforeQuota: ending === 'paused',
+        };
+        writeFileSync(file, JSON.stringify(config));
         const { sessionId } = await f.request({
           type: 'session.create',
-          title: 'overnight weekly',
-          projectPath: '/local/weekly',
+          title: 'goal lifecycle',
+          projectPath: '/local/project',
         });
-        await f.request({ type: 'message.send', sessionId, text: 'finish overnight' });
-        await f.wait(
-          (m) =>
-            m.type === 'session.event' &&
-            m.event.payload.type === 'run.error' &&
-            m.event.payload.code === 'quota_weekly',
-        );
-        const waiting = await f.wait(
-          (m) =>
-            m.type === 'pool.state' &&
-            m.quotaWaits?.some((w) => w.sessionId === sessionId && w.at === fiveAt) === true,
-        );
-        assert.ok(waiting);
-        const calls = () =>
-          readFileSync(f.log, 'utf8')
-            .trim()
-            .split('\n')
-            .map((line) => JSON.parse(line));
-        assert.equal(calls().length, 1);
-        // Weekly quota recovers first. The five-hour quota must still prevent execution.
-        writeFileSync(
-          file,
-          JSON.stringify({
-            loggedIn: true,
-            email: 'a@example.test',
-            blocked: true,
-            resetsAt: new Date(fiveAt).toISOString(),
-          }),
-        );
-        await f.request({ type: 'pool.status', refresh: true });
-        assert.equal(calls().length, 1);
-        if (stop)
+        const ended = () =>
+          f.wait(
+            (m) =>
+              m.type === 'session.event' &&
+              m.event.sessionId === sessionId &&
+              m.event.payload.type === 'run.status' &&
+              ['completed', 'cancelled'].includes(m.event.payload.status),
+          );
+        await f.request({ type: 'message.send', sessionId, text: '/goal 检查完毕' });
+        if (ending === 'paused') {
+          await f.wait(
+            (m) =>
+              m.type === 'session.event' &&
+              m.event.payload.type === 'native.goal' &&
+              m.event.payload.goal.status === 'active',
+          );
           await f.request({
             type: 'run.cancel',
             sessionId,
             runId: f.server.store.get(sessionId!).session.activeRun!.id,
           });
-        writeFileSync(file, JSON.stringify({ loggedIn: true, email: 'a@example.test' }));
-        if (stop) {
-          await delay(5500);
-          await f.request({ type: 'pool.status', refresh: true });
-          assert.equal(calls().length, 1);
-        } else {
-          await f.wait(
-            (m) =>
-              m.type === 'session.event' &&
-              m.event.sessionId === sessionId &&
-              m.event.payload.type === 'run.status' &&
-              m.event.payload.status === 'completed',
-          );
-          assert.equal(calls().length, 2);
-          assert.equal(calls()[1].prompt, 'continue');
-          assert.equal(calls()[1].sessionId, calls()[0].sessionId);
-          assert.ok(calls()[1].at >= fiveAt);
         }
+        await ended();
+        writeFileSync(file, JSON.stringify({ ...config, pauseBeforeQuota: false }));
+        if (ending === 'cleared') {
+          await f.request({ type: 'message.send', sessionId, text: '/goal clear' });
+          await ended();
+        }
+        assert.equal(f.server.store.get(sessionId!).session.goal?.status, ending);
+        await f.request({ type: 'message.send', sessionId, text: '只报告当前状态' });
+        await ended();
+        assert.equal(f.server.store.get(sessionId!).session.goal?.status, ending);
+        const calls = readFileSync(f.log, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line));
+        assert.equal(calls.filter((call) => call.prompt === '/goal 检查完毕').length, 1);
+        assert.equal(calls.at(-1).prompt, '只报告当前状态');
+        if (ending === 'paused')
+          assert.deepEqual(
+            calls.slice(-3).map((call) => call.prompt),
+            ['/goal', '/goal clear', '只报告当前状态'],
+          );
+        const nativeGoal = JSON.parse(
+          readFileSync(join(f.config, `goal-${calls[0].sessionId}.json`), 'utf8'),
+        );
+        assert.equal(nativeGoal, null);
+      });
+  },
+);
+
+nativeTest(
+  'imported goal is restored separately from a long excerpt; refusal never falls back to plain continue',
+  { timeout: 60000 },
+  async (t) => {
+    for (const rejectGoal of [false, true])
+      await t.test(rejectGoal ? 'refused' : 'restored', async (t) => {
+        const f = await fixture(t, '');
+        await f.request({ type: 'pool.configure', values: { enabled: false } });
+        writeFileSync(
+          join(f.config, 'fixture.json'),
+          JSON.stringify({ loggedIn: true, email: 'a@example.test', rejectGoal, finishGoal: true }),
+        );
+        const { sessionId } = await f.request({
+          type: 'session.create',
+          title: 'imported goal',
+          projectPath: '/local/project',
+        });
+        const goal = {
+          condition: '最初约定的验收条件',
+          status: 'active',
+          iterations: 8,
+          lastReason: '还有两项测试',
+          updatedAt: new Date().toISOString(),
+        };
+        await f.request({ type: 'session.configure', sessionId, permissionMode: 'auto', goal });
+        const text = `continue\n参考历史：${'很长的历史记录'.repeat(1500)}\n上一操作已完成，不可重复。`;
+        await f.request({ type: 'message.send', sessionId, text });
+        await f.wait(
+          (m) =>
+            m.type === 'session.event' &&
+            m.event.sessionId === sessionId &&
+            m.event.payload.type === 'run.status' &&
+            m.event.payload.status === (rejectGoal ? 'failed' : 'completed'),
+        );
+        const calls = readFileSync(f.log, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line));
+        assert.equal(calls[0].prompt, `/goal ${goal.condition}`);
+        assert.ok(
+          calls[0].appendSystemPrompt.includes(text),
+          'context is present before /goal starts working',
+        );
+        assert.equal(
+          calls.filter((call) => call.prompt === text || call.prompt === 'continue').length,
+          0,
+        );
+        if (rejectGoal) {
+          assert.equal(calls.length, 1);
+          const events = f.server.store.snapshot(sessionId!).events;
+          assert.ok(
+            events.some(
+              (e) =>
+                e.payload.type === 'run.error' && e.payload.code === 'goal_restore_unconfirmed',
+            ),
+          );
+          assert.equal(
+            events.filter(
+              (e) => e.payload.type === 'message.delivery' && e.payload.status === 'received',
+            ).length,
+            0,
+          );
+        } else assert.equal(f.server.store.get(sessionId!).session.goal?.status, 'finished');
       });
   },
 );

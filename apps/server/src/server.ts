@@ -16,6 +16,7 @@ import {
   nextAccountReset,
 } from './account-pool.ts';
 import { poolHandoff, handoffBlockReason } from './pool-handoff.ts';
+import { goalCommand, setsGoal } from './native-goal.ts';
 import { accountStatus, accountLogout, NativeLogin } from './native-account.ts';
 import {
   authSchema,
@@ -118,6 +119,8 @@ export type Run = {
   wakeQuota?: () => void;
   attempted?: Set<string>;
   nativeId?: string;
+  goalContinuation?: boolean;
+  goalIntent?: boolean;
   // Serialize reports so later totals never arrive before earlier ones.
   stats: ReturnType<typeof inOrder>;
 };
@@ -725,7 +728,7 @@ export function createProxyServer(options: ServerOptions) {
         session: store.renameNative(run.sessionId, payload.title),
       });
     if (payload.type === 'native.compact') store.compacted(run.sessionId);
-    if (payload.type === 'run.status') updated(run.sessionId);
+    if (payload.type === 'run.status' || payload.type === 'native.goal') updated(run.sessionId);
   }
   // The CLI reports its model requests a moment after the turn ends. Wait for as many as the turn made, then
   // record what they add up to; whatever has not come by then is left out and the figures are marked partial.
@@ -844,6 +847,7 @@ export function createProxyServer(options: ServerOptions) {
     try {
       while (!run.controller.signal.aborted) {
         const { session } = store.get(run.sessionId);
+        const hadGoal = session.goal?.status === 'active';
         const accountId = session.accountId ?? 'default';
         const claude = pool!.options(accountId);
         run.nativeId = session.nativeSessionId ?? session.id;
@@ -860,6 +864,14 @@ export function createProxyServer(options: ServerOptions) {
           permissionMode: session.permissionMode,
           model: session.model,
           effort: session.effort,
+          goal: session.goal,
+          goalContinuation: run.goalContinuation,
+          continuationContext: store.continuationContext(
+            run.sessionId,
+            !store.hasNativeContext(run.sessionId) && session.goal?.status === 'active'
+              ? run.input!.firstText()
+              : undefined,
+          ),
           input: run.input!,
           controls: run.controls,
           waiting: (background) =>
@@ -914,18 +926,22 @@ export function createProxyServer(options: ServerOptions) {
           publishPool();
         }
         const blocked = handoffBlockReason(events, run.id);
+        const goalEnded =
+          (hadGoal || run.goalIntent) && store.get(run.sessionId).session.goal?.status !== 'active';
         if (
           status !== 'failed' ||
           run.controller.signal.aborted ||
           (!pool!.settings.enabled && !resumesAfterQuota(run)) ||
           !quota ||
+          goalEnded ||
           blocked
         ) {
           if (status === 'failed' && quota && !run.controller.signal.aborted)
             emit(run, {
               type: 'native.notice',
-              text:
-                !pool!.settings.enabled && !resumesAfterQuota(run)
+              text: goalEnded
+                ? '目标已结束或暂停，不再自动续跑。'
+                : !pool!.settings.enabled && !resumesAfterQuota(run)
                   ? '自动接力未开启。开启账号池自动接力后，可手动继续当前任务。'
                   : `自动接力已暂停：${blocked}`,
             });
@@ -1052,6 +1068,7 @@ export function createProxyServer(options: ServerOptions) {
           continued: true,
         });
         run.input.submit(messageId, prompt);
+        run.goalContinuation = true;
       }
       finish(run, 'cancelled', run.cancelReason);
     } catch {
@@ -1398,6 +1415,9 @@ export function createProxyServer(options: ServerOptions) {
   }
   // Prefixing a slash command with a handoff or a move notice turns it into ordinary prompt text.
   function assertCommandContext(session: Session, text: string) {
+    const args = goalCommand(text);
+    if (args && args.length > 4000)
+      throw new DomainError('goal_too_long', '目标条件最多 4000 字符。');
     if (!options.claude || !/^\/[a-z][\w:-]*(?:\s|$)/i.test(text)) return;
     const known = session.prompt?.told ?? session.prompt;
     if (
@@ -1410,6 +1430,23 @@ export function createProxyServer(options: ServerOptions) {
         'command_context_changed',
         '账号或项目已切换，请先发送一条普通消息衔接上下文，再使用指令。',
       );
+  }
+  function goalIntent(run: Run, text: string) {
+    const args = goalCommand(text);
+    if (!args) return;
+    run.goalIntent = true;
+    const previous = store.get(run.sessionId).session.goal;
+    // Until the CLI acknowledges it, this intent must never become an automatic continuation.
+    const goal = setsGoal(args) ? { condition: args, iterations: 0 } : previous;
+    if (goal)
+      emit(run, {
+        type: 'native.goal',
+        goal: {
+          ...goal,
+          status: 'paused',
+          updatedAt: new Date().toISOString(),
+        },
+      });
   }
   // A message starts a run, or joins the native run this connection already owns. Compacting is the native
   // /compact command sent as a message.
@@ -1449,6 +1486,7 @@ export function createProxyServer(options: ServerOptions) {
       active.input.assertWritable();
       peer.subscriptions.add(command.sessionId);
       emit(active, { type: 'message.user', messageId: command.requestId, text, scenario });
+      goalIntent(active, text);
       active.input.submit(command.requestId, store.notice(command.sessionId) + text);
       return;
     }
@@ -1460,7 +1498,12 @@ export function createProxyServer(options: ServerOptions) {
       const current =
         session.accountId ?? (store.hasNativeContext(session.id) ? 'default' : undefined);
       // Re-evaluate priority only at a new run boundary; active runs retain their account.
-      const selected = pool.choose(pool.settings.enabled ? undefined : current);
+      // /goal operates on this native session's hook. In particular, status/clear are local
+      // commands and must still work at zero quota, without priority moving them to another account.
+      const selected =
+        goalCommand(text) !== undefined && current
+          ? pool.get(current)
+          : pool.choose(pool.settings.enabled ? undefined : current);
       if (poolLogins.has(selected.id) || (selected.id === 'default' && login))
         throw new DomainError('login_active', '所选账号正在登录，请稍后发送。');
       const previous = session.accountId ?? 'default';
@@ -1486,6 +1529,7 @@ export function createProxyServer(options: ServerOptions) {
       answered: new Set(),
       controls: {},
       stats: inOrder(),
+      goalContinuation: continued,
     };
     runs.set(command.sessionId, run);
     if (options.claude)
@@ -1500,6 +1544,7 @@ export function createProxyServer(options: ServerOptions) {
       ...(continued ? { continued } : {}),
     });
     emit(run, { type: 'run.status', status: 'running', connectionId: run.connectionId });
+    goalIntent(run, text);
     // What Claude's system prompt no longer has right is told to it with this message; the transcript shows the
     // user's own text.
     run.input?.submit(
@@ -1604,6 +1649,12 @@ export function createProxyServer(options: ServerOptions) {
       return;
     }
     if (command.type === 'run.cancel') {
+      const goal = store.get(run.sessionId).session.goal;
+      if (goal?.status === 'active')
+        emit(run, {
+          type: 'native.goal',
+          goal: { ...goal, status: 'paused', updatedAt: new Date().toISOString() },
+        });
       pauseQueue(run.sessionId, '已停止运行，队列暂停。');
       cancel(
         run,
@@ -1994,6 +2045,7 @@ export function createProxyServer(options: ServerOptions) {
             command.permissionMode,
             command.model,
             command.effort,
+            command.goal,
           ),
         });
         break;
@@ -2104,6 +2156,7 @@ export function createProxyServer(options: ServerOptions) {
         ...(pool
           ? [
               'account-pool',
+              'goal-continuation',
               'project-quota-resume',
               'cross-server-handoff',
               'cross-server-queue-handoff',

@@ -1,10 +1,12 @@
 import type { SDKUserMessage, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { EventPayload } from '@cc-desk-tunnel/protocol';
 import { DomainError } from './errors.ts';
+import { randomUUID } from 'node:crypto';
 
 // This is only the SDK's input transport. Claude Code owns scheduling and merging turns.
 export class NativeInput {
-  private messages: { id: string; text: string }[] = [];
+  private messages: { id: string; text: string; internal?: boolean }[] = [];
+  private held = false;
   private outstanding = new Map<string, { delivered: boolean; received: boolean }>();
   private wake?: () => void;
   private ended = false;
@@ -29,17 +31,43 @@ export class NativeInput {
     this.emit({ type: 'message.delivery', messageId: id, status: 'submitted' });
     this.wake?.();
   }
+  firstText() {
+    return this.messages.find((message) => !message.internal)?.text;
+  }
+  replaceFirst(text: string) {
+    const message = this.messages.find((item) => !item.internal);
+    if (!message) throw new Error('Missing continuation input');
+    message.text = text;
+  }
+  hold() {
+    this.held = true;
+  }
+  release() {
+    this.held = false;
+    this.wake?.();
+  }
+  // Local-only /goal probes, before sending user input or after its final result. They never
+  // acknowledge a user message, and may run after endTurn sealed regular submissions.
+  control(text: '/goal' | '/goal clear') {
+    if (!this.held || this.ended) throw new Error('Native control requires an idle input gate');
+    const id = randomUUID();
+    this.messages.unshift({ id, text, internal: true });
+    this.wake?.();
+    return id;
+  }
   async *stream(): AsyncGenerator<SDKUserMessage> {
     while (!this.ended) {
-      const message = this.messages.shift();
+      const message = !this.held || this.messages[0]?.internal ? this.messages.shift() : undefined;
       if (!message) {
         await new Promise<void>((resolve) => {
           this.wake = resolve;
         });
         continue;
       }
-      this.outstanding.get(message.id)!.delivered = true;
-      this.emit({ type: 'message.delivery', messageId: message.id, status: 'queued' });
+      if (!message.internal) {
+        this.outstanding.get(message.id)!.delivered = true;
+        this.emit({ type: 'message.delivery', messageId: message.id, status: 'queued' });
+      }
       yield {
         type: 'user',
         uuid: message.id as SDKUserMessage['uuid'],

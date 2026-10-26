@@ -501,6 +501,8 @@ export function usePoolRotation(options: {
     setNotice(`已切换到 ${profiles.initial.name}，正在续接 ${handoff.session.title}…`);
     void (async () => {
       try {
+        if (handoff.session.goal && !client.state.features.includes('goal-continuation'))
+          throw new Error('目标服务器不支持 /goal 续接，请先升级服务端；目标和原会话仍保留。');
         if (handoff.queue?.items.length && !client.state.features.includes('message-queue'))
           throw new Error('目标服务端不支持消息队列，请升级后恢复；原队列备份仍在来源会话。');
         const result = await client.request({
@@ -523,6 +525,7 @@ export function usePoolRotation(options: {
           permissionMode: handoff.session.permissionMode,
           model: handoff.session.model,
           effort: handoff.session.effort,
+          ...(handoff.session.goal ? { goal: handoff.session.goal } : {}),
         });
         if (handoff.queue?.items.length) {
           // Restore while paused so no queued message can race ahead of continue.
