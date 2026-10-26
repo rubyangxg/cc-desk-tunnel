@@ -10,12 +10,13 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const directory = resolve(process.argv[2] ?? 'artifacts/release');
 const version = JSON.parse(readFileSync(join(root, 'apps/desktop/package.json'), 'utf8')).version;
-export const releaseFiles = (version, target = 'windows-server') => {
+export const releaseFiles = (version, target = 'windows-server', android = false) => {
   if (!['windows-server', 'all'].includes(target))
     throw new Error(`Unknown release target: ${target}`);
   const files = [`CC-Desk-Tunnel-Setup-${version}-x64.exe`];
   files.push(`cc-desk-tunnel-server-${version}.tar.gz`);
   if (target === 'all') files.push(`CC-Desk-Tunnel-${version}-linux-amd64.deb`);
+  if (android) files.push(`CC-Desk-Tunnel-${version}-android.apk`);
   return files;
 };
 
@@ -30,7 +31,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const commit =
     process.env.GITHUB_SHA ??
     execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
-  const names = releaseFiles(version, process.env.RELEASE_TARGET);
+  const names = releaseFiles(
+    version,
+    process.env.RELEASE_TARGET,
+    process.env.RELEASE_ANDROID === '1',
+  );
   const found = readdirSync(directory).sort();
   if (found.join() !== [...names].sort().join())
     throw new Error(`Expected ${names.join(', ')} in ${directory}; found ${found.join(', ')}.`);

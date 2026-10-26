@@ -15,6 +15,8 @@ Claude Code（简称 CC）运行在一台 Linux 服务器上；项目代码、�
 >
 > 本项目与 Anthropic 没有隶属或合作关系。“Claude”“Claude Code”是 Anthropic 的商标。
 
+Android 手机端：支持统一查看多台服务器的会话、发消息和远程审批。[安装与使用说明](docs/android.md)。
+
 ## 解决什么问题
 
 | 常见做法 | 麻烦在哪 | 用 CC Desk Tunnel |

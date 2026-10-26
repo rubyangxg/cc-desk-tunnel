@@ -11,6 +11,8 @@
 !apps/server/web/**
 !apps/desktop/
 !apps/desktop/package.json
+!apps/mobile/
+!apps/mobile/package.json
 !apps/desktop/index.html
 !apps/desktop/vite.config.ts
 !apps/desktop/electron/

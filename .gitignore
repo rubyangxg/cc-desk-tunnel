@@ -39,3 +39,7 @@ playwright-report/
 Thumbs.db
 Desktop.ini
 .idea/
+.gradle/
+local.properties
+*.jks
+*.keystore

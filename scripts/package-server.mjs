@@ -38,6 +38,7 @@ export function packageServer(root, output) {
         'apps/server/package.json',
         'apps/server/src',
         'apps/desktop/package.json',
+        'apps/mobile/package.json',
         'packages/protocol/package.json',
         'packages/protocol/src',
         'scripts/install-linux.sh',

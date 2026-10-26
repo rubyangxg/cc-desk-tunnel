@@ -603,6 +603,14 @@ export const commandSchema = z.discriminatedUnion('type', [
   ...webCommandSchemas,
   z
     .object({
+      type: z.literal('session.create.remote'),
+      ...request,
+      sourceSessionId: id,
+      title: z.string().trim().min(1).max(120),
+    })
+    .strict(),
+  z
+    .object({
       type: z.literal('server.session.create'),
       ...request,
       title: z.string().trim().min(1).max(120),

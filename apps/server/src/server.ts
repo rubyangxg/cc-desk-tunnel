@@ -1697,6 +1697,19 @@ export function createProxyServer(options: ServerOptions) {
       return undefined;
     }
     switch (command.type) {
+      case 'session.create.remote': {
+        const source = store.get(command.sourceSessionId).session;
+        target(peer, source);
+        if (!source.device) throw new DomainError('device_unknown', '请先在电脑上打开原会话。');
+        const session =
+          source.device.id === serverDevice.id
+            ? store.createOnServer(command.requestId, command.title, serverDevice)
+            : store.create(command.requestId, command.title, source.projectPath, source.device);
+        peer.subscriptions.clear();
+        peer.subscriptions.add(session.id);
+        broadcast({ type: 'session.updated', session });
+        return session.id;
+      }
       case 'project.quotaResume': {
         if (!pool) throw new DomainError('native_unavailable', '此服务不支持自动继续。');
         peer.poolClient = true;
@@ -2151,6 +2164,7 @@ export function createProxyServer(options: ServerOptions) {
       client: installer(),
       sessions: store.list(),
       features: [
+        'remote-session-create',
         'message-queue',
         'project-move',
         ...(pool

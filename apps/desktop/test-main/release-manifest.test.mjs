@@ -8,13 +8,21 @@ import { test } from 'node:test';
 import { releaseFiles } from '../../../scripts/release-manifest.mjs';
 
 // These manifests are consumed by the existing desktop downloader and server upgrader.
-for (const target of ['windows-server', 'all']) {
-  test(`${target} release requires the selected packages and hashes every published byte`, (t) => {
+for (const { target, android } of [
+  { target: 'windows-server', android: false },
+  { target: 'all', android: false },
+  { target: 'windows-server', android: true },
+]) {
+  test(`${target}${android ? ' Android' : ''} release requires the selected packages and hashes every published byte`, (t) => {
     const directory = mkdtempSync(join(tmpdir(), 'release-manifest-'));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
     const version = JSON.parse(readFileSync(resolve('apps/desktop/package.json'), 'utf8')).version;
-    const names = releaseFiles(version, target);
-    assert.equal(names.length, target === 'all' ? 3 : 2);
+    const names = releaseFiles(version, target, android);
+    assert.equal(names.length, (target === 'all' ? 3 : 2) + (android ? 1 : 0));
+    assert.equal(
+      names.some((name) => name.endsWith('.apk')),
+      android,
+    );
     assert.ok(!names.some((name) => name.endsWith('.dmg')));
     assert.equal(
       names.some((name) => name.endsWith('.deb')),
@@ -24,7 +32,12 @@ for (const target of ['windows-server', 'all']) {
     assert.ok(names.some((name) => name.endsWith('.tar.gz')));
     const build = () =>
       execFileSync(process.execPath, ['scripts/release-manifest.mjs', directory], {
-        env: { ...process.env, RELEASE_TARGET: target, GITHUB_SHA: 'test-commit' },
+        env: {
+          ...process.env,
+          RELEASE_TARGET: target,
+          RELEASE_ANDROID: android ? '1' : '0',
+          GITHUB_SHA: 'test-commit',
+        },
         stdio: 'pipe',
       });
     for (const name of names.slice(0, -1)) writeFileSync(join(directory, name), name);

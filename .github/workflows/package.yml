@@ -11,6 +11,10 @@ on:
       release:
         description: Tag of a draft release to attach the files to. Left empty, they stay with the run.
         default: ''
+      android:
+        description: Build Android APK and run emulator checks (signed locally before publishing)
+        type: boolean
+        default: false
       target:
         description: Release packages (Windows + server; all also includes Linux, never macOS)
         type: choice
@@ -131,6 +135,52 @@ jobs:
           path: artifacts/server/*.tar.gz
           if-no-files-found: error
           retention-days: 30
+  android:
+    if: inputs.android == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - run: npm ci --include=dev --workspace=@cc-desk-tunnel/mobile --workspace=@cc-desk-tunnel/protocol
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+      - run: npm run build:mobile
+      - run: gradle -p apps/mobile/android :app:assembleRelease :app:testDebugUnitTest :app:lintRelease
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: default
+          disable-animations: true
+          script: gradle -p apps/mobile/android connectedDebugAndroidTest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-unsigned
+          path: apps/mobile/android/app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-test-reports
+          path: apps/mobile/android/app/build/reports
+          retention-days: 14
   # For the release script: every file of the release goes from here to the draft it made, described by
   # release.json and SHA256SUMS, without passing through a maintainer's computer. The only job that may
   # write to the repository.
@@ -139,9 +189,11 @@ jobs:
       always() && !cancelled() && inputs.release != '' &&
       needs.windows.result == 'success' &&
       needs.server.result == 'success' &&
+      ((inputs.android == true && needs.android.result == 'success') ||
+       (inputs.android != true && needs.android.result == 'skipped')) &&
       ((inputs.target == 'all' && needs.linux.result == 'success') ||
        (inputs.target != 'all' && needs.linux.result == 'skipped'))
-    needs: [windows, linux, server]
+    needs: [windows, linux, server, android]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

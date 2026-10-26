@@ -31,6 +31,7 @@ test('server archives contain a fresh Web build without local data or desktop de
     'CHANGELOG.md',
     'apps/server/package.json',
     'apps/desktop/package.json',
+    'apps/mobile/package.json',
     'packages/protocol/package.json',
     'scripts/install-linux.sh',
     'deploy',
@@ -67,6 +68,7 @@ test('server archives contain a fresh Web build without local data or desktop de
   assert.ok(entries.includes('apps/server/web/index.html'));
   assert.ok(entries.includes('apps/server/web/assets/current.js'));
   assert.ok(entries.includes('CHANGELOG.md'));
+  assert.ok(entries.includes('apps/mobile/package.json'));
   assert.ok(entries.includes('deploy/install.sh'));
   assert.ok(!entries.some((entry) => /node_modules|\.env|private-test|desktop\/dist/.test(entry)));
   assert.equal(

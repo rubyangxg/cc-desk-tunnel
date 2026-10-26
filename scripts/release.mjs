@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { releaseFiles } from './release-manifest.mjs';
@@ -15,6 +15,7 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const dryRun = process.argv.includes('--dry-run');
 const publish = process.argv.includes('--publish');
 const prerelease = process.argv.includes('--prerelease');
+const android = process.argv.includes('--android');
 const resume = process.argv.includes('--resume');
 const target = process.argv.includes('--all-platforms') ? 'all' : 'windows-server';
 // A word this script does not know is a mistake, not something to release past: `--help` would otherwise publish.
@@ -22,11 +23,18 @@ const unknown = process.argv
   .slice(2)
   .filter(
     (word) =>
-      !['--dry-run', '--publish', '--prerelease', '--all-platforms', '--resume'].includes(word),
+      ![
+        '--dry-run',
+        '--publish',
+        '--prerelease',
+        '--all-platforms',
+        '--resume',
+        '--android',
+      ].includes(word),
   );
 if (unknown.length)
   throw new Error(
-    `Unknown argument ${unknown.join(' ')}. Use --dry-run, --prerelease, --publish, --all-platforms, --resume.`,
+    `Unknown argument ${unknown.join(' ')}. Use --dry-run, --prerelease, --publish, --all-platforms, --resume, --android.`,
   );
 const repositoryName = 'rubyangxg/cc-desk-tunnel';
 const releaseBranch = 'personal';
@@ -52,6 +60,7 @@ const section = new RegExp(
 if (!section) throw new Error(`CHANGELOG.md has no section "## ${version}".`);
 const repository = `https://github.com/${repositoryName}`;
 const [installer, server, ...others] = releaseFiles(version, target);
+const androidName = `CC-Desk-Tunnel-${version}-android.apk`;
 // Every release reads the same way: what the project is, this version's section of the change log with its
 // headings one level up, then how to get and upgrade to it. A preview carries the same text, so that making
 // it the release later changes nothing a reader has seen.
@@ -73,6 +82,11 @@ const notes = [
   ...(others.length
     ? [
         `- **Linux 客户端（实验性）**：${others.map((name) => `\`${name}\``).join('、')}。没有签名，也不带应用内更新，升级时重新下载安装；安装与首次打开见 [Linux 说明](${repository}/blob/${releaseBranch}/docs/linux.md)。`,
+      ]
+    : []),
+  ...(android
+    ? [
+        `- **Android 手机端**：下载 \`${androidName}\` 安装（Android 8.0+）。配置已有服务器连接后查看、操作会话，详见 [手机端说明](${repository}/blob/${releaseBranch}/docs/android.md)。`,
       ]
     : []),
   '- **校验**：各文件的 SHA256 在 `SHA256SUMS` 与 `release.json` 中。',
@@ -117,7 +131,9 @@ if (dryRun) {
     existing &&
     existing.assets.some(
       (asset) =>
-        ![...releaseFiles(version, target), 'release.json', 'SHA256SUMS'].includes(asset.name),
+        ![...releaseFiles(version, target, android), 'release.json', 'SHA256SUMS'].includes(
+          asset.name,
+        ),
     )
   )
     throw new Error(
@@ -194,6 +210,8 @@ if (dryRun) {
         `release=${tag}`,
         '-f',
         `target=${target}`,
+        '-f',
+        `android=${android}`,
       ]);
     for (let attempt = 0; !started && attempt < 30; attempt++) {
       wait(5_000);
@@ -227,12 +245,51 @@ if (dryRun) {
         wait(15_000);
       }
     }
+    if (android) {
+      const staging = mkdtempSync(join(output, 'android-'));
+      const input = join(staging, 'unsigned');
+      const files = join(staging, 'files');
+      mkdirSync(input);
+      mkdirSync(files);
+      run(gh, [
+        'run',
+        'download',
+        String(started.databaseId),
+        '--name',
+        'android-unsigned',
+        '--dir',
+        input,
+      ]);
+      run(
+        process.execPath,
+        ['scripts/package-android.mjs', '--unsigned', join(input, 'app-release-unsigned.apk')],
+        { stdio: 'inherit' },
+      );
+      for (const name of releaseFiles(version, target))
+        run(gh, ['release', 'download', tag, '--pattern', name, '--dir', files]);
+      copyFileSync(join(root, 'artifacts/android', androidName), join(files, androidName));
+      run(process.execPath, ['scripts/release-manifest.mjs', files], {
+        env: { ...process.env, RELEASE_TARGET: target, RELEASE_ANDROID: '1' },
+        stdio: 'inherit',
+      });
+      run(gh, [
+        'release',
+        'upload',
+        tag,
+        join(files, androidName),
+        join(files, 'release.json'),
+        join(files, 'SHA256SUMS'),
+        '--clobber',
+      ]);
+    }
     const attached = JSON.parse(run(gh, ['release', 'view', tag, '--json', 'assets'])).assets.map(
       (asset) => asset.name,
     );
-    const missing = [...releaseFiles(version, target), 'release.json', 'SHA256SUMS'].filter(
-      (name) => !attached.includes(name),
-    );
+    const missing = [
+      ...releaseFiles(version, target, android),
+      'release.json',
+      'SHA256SUMS',
+    ].filter((name) => !attached.includes(name));
     if (missing.length) throw new Error(`The draft ${tag} lacks ${missing.join(', ')}.`);
   } catch (error) {
     console.log(

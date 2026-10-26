@@ -1300,3 +1300,45 @@ test('idle handoff freezes a paused queue only for its own device and rejects un
   const duplicate = await client.request(command);
   assert.ok(duplicate.type === 'response' && !duplicate.ok);
 });
+
+test('mobile controller creates on an online project computer and disconnecting never stops its task', async (t) => {
+  const f = await fixture(t, 60, 10);
+  const owner = await f.connect();
+  const phone = await f.connect({ id: randomUUID(), name: 'Android 手机' });
+  const sourceSessionId = await f.create(owner);
+  const created = await phone.request({
+    type: 'session.create.remote',
+    sourceSessionId,
+    title: '手机新任务',
+  });
+  assert.ok(created.type === 'response' && created.ok && created.sessionId);
+  const sessionId = created.sessionId;
+  assert.equal(f.server.store.get(sessionId).session.device?.id, owner.computer.id);
+  assert.equal(
+    f.server.store.get(sessionId).session.projectPath,
+    f.server.store.get(sourceSessionId).session.projectPath,
+  );
+  await phone.request({
+    type: 'message.send',
+    sessionId,
+    text: '需要确认的任务',
+    scenario: 'tool',
+  });
+  await phone.event('approval.requested');
+  const before = f.server.store.get(sessionId).session.activeRun;
+  assert.ok(before);
+  phone.send({ type: 'leave' });
+  phone.socket.close();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(f.server.store.get(sessionId).session.activeRun?.id, before.id);
+  await owner.request({ type: 'run.cancel', sessionId, runId: before.id });
+  owner.socket.close();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  const nextPhone = await f.connect({ id: randomUUID(), name: '另一台手机' });
+  const offline = await nextPhone.request({
+    type: 'session.create.remote',
+    sourceSessionId,
+    title: '不应创建',
+  });
+  assert.ok(offline.type === 'response' && !offline.ok && offline.code === 'device_offline');
+});

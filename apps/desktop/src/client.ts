@@ -66,6 +66,11 @@ type NewCommand = Command extends infer C
     ? Omit<C, 'requestId'>
     : never
   : never;
+// Android supplies a pinned native TLS socket; the desktop/browser keep their existing transport.
+export type ClientSocket = Pick<
+  WebSocket,
+  'readyState' | 'onopen' | 'onmessage' | 'onclose' | 'onerror' | 'send' | 'close'
+>;
 // Losing a reply says nothing about whether the operation reached the service. Keep that uncertainty
 // separate from the current connection state, which can recover while the warning is still displayed.
 export class RequestRejectedError extends Error {
@@ -197,7 +202,7 @@ export class ProxyClient {
   results = new Map<string, DataMessage>();
   listeners = new Set<() => void>();
   terminalListeners = new Set<(message: TerminalMessage) => void>();
-  socket: WebSocket | null = null;
+  socket: ClientSocket | null = null;
   credentials: {
     url: string;
     token: string;
@@ -208,6 +213,7 @@ export class ProxyClient {
     // Remote mode: opens the bridge in the main process and resolves to its address. A bridge serves one
     // connection, so every attempt asks for a new one.
     bridge?: () => Promise<string>;
+    transport?: () => ClientSocket;
   } | null = null;
   retryTimer: ReturnType<typeof setTimeout> | undefined;
   retryAttempt = 0;
@@ -274,8 +280,17 @@ export class ProxyClient {
     )
       throw new Error('当前离线原型仅连接本机环回服务。');
     if (token.trim().length < 24) throw new Error('服务凭据至少 24 个字符。');
+    this.start({ url: address.toString(), token: token.trim(), device, reconnect, bridge });
+  }
+  // A controller has its own identity and never claims the project's computer or opens a tunnel.
+  // Its native transport supplies the credential without exposing it to the page.
+  connectController(device: Device, transport: () => ClientSocket) {
+    this.start({ url: '', token: '', device, reconnect: true, transport });
+  }
+  private start(credentials: NonNullable<ProxyClient['credentials']>) {
     this.disconnect();
-    this.credentials = { url: address.toString(), token: token.trim(), device, reconnect, bridge };
+    this.credentials = credentials;
+    const device = credentials.device;
     this.established = false;
     this.cacheOrder = [];
     this.historyEpoch.clear();
@@ -406,7 +421,7 @@ export class ProxyClient {
     );
   }
   private attach(credentials: NonNullable<ProxyClient['credentials']>, protocolVersion: number) {
-    const socket = new WebSocket(credentials.url);
+    const socket = credentials.transport?.() ?? new WebSocket(credentials.url);
     this.socket = socket;
     let ready = false;
     let fallback: number | null = null;
@@ -442,7 +457,12 @@ export class ProxyClient {
       }
       if (message.type === 'ready') {
         ready = true;
-        if (message.adapter === 'claude-code' && !credentials.bridge && !credentials.browser)
+        if (
+          message.adapter === 'claude-code' &&
+          !credentials.bridge &&
+          !credentials.browser &&
+          !credentials.transport
+        )
           credentials.reconnect = false;
         this.established = true;
         clearTimeout(timeout);

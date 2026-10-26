@@ -11,7 +11,8 @@
   "workspaces": [
     "apps/desktop",
     "apps/server",
-    "packages/protocol"
+    "packages/protocol",
+    "apps/mobile"
   ],
   "scripts": {
     "doctor": "node scripts/doctor.mjs",
@@ -36,7 +37,10 @@
     "package:linux": "node scripts/package-linux.mjs",
     "release": "node scripts/release.mjs",
     "desktop": "npm run start --workspace @cc-desk-tunnel/desktop",
-    "sync:upstream": "node scripts/sync-upstream.mjs"
+    "sync:upstream": "node scripts/sync-upstream.mjs",
+    "build:mobile": "npm run build --workspace @cc-desk-tunnel/mobile",
+    "package:android": "node scripts/package-android.mjs",
+    "test:mobile": "playwright test --config apps/mobile/playwright.config.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

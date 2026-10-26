@@ -1,0 +1,22 @@
+{
+  "name": "@cc-desk-tunnel/mobile",
+  "version": "0.4.31",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite --host 127.0.0.1 --port 15175"
+  },
+  "dependencies": {
+    "@cc-desk-tunnel/protocol": "0.0.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
+    "lucide-react": "1.49.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "6.1.1",
+    "vite": "8.3.3"
+  }
+}

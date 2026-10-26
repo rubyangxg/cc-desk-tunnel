@@ -21,6 +21,7 @@ WORKDIR /app
 COPY --chown=ccdesktunnel:ccdesktunnel package.json package-lock.json ./
 COPY --chown=ccdesktunnel:ccdesktunnel apps/server/package.json apps/server/package.json
 COPY --chown=ccdesktunnel:ccdesktunnel apps/desktop/package.json apps/desktop/package.json
+COPY --chown=ccdesktunnel:ccdesktunnel apps/mobile/package.json apps/mobile/package.json
 COPY --chown=ccdesktunnel:ccdesktunnel packages/protocol/package.json packages/protocol/package.json
 # Building node-pty downloads Node's headers, which now and then breaks off; it is tried a second time.
 RUN install() { npm ci --omit=dev --workspace=@cc-desk-tunnel/server --workspace=@cc-desk-tunnel/protocol; } \
