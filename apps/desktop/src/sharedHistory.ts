@@ -11,96 +11,14 @@ import {
   saveHistoryCache,
 } from './historyCache.ts';
 
-export type HistorySegment = {
-  key: string;
-  service: string;
-  account?: string;
-  session: Session;
-  events: SessionEvent[];
-};
-export type SharedHistory = {
-  segments: HistorySegment[];
-  prompt: string;
-  forward?: { profileId: string; url: string; sessionId: string };
-};
-
-// IndexedDB holds the full transcript, not credentials, and does not impose localStorage's small limit.
-// Include the endpoint: editing a saved connection must not attach another server's history.
-export const historyKey = (profile: ConnectionProfile, sessionId: string) =>
-  JSON.stringify([profile.id, profile.url, sessionId]);
-
-async function database() {
-  return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open('cc-shared-conversations', 1);
-    request.onupgradeneeded = () => request.result.createObjectStore('history');
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(new Error('无法打开本机会话历史，未切换服务器。'));
-  });
-}
-export async function sharedHistory(key: string): Promise<SharedHistory | null> {
-  const db = await database();
-  try {
-    return await new Promise((resolve, reject) => {
-      const transaction = db.transaction('history', 'readonly');
-      const request = transaction.objectStore('history').get(key);
-      transaction.oncomplete = () => resolve(request.result ?? null);
-      transaction.onabort = () => reject(new Error('读取本机会话历史失败。'));
-    });
-  } finally {
-    db.close();
-  }
-}
-export async function saveSharedHistory(key: string, value: SharedHistory) {
-  const db = await database();
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const transaction = db.transaction('history', 'readwrite');
-      transaction.objectStore('history').put(value, key);
-      transaction.oncomplete = () => resolve();
-      transaction.onabort = () => reject(new Error('本机会话历史保存失败，已暂停接力。'));
-    });
-  } finally {
-    db.close();
-  }
-}
-
-// Publish the destination and all old-segment pointers in one local transaction. Reopening an old
-// server must lead to the current conversation rather than unknowingly forking the same task.
-export async function attachSharedHistory(
-  profile: ConnectionProfile,
-  sessionId: string,
-  value: SharedHistory,
-) {
-  const db = await database();
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const transaction = db.transaction('history', 'readwrite');
-      const store = transaction.objectStore('history');
-      store.put(value, historyKey(profile, sessionId));
-      value.segments.forEach((segment, index) => {
-        const request = store.get(segment.key);
-        request.onsuccess = () =>
-          store.put(
-            {
-              ...(request.result ?? { segments: value.segments.slice(0, index), prompt: '' }),
-              forward: { profileId: profile.id, url: profile.url, sessionId },
-            },
-            segment.key,
-          );
-        store.delete(`pending:${segment.key}`);
-      });
-      transaction.oncomplete = () => resolve();
-      transaction.onabort = () => reject(new Error('会话交接记录保存失败，已暂停发送。'));
-    });
-    if (typeof BroadcastChannel !== 'undefined') {
-      const channel = new BroadcastChannel('cc-shared-history');
-      channel.postMessage('changed');
-      channel.close();
-    }
-  } finally {
-    db.close();
-  }
-}
+import type { SharedHistory } from './sharedHistoryStore.ts';
+export type { HistorySegment, SharedHistory } from './sharedHistoryStore.ts';
+export {
+  historyKey,
+  sharedHistory,
+  saveSharedHistory,
+  attachSharedHistory,
+} from './sharedHistoryStore.ts';
 
 // Only rendering uses these namespaced IDs. Commands, telemetry and billing use the live server's IDs.
 export function joinedHistory(archive: SharedHistory | null, current: SessionEvent[]) {

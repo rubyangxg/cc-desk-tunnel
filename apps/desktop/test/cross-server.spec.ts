@@ -23,7 +23,11 @@ for (const {
   otherRunning = false,
   goal = false,
   legacyGoal = false,
+  storageAbort = false,
+  storageFull = false,
 } of [
+  { manual: false, loseAck: false, storageAbort: true },
+  { manual: false, loseAck: false, storageFull: true, queued: true },
   { manual: false, loseAck: false, goal: true },
   { manual: false, loseAck: false, goal: true, legacyGoal: true },
   { manual: false, loseAck: false, otherRunning: true },
@@ -53,7 +57,7 @@ for (const {
   { manual: false, loseAck: false, away: true },
   { manual: false, loseAck: false, queued: true, loseQueueAck: true },
 ])
-  test(`cross-server ${manual ? 'manual' : 'quota'}${goal ? ' goal' : ''}${legacyGoal ? ' legacy goal' : ''}${loseAck ? ' lost acknowledgement' : ''}${paginated ? ' paginated' : ''}${localAvailable ? ' available local account' : ''}${queued ? ' queued' : ''}${paused ? ' paused' : ''}${stoppedSend ? ' stopped resend' : ''}${away ? ' other device' : ''}${loseQueueAck ? ' lost queue acknowledgement' : ''}${quotaQueue ? ' idle quota queue' : ''}${legacyQueue ? ' legacy' : ''}${userPaused ? ' user paused' : ''}${prioritySend ? ' weekly priority send' : ''}${priorityBlocked ? ' unresolved tool' : ''}${manualPriority ? ' manual preference' : ''}${overnight ? ' overnight weekly recovery' : ''}${otherRunning ? ' other active task' : ''} handoff retains history, submits once and survives reload`, async ({
+  test(`cross-server ${manual ? 'manual' : 'quota'}${goal ? ' goal' : ''}${legacyGoal ? ' legacy goal' : ''}${loseAck ? ' lost acknowledgement' : ''}${paginated ? ' paginated' : ''}${localAvailable ? ' available local account' : ''}${queued ? ' queued' : ''}${paused ? ' paused' : ''}${stoppedSend ? ' stopped resend' : ''}${away ? ' other device' : ''}${loseQueueAck ? ' lost queue acknowledgement' : ''}${quotaQueue ? ' idle quota queue' : ''}${legacyQueue ? ' legacy' : ''}${userPaused ? ' user paused' : ''}${prioritySend ? ' weekly priority send' : ''}${priorityBlocked ? ' unresolved tool' : ''}${manualPriority ? ' manual preference' : ''}${overnight ? ' overnight weekly recovery' : ''}${otherRunning ? ' other active task' : ''}${storageAbort ? ' storage abort' : ''}${storageFull ? ' storage full' : ''} handoff retains history, submits once and survives reload`, async ({
     page,
   }) => {
     const device = { id: randomUUID(), name: 'test computer', platform: 'linux' as const };
@@ -177,6 +181,25 @@ for (const {
       });
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(e.message));
+    if (storageAbort || storageFull)
+      await page.addInitScript(
+        ({ full }) => {
+          const put = IDBObjectStore.prototype.put;
+          let aborted = false;
+          IDBObjectStore.prototype.put = function (value, key) {
+            const attaching =
+              this.name === 'history' && typeof key === 'string' && !key.startsWith('pending:');
+            if (attaching && full) throw new DOMException('Disk full', 'QuotaExceededError');
+            const request = put.call(this, value, key);
+            if (attaching && !aborted) {
+              aborted = true;
+              request.addEventListener('success', () => this.transaction.abort());
+            }
+            return request;
+          };
+        },
+        { full: storageFull },
+      );
     for (const server of [1, 2])
       await page.routeWebSocket(`ws://127.0.0.1:1899${server}/ws`, (route) => {
         const send = (value: unknown) => route.send(JSON.stringify(value));
@@ -548,6 +571,21 @@ for (const {
       expect(source.goal?.condition).toBe('不在历史摘录里的原始验收条件');
       return;
     }
+    if (storageFull) {
+      await expect(page.getByText(/本地存储空间不足/)).toBeVisible();
+      await expect(page.getByText(/续接消息尚未发送，上下文已保留/)).toBeVisible();
+      await expect(page.getByRole('textbox', { name: '消息', exact: true })).toHaveValue(
+        /保留原来的任务和对话/,
+      );
+      expect(sent.filter((m) => m.server === 2 && m.type === 'session.create')).toHaveLength(1);
+      expect(sent.filter((m) => ['message.send', 'message.enqueue'].includes(m.type))).toHaveLength(
+        0,
+      );
+      expect(source.messageQueue?.items).toHaveLength(2);
+      expect(source.messageQueue?.handoff).toBeDefined();
+      expect(errors).toEqual([]);
+      return;
+    }
     if (loseQueueAck) {
       await expect(page.getByText(/自动续接已暂停：排队请求超时/)).toBeVisible({ timeout: 15000 });
       expect(target?.messageQueue?.items.map((item) => item.text)).toEqual(['后续任务1']);
@@ -582,6 +620,8 @@ for (const {
       manual || stoppedSend || quotaQueue || prioritySend ? 0 : 1,
     );
     expect(sent.filter((m) => m.type === 'message.send' && m.server === 2)).toHaveLength(1);
+    if (storageAbort)
+      expect(sent.filter((m) => m.type === 'session.create' && m.server === 2)).toHaveLength(1);
     if (otherRunning) {
       expect(companion.activeRun?.status).toBe('running');
       expect(sent.filter((m) => m.type === 'run.cancel')).toHaveLength(0);

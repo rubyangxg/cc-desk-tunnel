@@ -500,6 +500,7 @@ export function usePoolRotation(options: {
     setWorking(true);
     setNotice(`已切换到 ${profiles.initial.name}，正在续接 ${handoff.session.title}…`);
     void (async () => {
+      let historyAttached = false;
       try {
         if (handoff.session.goal && !client.state.features.includes('goal-continuation'))
           throw new Error('目标服务器不支持 /goal 续接，请先升级服务端；目标和原会话仍保留。');
@@ -513,12 +514,14 @@ export function usePoolRotation(options: {
         if (!result.sessionId) throw new Error('续接会话创建失败。');
         const sessionId = result.sessionId;
         resumedSession.current = sessionId;
+        // Keep a recoverable draft even when the local archive cannot be committed.
+        current.current.draft(sessionId, handoff.prompt);
+        current.current.show(sessionId);
         if (handoff.history) {
           await attachSharedHistory(profiles.initial, sessionId, handoff.history);
           window.dispatchEvent(new Event('shared-history-changed'));
         }
-        current.current.draft(sessionId, handoff.prompt);
-        current.current.show(sessionId);
+        historyAttached = true;
         await client.request({
           type: 'session.configure',
           sessionId,
@@ -561,8 +564,13 @@ export function usePoolRotation(options: {
           `已从 ${handoff.source} 切换到 ${profiles.initial.name}，携带最近上下文继续任务。`,
         );
       } catch (error) {
+        setNotice(null);
+        const detail = (error instanceof Error ? error.message : '请求失败').replace(
+          /[。.!\s]+$/u,
+          '',
+        );
         current.current.error(
-          `自动续接已暂停：${error instanceof Error ? error.message : '请求失败'}。请检查会话和草稿后手动继续，客户端不会重发未确认请求。`,
+          `自动续接已暂停：${detail}。${resumedSession.current && !historyAttached ? '续接消息尚未发送，上下文已保留在当前会话草稿中。' : '请检查会话和草稿后手动继续，客户端不会重发未确认请求。'}`,
         );
       } finally {
         setWorking(false);
