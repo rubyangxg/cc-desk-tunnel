@@ -54,7 +54,13 @@ function resetTime(value: string | null | undefined, now: number) {
   if (!Number.isFinite(time)) return '重置时间未知';
   if (time <= now) return '等待确认重置';
   const minutes = Math.ceil((time - now) / 60000);
-  return `${minutes >= 60 ? `${Math.floor(minutes / 60)} 小时 ` : ''}${minutes % 60} 分钟后重置`;
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const parts = [];
+  if (days) parts.push(`${days} 天`);
+  if (hours) parts.push(`${hours} 小时`);
+  if (minutes % 60) parts.push(`${minutes % 60} 分钟`);
+  return `${parts.join(' ')}后重置`;
 }
 export function Quota({
   account,
