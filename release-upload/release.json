@@ -1,0 +1,23 @@
+{
+  "version": "0.4.36",
+  "protocol": 22,
+  "runtime": 1,
+  "commit": "81bc658feb411a772264ea2f3d14802bb7b1d435",
+  "files": [
+    {
+      "name": "CC-Desk-Tunnel-Setup-0.4.36-x64.exe",
+      "size": 201112433,
+      "sha256": "fd44304b8b5d2e9de76875ef2853423a3c81c81c886837869a650254cfcb6f36"
+    },
+    {
+      "name": "cc-desk-tunnel-server-0.4.36.tar.gz",
+      "size": 1618366,
+      "sha256": "36e0c48717047894534a6ae9e5b8fea4399a1701499fe843ad7d47c007bccc38"
+    },
+    {
+      "name": "CC-Desk-Tunnel-0.4.36-android.apk",
+      "size": 1535617,
+      "sha256": "99fe45bb01ca4df049fe0452b85c78b9b7fe004db385204293c89e20807e0b39"
+    }
+  ]
+}

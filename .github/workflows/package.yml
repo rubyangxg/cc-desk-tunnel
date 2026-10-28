@@ -1,220 +1,25 @@
-# Builds the Windows installer and server bundle by default, with Linux available on request. macOS packages are not built.
-# Each client is started as a check. This is where a release
-# is built: the release script names its draft in `release`, and the files are attached to it with their
-# hashes. Nothing is signed with a certificate. Otherwise the files are kept with the run for 30 days; it
-# runs when asked for and after a push to the personal branch.
 name: package
-run-name: ${{ inputs.release || github.ref_name }} · ${{ inputs.target || 'windows-server' }}
+run-name: Attach signed Android v0.4.36 from verified build 40709409414
 on:
   workflow_dispatch:
-    inputs:
-      release:
-        description: Tag of a draft release to attach the files to. Left empty, they stay with the run.
-        default: ''
-      android:
-        description: Build Android APK and run emulator checks (signed locally before publishing)
-        type: boolean
-        default: false
-      target:
-        description: Release packages (Windows + server; all also includes Linux, never macOS)
-        type: choice
-        default: windows-server
-        options: [windows-server, all]
-  push:
-    branches: [personal]
 permissions:
-  contents: read
-concurrency:
-  group: package-${{ github.ref }}
-  cancel-in-progress: true
-# The steps that download Electron and the packaging tools are tried a second time after a minute: those
-# downloads now and then time out.
+  contents: write
+  actions: read
 jobs:
-  windows:
-    runs-on: windows-2022
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      # Electron and the packaging tools, kept from one run to the next: they are fetched from release pages
-      # that now and then time out, and change only with the versions the lock file names.
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/AppData/Local/electron/Cache
-            ~/AppData/Local/electron-builder/Cache
-            ~/Library/Caches/electron
-            ~/Library/Caches/electron-builder
-            ~/.cache/electron
-            ~/.cache/electron-builder
-            .tools
-          key: packaging-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json', 'scripts/prepare-windows.ps1') }}
-      - run: npm ci
-      - run: npm run setup:desktop || (sleep 60 && npm run setup:desktop)
-        shell: bash
-      # The bundled OpenSSH and PowerShell, fetched and checked against the hashes the script names.
-      - run: npm run prepare:windows:package || (sleep 60 && npm run prepare:windows:package)
-        shell: bash
-      # Ends with the packaged program started offline; a package that does not start fails here.
-      - run: npm run package:windows || (sleep 60 && npm run package:windows)
-        shell: bash
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-x64
-          path: artifacts/windows/*.exe
-          if-no-files-found: error
-          retention-days: 30
-  # The .deb, built and then installed the way a user installs it, and started from where it was installed:
-  # that is where its sandbox and what it depends on are in place. A virtual screen stands in for a desktop.
-  linux:
-    if: inputs.target == 'all'
+  attach-signed-android:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb imagemagick
-      # Electron and the packaging tools, kept from one run to the next: they are fetched from release pages
-      # that now and then time out, and change only with the versions the lock file names.
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/AppData/Local/electron/Cache
-            ~/AppData/Local/electron-builder/Cache
-            ~/Library/Caches/electron
-            ~/Library/Caches/electron-builder
-            ~/.cache/electron
-            ~/.cache/electron-builder
-            .tools
-          key: packaging-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json', 'scripts/prepare-windows.ps1') }}
-      - run: npm ci
-      - run: npm run setup:desktop || (sleep 60 && npm run setup:desktop)
-        shell: bash
-      - run: npm run package:linux || (sleep 60 && npm run package:linux)
-        shell: bash
-      - run: sudo apt-get install -y ./artifacts/linux/*.deb
-      - run: xvfb-run -a -s "-screen 0 1280x900x24" node scripts/smoke-posix-package.mjs "/opt/CC Desk Tunnel/cc-desk-tunnel"
-        env:
-          SMOKE_SCREENSHOT: artifacts/linux/window-x64.png
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux-x64
-          path: artifacts/linux/*.deb
-          if-no-files-found: error
-          retention-days: 30
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux-x64-window
-          path: artifacts/linux/*.png
-          if-no-files-found: warn
-          retention-days: 30
-  server:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - run: npm ci --include=dev --workspace=@cc-desk-tunnel/desktop --workspace=@cc-desk-tunnel/protocol
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
-      - run: |
-          version="$(node -p "require('./apps/desktop/package.json').version")"
-          mkdir -p artifacts/server
-          node scripts/package-server.mjs "artifacts/server/cc-desk-tunnel-server-$version.tar.gz"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: server
-          path: artifacts/server/*.tar.gz
-          if-no-files-found: error
-          retention-days: 30
-  android:
-    if: inputs.android == true
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.11.1'
-      - run: npm ci --include=dev --workspace=@cc-desk-tunnel/mobile --workspace=@cc-desk-tunnel/protocol
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
-      - run: npm run build:mobile
-      - run: gradle -p apps/mobile/android :app:assembleRelease :app:testDebugUnitTest :app:lintRelease
-      - name: Enable KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-      - uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 35
-          arch: x86_64
-          target: default
-          disable-animations: true
-          script: gradle -p apps/mobile/android connectedDebugAndroidTest
-      - uses: actions/upload-artifact@v4
-        with:
-          name: android-unsigned
-          path: apps/mobile/android/app/build/outputs/apk/release/app-release-unsigned.apk
-          if-no-files-found: error
-          retention-days: 30
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: android-test-reports
-          path: apps/mobile/android/app/build/reports
-          retention-days: 14
-  # For the release script: every file of the release goes from here to the draft it made, described by
-  # release.json and SHA256SUMS, without passing through a maintainer's computer. The only job that may
-  # write to the repository.
-  attach:
-    if: >-
-      always() && !cancelled() && inputs.release != '' &&
-      needs.windows.result == 'success' &&
-      needs.server.result == 'success' &&
-      ((inputs.android == true && needs.android.result == 'success') ||
-       (inputs.android != true && needs.android.result == 'skipped')) &&
-      ((inputs.target == 'all' && needs.linux.result == 'success') ||
-       (inputs.target != 'all' && needs.linux.result == 'skipped'))
-    needs: [windows, linux, server, android]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: '{windows-x64,linux-x64,server}'
-          merge-multiple: true
-          path: downloaded
-      - run: |
-          mkdir release
-          find downloaded -maxdepth 1 -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.deb' -o -name '*.tar.gz' \) -exec mv {} release/ \;
-          node scripts/release-manifest.mjs release
-          test "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish --jq '[.isDraft, .targetCommitish] | @tsv')" = "$(printf 'true\t%s' "$GITHUB_SHA")"
-          gh release upload "$TAG" release/* --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Verify tested source and draft assets
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.release }}
-          RELEASE_TARGET: ${{ inputs.target || 'windows-server' }}
+        run: |
+          test "$GITHUB_REPOSITORY" = rubyangxg/cc-desk-tunnel
+          test "$(gh run view 40709409414 -R rubyangxg/cc-desk-tunnel --json conclusion,headSha --jq '[.conclusion,.headSha]|@tsv')" = "$(printf 'success\t81bc658feb411a772264ea2f3d14802bb7b1d435')"
+          gh api repos/rubyangxg/cc-desk-tunnel/releases/426797589 > /tmp/cc-release.json
+          node release-upload/verify.mjs
+      - name: Attach signed APK and manifest to existing draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload v0.4.36 release-upload/CC-Desk-Tunnel-0.4.36-android.apk release-upload/release.json release-upload/SHA256SUMS -R rubyangxg/cc-desk-tunnel --clobber
