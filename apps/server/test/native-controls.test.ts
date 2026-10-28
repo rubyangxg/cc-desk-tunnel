@@ -5,6 +5,10 @@ import {
   nativeCapabilities,
   nativeContextRefresh,
   nativeMetrics,
+  loginOf,
+  observedQuota,
+  ObservedQuotas,
+  unexpired,
   resultUsage,
 } from '../src/native-controls.ts';
 
@@ -129,7 +133,7 @@ test('optional native telemetry has a bounded wait and cannot hold a completed t
       return { rate_limits_available: false, rate_limits: null };
     },
   } as unknown as Query;
-  const metrics = await nativeMetrics(query, undefined, 10);
+  const metrics = await nativeMetrics(query, undefined, { timeoutMs: 10 });
   assert.ok(metrics.type === 'native.metrics');
   assert.equal(metrics.context, null);
   assert.equal(metrics.rateLimits?.available, false);
@@ -344,4 +348,183 @@ test('command metadata keeps descriptions and argument hints without forwarding 
   });
   assert.deepEqual(event.terminalCommands, ['exit']);
   assert.equal(JSON.stringify(event).includes('private-field'), false);
+});
+
+// As a CLAUDE_CODE_OAUTH_TOKEN login of CLI 2.1.293 passes it on.
+const rateLimitEvent = (info: Record<string, unknown>) =>
+  ({ type: 'rate_limit_event', rate_limit_info: info, uuid: 'u', session_id: 's' }) as never;
+const unified = rateLimitEvent({
+  status: 'allowed',
+  resetsAt: 1792942200,
+  rateLimitType: 'five_hour',
+  overageStatus: 'rejected',
+  isUsingOverage: false,
+  unifiedWindows: {
+    five_hour: { utilization: 0.02, resetsAt: 1792942200 },
+    seven_day: { utilization: 0.44, resetsAt: 1793325600 },
+  },
+});
+
+test('the quota the CLI passes on in its stream becomes the windows of its own reading', () => {
+  assert.deepEqual(observedQuota(unified, null, 0), {
+    windows: [
+      { name: 'five_hour', utilization: 2, resetsAt: '2026-10-25T15:30:00.000Z' },
+      { name: 'seven_day', utilization: 44, resetsAt: '2026-10-30T02:00:00.000Z' },
+    ],
+    measuredAt: new Date(0).toISOString(),
+  });
+});
+
+test('an event for one window keeps the last reading of the others', () => {
+  const first = observedQuota(unified, null, 0);
+  const next = observedQuota(
+    rateLimitEvent({ status: 'allowed_warning', rateLimitType: 'seven_day', utilization: 0.81 }),
+    first,
+    1000,
+  );
+  assert.deepEqual(
+    next?.windows.map(({ name, utilization }) => [name, utilization]),
+    [
+      ['five_hour', 2],
+      ['seven_day', 81],
+    ],
+  );
+  assert.equal(
+    observedQuota(rateLimitEvent({ status: 'allowed', rateLimitType: 'overage' }), first),
+    null,
+  );
+  assert.equal(observedQuota(rateLimitEvent({ status: 'allowed' }), null), null);
+});
+
+test('the weekly window of the models counted apart keeps its own name, since the replies do not name the models', () => {
+  const event = rateLimitEvent({
+    status: 'allowed',
+    unifiedWindows: {
+      seven_day: { utilization: 0.44, resetsAt: 1793325600 },
+      seven_day_overage_included: { utilization: 0.6, resetsAt: 1793325600 },
+    },
+  });
+  assert.deepEqual(
+    observedQuota(event, null, 0)?.windows.map(({ name }) => name),
+    ['seven_day', 'seven_day_overage_included'],
+  );
+});
+
+test('readings are kept by login: another one neither sees nor overwrites them', () => {
+  const quotas = new ObservedQuotas();
+  quotas.observe('token', unified, 0);
+  assert.equal(quotas.of('api key'), null);
+  // A run left under an earlier login goes on reporting; the reading of the one signed in now stands.
+  quotas.observe(
+    'earlier',
+    rateLimitEvent({
+      status: 'allowed',
+      unifiedWindows: { seven_day: { utilization: 0.9, resetsAt: 1793325600 } },
+    }),
+    1,
+  );
+  assert.deepEqual(
+    quotas.of('token')?.windows.map(({ name, utilization }) => [name, utilization]),
+    [
+      ['five_hour', 2],
+      ['seven_day', 44],
+    ],
+  );
+  assert.equal(quotas.of('earlier')?.windows[0]?.utilization, 90);
+  // An event that says nothing of the windows leaves the reading as it was.
+  quotas.observe('token', rateLimitEvent({ status: 'allowed', rateLimitType: 'overage' }), 2);
+  assert.equal(quotas.of('token')?.measuredAt, new Date(0).toISOString());
+});
+
+test('a window drops out of the reading once its reset time has passed', () => {
+  const observed = observedQuota(unified, null, 0);
+  const between = Date.parse('2026-10-27T00:00:00Z');
+  assert.deepEqual(
+    unexpired(observed, between)?.windows.map(({ name }) => name),
+    ['seven_day'],
+  );
+  assert.equal(unexpired(observed, Date.parse('2026-10-30T02:00:00Z')), null);
+  assert.equal(unexpired(null), null);
+});
+
+test('another login, an API key or a different account, is told apart from the one the reading came from', () => {
+  const token = { apiProvider: 'firstParty', tokenSource: 'CLAUDE_CODE_OAUTH_TOKEN' } as const;
+  assert.equal(loginOf(token), loginOf({ ...token }));
+  assert.notEqual(
+    loginOf(token),
+    loginOf({ apiProvider: 'firstParty', apiKeySource: 'ANTHROPIC_API_KEY' }),
+  );
+  assert.notEqual(
+    loginOf({ ...token, email: 'a@example.com' }),
+    loginOf({ ...token, email: 'b@example.com' }),
+  );
+});
+
+test('the observed quota stands in only when the CLI says the plan quota does not apply', async () => {
+  const query = (available: boolean) =>
+    ({
+      async getContextUsage() {
+        throw new Error('unsupported');
+      },
+      async usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET() {
+        return {
+          rate_limits_available: available,
+          rate_limits: available
+            ? { five_hour: { utilization: 7, resets_at: '2026-10-03T02:00:00Z' } }
+            : null,
+        };
+      },
+    }) as unknown as Query;
+  const later = Math.floor(Date.now() / 1000) + 3600;
+  const observed = observedQuota(
+    rateLimitEvent({
+      status: 'allowed',
+      unifiedWindows: { five_hour: { utilization: 0.02, resetsAt: later } },
+    }),
+    null,
+    0,
+  );
+  const filled = await nativeMetrics(query(false), undefined, { observed });
+  assert.ok(filled.type === 'native.metrics');
+  assert.deepEqual(filled.rateLimits, { available: true, ...observed });
+  // A reading whose windows have all reset leaves the native answer as it is.
+  const stale = await nativeMetrics(query(false), undefined, {
+    observed: observedQuota(
+      rateLimitEvent({
+        status: 'allowed',
+        unifiedWindows: { five_hour: { utilization: 0.9, resetsAt: later - 7200 } },
+      }),
+      null,
+      0,
+    ),
+  });
+  assert.ok(stale.type === 'native.metrics');
+  assert.equal(stale.rateLimits?.available, false);
+  const native = await nativeMetrics(query(true), undefined, { observed });
+  assert.ok(native.type === 'native.metrics');
+  assert.deepEqual(native.rateLimits?.windows, [
+    { name: 'five_hour', utilization: 7, resetsAt: '2026-10-03T02:00:00Z' },
+  ]);
+  const none = await nativeMetrics(query(false));
+  assert.ok(none.type === 'native.metrics');
+  assert.equal(none.rateLimits?.available, false);
+});
+
+test('token logins without email cannot share quota between isolated pool accounts', () => {
+  const account = { apiProvider: 'firstParty', tokenSource: 'CLAUDE_CODE_OAUTH_TOKEN' } as const;
+  const first = loginOf(account, '/accounts/one/config/settings.json');
+  const second = loginOf(account, '/accounts/two/config/settings.json');
+  const quotas = new ObservedQuotas();
+  quotas.observe(first, unified, 0);
+  assert.equal(quotas.of(second), null);
+  quotas.observe(
+    second,
+    rateLimitEvent({
+      status: 'allowed',
+      unifiedWindows: { five_hour: { utilization: 0.8, resetsAt: 1792942200 } },
+    }),
+    1000,
+  );
+  assert.equal(quotas.of(first)?.windows[0]?.utilization, 2);
+  assert.equal(quotas.of(second)?.windows[0]?.utilization, 80);
 });

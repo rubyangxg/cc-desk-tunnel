@@ -71,6 +71,11 @@ type Live = {
   // a second answer.
   answered: (tool: Tool) => boolean;
   reply: (tool: Tool, allowed: boolean, answers?: Record<string, string>) => void;
+  // The foreground task a running call waits on, while this window may act on it: 'sent' once it has, until
+  // the call returns.
+  taskControl: (tool: Tool) => 'ready' | 'sent' | undefined;
+  endTool: (tool: Tool) => void;
+  backgroundTool: (tool: Tool) => void;
   // Absent while a fork cannot be made.
   edit?: (item: Text) => void;
 };
@@ -93,7 +98,8 @@ function Fold({
 }: {
   className: string;
   forced?: boolean;
-  summary: React.ReactNode;
+  // Given whether the fold is open, for a heading that shows what the open fold would show twice.
+  summary: React.ReactNode | ((shown: boolean) => React.ReactNode);
   children: () => React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -108,7 +114,7 @@ function Fold({
         }}
       >
         <ChevronRight className="fold-chevron" />
-        {summary}
+        {typeof summary === 'function' ? summary(shown) : summary}
       </summary>
       {shown && children()}
     </details>
@@ -148,11 +154,54 @@ function LinkCardView({ card }: { card: LinkCard }) {
   );
 }
 
+// What may be done with the task a running call waits on, in the call's line or in the heading of its shut group.
+function TaskActions({
+  tool,
+  control,
+  live,
+}: {
+  tool: Tool;
+  control: 'ready' | 'sent';
+  live: Live;
+}) {
+  return (
+    <span className="tool-task-actions">
+      <button
+        type="button"
+        className="button"
+        disabled={control === 'sent' || live.busy}
+        title="命令接着运行，Claude 不再等它，先做别的；命令结束后 Claude 会收到结果"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          live.backgroundTool(tool);
+        }}
+      >
+        转后台
+      </button>
+      <button
+        type="button"
+        className="button"
+        disabled={control === 'sent' || live.busy}
+        title="只结束这一条，这一轮不停止，Claude 会接着处理"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          live.endTool(tool);
+        }}
+      >
+        终止
+      </button>
+    </span>
+  );
+}
+
 function ToolRow({ tool, active, live }: { tool: Tool; active: boolean; live: Live }) {
   const { category, verb, subject, added, removed, running, failed } = describe(tool, active);
   const Icon = icons[category];
   const pictures = useMemo(() => (tool.output ? toolPictures(tool.output) : null), [tool.output]);
   const approval = live.canApprove(tool);
+  const control = live.taskControl(tool);
   // A question Claude asks is answered, not allowed or denied.
   const questions = tool.name === 'AskUserQuestion' ? questionsOf(tool.input) : null;
   if (approval && questions)
@@ -188,6 +237,7 @@ function ToolRow({ tool, active, live }: { tool: Tool; active: boolean; live: Li
               ? duration(tool.at, tool.endedAt)
               : running && duration(tool.at, live.now)}
           </span>
+          {control && <TaskActions tool={tool} control={control} live={live} />}
         </span>
       }
     >
@@ -312,17 +362,24 @@ function WorkGroup({
   live: Live;
 }) {
   const { label, waiting, running, started, ended } = summarize(work, active, latest);
+  // The one call of the group waited on in the foreground can be acted on without opening it; several are acted on
+  // in their own lines.
+  const controlled = work.items.filter(
+    (item): item is Tool => item.kind === 'tool' && !!live.taskControl(item),
+  );
+  const control = controlled.length === 1 ? live.taskControl(controlled[0]) : undefined;
   return (
     <Fold
       className="work"
       forced={waiting}
-      summary={
+      summary={(shown) => (
         <span className="work-heading">
           {running && <LoaderCircle className="spinning" />}
           <span>{label}</span>
           {!waiting && <small>{duration(started, ended && !running ? ended : live.now)}</small>}
+          {control && !shown && <TaskActions tool={controlled[0]} control={control} live={live} />}
         </span>
-      }
+      )}
     >
       {() => <WorkItems work={work} active={active} live={live} />}
     </Fold>
@@ -570,6 +627,7 @@ export default function Conversation({
   loadEarlier,
   replyApproval,
   stopTask,
+  backgroundTask,
   stop,
   edit,
   findRequest,
@@ -590,6 +648,8 @@ export default function Conversation({
   findRequest: number;
   // Ends one background task of the run, or the run with all of them.
   stopTask: (taskId: string) => void;
+  // Sends the foreground task a call waits on to the background.
+  backgroundTask: (toolId: string) => void;
   stop: () => void;
   replyApproval: (
     runId: string,
@@ -710,6 +770,20 @@ export default function Conversation({
   // ref stops a second press before the page has drawn the first; the state greys the buttons out.
   const answering = useRef(new Set<string>());
   const [answered, setAnswered] = useState<ReadonlySet<string>>(new Set());
+  // A press on a task's buttons holds them until the call returns; should nothing come of it, they are offered again.
+  const [taskSent, setTaskSent] = useState<ReadonlySet<string>>(new Set());
+  const sendTask = (toolId: string) => {
+    setTaskSent((value) => new Set(value).add(toolId));
+    setTimeout(
+      () =>
+        setTaskSent((value) => {
+          const rest = new Set(value);
+          rest.delete(toolId);
+          return rest;
+        }),
+      5000,
+    );
+  };
   const live: Live = {
     now,
     busy,
@@ -736,6 +810,26 @@ export default function Conversation({
       });
     },
     edit: edit && !running ? (item) => edit(item.id, item.text) : undefined,
+    taskControl: (tool) =>
+      connected &&
+      ownsRun &&
+      session?.activeRun?.id === tool.runId &&
+      tool.taskId &&
+      !tool.endedAt &&
+      // A command over in a moment is not worth buttons that would flash.
+      now - Date.parse(tool.at) >= 3000
+        ? taskSent.has(tool.id)
+          ? 'sent'
+          : 'ready'
+        : undefined,
+    endTool: (tool) => {
+      sendTask(tool.id);
+      stopTask(tool.taskId!);
+    },
+    backgroundTool: (tool) => {
+      sendTask(tool.id);
+      backgroundTask(tool.id);
+    },
   };
   const scroll = useRef<HTMLDivElement>(null);
   // The view follows new output until the reader moves up from the end, and again once they come back down to it.

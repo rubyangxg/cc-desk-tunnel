@@ -12,6 +12,8 @@ const quotaNames: Record<string, string | undefined> = {
   seven_day_opus: 'Opus 每周额度',
   seven_day_sonnet: 'Sonnet 每周额度',
   seven_day_oauth_apps: '应用每周额度',
+  // Read from a long-lived token's replies, which do not name the models it counts.
+  seven_day_overage_included: '按模型计的每周额度',
 };
 // The service names a per-model weekly window `seven_day:<model>`, as the account's plan reports it.
 export const quotaName = (name: string) =>

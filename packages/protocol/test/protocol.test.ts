@@ -48,6 +48,14 @@ test('only clients accept the audited v0.3.1 protocol and retry its version refu
   assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.10' }, 18), null);
   assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.20' }, PROTOCOL_VERSION), 19);
   assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.20' }, 19), null);
+  assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.29' }, PROTOCOL_VERSION), 20);
+  assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.34' }, PROTOCOL_VERSION), 21);
+  assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.34' }, 21), null);
+  assert.equal(
+    clientServerMessageSchema.safeParse({ ...ready, protocolVersion: 21 }).success,
+    true,
+  );
+  assert.equal(serverMessageSchema.safeParse({ ...ready, protocolVersion: 21 }).success, false);
   assert.equal(fallbackServerProtocol(refusal, 17), 16);
   assert.equal(fallbackServerProtocol(refusal, 16), null);
   assert.equal(fallbackServerProtocol({ ...refusal, service: '0.2.13' }, 17), null);
@@ -161,6 +169,21 @@ test('a run waiting only for background tasks, its task list and the request to 
   };
   assert.ok(commandSchema.safeParse(stop).success);
   assert.equal(commandSchema.safeParse({ ...stop, taskId: '' }).success, false);
+  const background = {
+    type: 'run.task.background',
+    requestId: randomUUID(),
+    sessionId: event.sessionId,
+    runId: event.runId,
+    toolId: 'call-1',
+  };
+  assert.ok(commandSchema.safeParse(background).success);
+  assert.equal(commandSchema.safeParse({ ...background, toolId: '' }).success, false);
+  assert.ok(
+    eventSchema.safeParse({
+      ...event,
+      payload: { type: 'tool.task', toolId: 'call-1', taskId: 'b1' },
+    }).success,
+  );
 });
 
 test('a session report is asked for by session and answers with its figures', () => {

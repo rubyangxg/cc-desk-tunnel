@@ -2,6 +2,7 @@ import type {
   AccountInfo,
   ModelInfo,
   Query,
+  SDKRateLimitEvent,
   SDKResultMessage,
   SlashCommand,
 } from '@anthropic-ai/claude-agent-sdk';
@@ -13,6 +14,85 @@ import type {
 } from '@cc-desk-tunnel/protocol';
 
 type ContextUsage = Awaited<ReturnType<Query['getContextUsage']>>;
+type Windows = NonNullable<Metrics['rateLimits']>['windows'];
+export type ObservedQuota = { windows: Windows; measuredAt: string };
+// `seven_day_overage_included` is the weekly window of the models the plan counts apart. The response headers do not
+// say which models those are, so it keeps its own name rather than one guessed after native `/usage`, which names the
+// same window after the model the server calls it by.
+type UnifiedWindow = { utilization?: number; resetsAt?: number };
+
+// Who the CLI is signed in as. A reading seen under one login says nothing about another.
+export function loginOf(account: AccountInfo, accountScope = '') {
+  const { apiProvider, tokenSource, apiKeySource, email, organization, subscriptionType } = account;
+  return JSON.stringify([
+    accountScope,
+    apiProvider,
+    tokenSource,
+    apiKeySource,
+    email,
+    organization,
+    subscriptionType,
+  ]);
+}
+
+// The CLI passes on the quota its own model requests were answered with as `rate_limit_event`. A login with
+// CLAUDE_CODE_OAUTH_TOKEN may not read the plan quota through `/usage`, but its requests carry it all the same.
+// `unifiedWindows` names every window of the response; it is not in the SDK's published type. Without it the event
+// speaks for one window. Utilization comes as a fraction and the reset as Unix seconds.
+export function observedQuota(
+  event: SDKRateLimitEvent,
+  previous: ObservedQuota | null,
+  now = Date.now(),
+): ObservedQuota | null {
+  const info = event.rate_limit_info as SDKRateLimitEvent['rate_limit_info'] & {
+    unifiedWindows?: Record<string, UnifiedWindow | undefined>;
+  };
+  const named: [string, UnifiedWindow | undefined][] = info.unifiedWindows
+    ? Object.entries(info.unifiedWindows)
+    : info.rateLimitType && info.rateLimitType !== 'overage'
+      ? [[info.rateLimitType, info]]
+      : [];
+  const windows = named.flatMap(([name, window]) =>
+    window && Number.isFinite(window.utilization)
+      ? [
+          {
+            name,
+            utilization: Math.max(0, window.utilization! * 100),
+            resetsAt: window.resetsAt ? new Date(window.resetsAt * 1000).toISOString() : null,
+          },
+        ]
+      : [],
+  );
+  if (!windows.length) return null;
+  // A window the event leaves out keeps its last reading until it resets (see `unexpired`).
+  const kept = (previous?.windows ?? []).filter(
+    (window) => !windows.some((row) => row.name === window.name),
+  );
+  return { windows: [...kept, ...windows], measuredAt: new Date(now).toISOString() };
+}
+
+// The quota last seen in the message stream, kept by the login it came under (see `loginOf`). A project whose
+// settings sign in otherwise (an API key, another token) keeps apart, and a run still going under a login since
+// replaced writes to its own, not to the new one's.
+export class ObservedQuotas {
+  private readings = new Map<string, ObservedQuota>();
+  of(login: string) {
+    return this.readings.get(login) ?? null;
+  }
+  observe(login: string, event: SDKRateLimitEvent, now = Date.now()) {
+    const reading = observedQuota(event, this.of(login), now);
+    if (reading) this.readings.set(login, reading);
+  }
+}
+
+// A stored reading outlives its window: once the reset time passes, the figure no longer holds. The CLI drops such
+// windows from `unifiedWindows` the same way; a window without a reset time cannot be told apart and is dropped too.
+export function unexpired(observed: ObservedQuota | null, now = Date.now()): ObservedQuota | null {
+  const windows = (observed?.windows ?? []).filter(
+    (window) => window.resetsAt !== null && Date.parse(window.resetsAt) > now,
+  );
+  return windows.length ? { ...observed!, windows } : null;
+}
 
 export function nativeCapabilities(
   models: ModelInfo[],
@@ -142,10 +222,14 @@ export async function nativeContextRefresh(
   };
 }
 
+// `observed` is the quota last seen in the message stream, used when the CLI says the plan quota does not apply.
 export async function nativeMetrics(
   query: Query,
   result?: SDKResultMessage,
-  timeoutMs = 5000,
+  {
+    timeoutMs = 5000,
+    observed = null,
+  }: { timeoutMs?: number; observed?: ObservedQuota | null } = {},
 ): Promise<EventPayload> {
   // Order readings by when they were requested, not when concurrent status calls happened to finish.
   const measuredAt = new Date().toISOString();
@@ -174,6 +258,14 @@ export async function nativeMetrics(
         return [];
       })
     : [];
+  // A failed reading stays failed; only one that says the plan quota does not apply is completed.
+  const current = unexpired(observed, Date.parse(measuredAt));
+  const rateLimits =
+    usage && !usage.rate_limits_available && current
+      ? { available: true, ...current }
+      : usage
+        ? { available: usage.rate_limits_available, windows, measuredAt }
+        : null;
   const totals =
     result ??
     (usage?.session
@@ -186,7 +278,7 @@ export async function nativeMetrics(
     type: 'native.metrics',
     context: contextSummary(context),
     usage: totals ? resultUsage(totals) : null,
-    rateLimits: usage ? { available: usage.rate_limits_available, windows, measuredAt } : null,
+    rateLimits,
     ...(contextStatus.error || usageStatus.error
       ? {
           errors: { context: contextStatus.error, usage: usageStatus.error },

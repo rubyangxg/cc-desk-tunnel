@@ -4,7 +4,7 @@ import { webCertificateStateSchema } from './web-certificate.ts';
 export * from './web.ts';
 export * from './web-certificate.ts';
 
-export const PROTOCOL_VERSION = 21;
+export const PROTOCOL_VERSION = 22;
 // The release each protocol version began with, from 0.2.4 on: a client newer than its service signs in with
 // the service's number to have it upgrade (see the README). A new number adds its line here.
 export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
@@ -23,6 +23,7 @@ export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
   '0.4.11': 19,
   '0.4.21': 20,
   '0.4.30': 21,
+  '0.4.35': 22,
 };
 export const MAX_FRAME_BYTES = 256 * 1024;
 // The longest global instructions edited here, in characters; it keeps a frame of them within MAX_FRAME_BYTES.
@@ -397,6 +398,13 @@ export const eventPayloadSchema = z.discriminatedUnion('type', [
     type: z.literal('tool.progress'),
     toolId: z.string().min(1),
     elapsedSeconds: z.number().nonnegative(),
+  }),
+  // The task a tool call waits on in the foreground (a command, a subagent): while it runs, the user may end it or
+  // send it to the background, and the call returns either way.
+  z.object({
+    type: z.literal('tool.task'),
+    toolId: z.string().min(1),
+    taskId: z.string().min(1).max(200),
   }),
   // What a background task says of itself while it runs. It is worth something only until the task ends, so
   // it reaches the windows as a fragment and is never recorded.
@@ -889,6 +897,16 @@ export const commandSchema = z.discriminatedUnion('type', [
       taskId: z.string().min(1).max(200),
     })
     .strict(),
+  // Sends the task a tool call waits on to the background: the call returns, and the turn goes on without it.
+  z
+    .object({
+      type: z.literal('run.task.background'),
+      ...request,
+      sessionId: id,
+      runId: id,
+      toolId: z.string().min(1).max(200),
+    })
+    .strict(),
   z
     .object({
       type: z.literal('approval.reply'),
@@ -1086,6 +1104,7 @@ export const clientServerMessageSchema = z.union([
       z.literal(18),
       z.literal(19),
       z.literal(20),
+      z.literal(21),
     ]),
   }),
 ]);
@@ -1093,17 +1112,21 @@ export type ClientServerMessage = z.infer<typeof clientServerMessageSchema>;
 
 export function fallbackServerProtocol(message: ClientServerMessage, attempted: number) {
   if (message.type !== 'connection.error' || message.code !== 'version_mismatch') return null;
-  if ([17, 18, 19, 20, 21].includes(attempted) && message.service === '0.3.1') return 16;
+  if ([17, 18, 19, 20, 21, 22].includes(attempted) && message.service === '0.3.1') return 16;
   if (
-    [18, 19, 20, 21].includes(attempted) &&
+    [18, 19, 20, 21, 22].includes(attempted) &&
     /^(?:0\.3\.[25]|0\.4\.[0-9])$/.test(message.service ?? '')
   )
     return 17;
-  if ([19, 20, 21].includes(attempted) && /^(?:0\.3\.[34]|0\.4\.10)$/.test(message.service ?? ''))
+  if (
+    [19, 20, 21, 22].includes(attempted) &&
+    /^(?:0\.3\.[34]|0\.4\.10)$/.test(message.service ?? '')
+  )
     return 18;
-  if ([20, 21].includes(attempted) && /^0\.4\.(?:1[1-9]|20)$/.test(message.service ?? ''))
+  if ([20, 21, 22].includes(attempted) && /^0\.4\.(?:1[1-9]|20)$/.test(message.service ?? ''))
     return 19;
-  if (attempted === 21 && /^0\.4\.2[1-9]$/.test(message.service ?? '')) return 20;
+  if ([21, 22].includes(attempted) && /^0\.4\.2[1-9]$/.test(message.service ?? '')) return 20;
+  if (attempted === 22 && /^0\.4\.3[0-4]$/.test(message.service ?? '')) return 21;
   return null;
 }
 

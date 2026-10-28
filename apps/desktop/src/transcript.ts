@@ -52,6 +52,8 @@ export type TranscriptItem =
       output?: string;
       liveOutput?: string;
       elapsedSeconds?: number;
+      // The task the call waits on in the foreground, which may be ended or sent to the background until it returns.
+      taskId?: string;
       exitCode?: number | null;
     };
 
@@ -162,6 +164,10 @@ export function transcript(events: SessionEvent[]): TranscriptItem[] {
         tool.status = '运行中';
         tool.state = 'running';
       }
+    }
+    if (payload.type === 'tool.task') {
+      const tool = byId.get(payload.toolId);
+      if (tool?.kind === 'tool') tool.taskId = payload.taskId;
     }
     if (payload.type === 'tool.progress') {
       const tool = byId.get(payload.toolId);

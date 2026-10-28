@@ -2771,6 +2771,16 @@ details[open] > summary > .fold-chevron {
 .thinking-block[open] .thinking-preview {
   display: none;
 }
+.tool-task-actions {
+  display: flex;
+  flex: none;
+  gap: 4px;
+}
+.tool-task-actions .button {
+  min-height: 0;
+  padding: 1px 8px;
+  font-size: 11px;
+}
 .tool-heading > svg {
   color: var(--tool-icon);
 }

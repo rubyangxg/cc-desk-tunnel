@@ -224,16 +224,16 @@ test('while output streams in fast, a reader scrolling up a little is not pulled
   await page.waitForTimeout(500);
   stop();
   expect(await fromEnd(page)).toBeLessThan(2);
-  // Scrolling all the way down by hand follows again as well.
+  // Scrolling all the way down by hand follows again as well. Each turn of the wheel goes past where the end is as
+  // it is taken: a fixed step would never get there on a machine slow enough that the page grows faster than it.
   const again = stream();
   await page.mouse.wheel(0, -400);
   await expect(back).toBeVisible();
   for (let i = 0; i < 20 && (await back.count()); i++) {
-    // Reach the moving end: a fixed 400px step can be slower than this synthetic stream.
-    await page.mouse.wheel(
-      0,
-      await conversation.evaluate((box) => box.scrollHeight - box.scrollTop),
+    const gap = await conversation.evaluate(
+      (box) => box.scrollHeight - box.scrollTop - box.clientHeight,
     );
+    await page.mouse.wheel(0, gap + 400);
     await page.waitForTimeout(100);
   }
   await expect(back).toHaveCount(0);

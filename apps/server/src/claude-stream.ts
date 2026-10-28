@@ -106,6 +106,16 @@ export class ClaudeStream {
           messageId: randomUUID(),
           text: printed(String(message.content ?? '')),
         });
+      } else if (message.subtype === 'task_started') {
+        // A call of the turn's that waits on a task of its own: a command or a subagent run in the foreground.
+        const toolId = message.tool_use_id;
+        if (
+          message.is_backgrounded === false &&
+          typeof toolId === 'string' &&
+          typeof message.task_id === 'string' &&
+          this.tools.has(toolId)
+        )
+          this.emit({ type: 'tool.task', toolId, taskId: message.task_id });
       } else if (message.subtype === 'status' && message.status === null) {
         // The status the CLI was in is over; what it was over for (a compaction) says so itself.
       } else if (['status', 'informational'].includes(String(message.subtype))) {

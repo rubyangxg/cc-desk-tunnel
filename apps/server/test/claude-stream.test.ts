@@ -185,6 +185,21 @@ test('identical concurrent native calls keep their IDs and progress uses real SD
     events.some((event) => event.type === 'native.notice' && event.text === 'Native notice'),
   );
 });
+test("a call waiting on a foreground task names it; a background task or another agent's call does not", () => {
+  const events: EventPayload[] = [];
+  const stream = new ClaudeStream((event) => events.push(event));
+  stream.tool('Bash', { command: 'npm test' }, 'call-1');
+  const started = { type: 'system', subtype: 'task_started', description: 'npm test' };
+  stream.accept({ ...started, task_id: 'b1', tool_use_id: 'call-1', is_backgrounded: false });
+  stream.accept({ ...started, task_id: 'b2', tool_use_id: 'call-1', is_backgrounded: true });
+  stream.accept({ ...started, task_id: 'b3', tool_use_id: 'elsewhere', is_backgrounded: false });
+  stream.accept({ ...started, task_id: 'b4', is_backgrounded: false });
+  assert.deepEqual(
+    events.filter((event) => event.type === 'tool.task'),
+    [{ type: 'tool.task', toolId: 'call-1', taskId: 'b1' }],
+  );
+});
+
 test('requested and effective native approval modes remain distinct', () => {
   const events: EventPayload[] = [];
   const stream = new ClaudeStream((event) => events.push(event), 'auto');
