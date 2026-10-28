@@ -25,6 +25,7 @@ import { Controllers } from './controller.ts';
 import { external, native, type Profile, type Setup } from './native.ts';
 import { approvals, remaining, timeline } from './timeline.ts';
 
+declare const __MOBILE_VERSION__: string;
 const controllers = new Controllers();
 type Tab = 'sessions' | 'accounts' | 'settings';
 const statusName = {
@@ -423,7 +424,9 @@ export default function App() {
               <p className="hint">
                 手机用于远程控制。操作电脑项目时，电脑和桌面客户端需保持在线；退出手机不会停止任务。跨服务器调度由电脑端协调。
               </p>
-              <p className="version">Android 0.4.31 · 支持服务端 0.4.30 及以上</p>
+              <p className="version">
+                Android {__MOBILE_VERSION__} · 建议服务端 0.4.35 或更新兼容版本
+              </p>
             </>
           )}
         </main>
