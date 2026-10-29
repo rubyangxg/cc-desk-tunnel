@@ -3,7 +3,7 @@ import type { Page } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { PROTOCOL_VERSION } from '@cc-desk-tunnel/protocol';
-import type { Session } from '@cc-desk-tunnel/protocol';
+import type { NativeMetrics, ServerPoolState, Session } from '@cc-desk-tunnel/protocol';
 
 // The bar is off until the user switches it on, so every test but the default one starts with it on.
 async function switchOn(page: Page) {
@@ -33,6 +33,7 @@ async function open(
   on = true,
   percentage = 8,
   protocolVersion = PROTOCOL_VERSION,
+  quota: { pool?: ServerPoolState; accountId?: string; limits?: NativeMetrics['rateLimits'] } = {},
 ) {
   if (on) await switchOn(page);
   const commands: string[] = [];
@@ -50,9 +51,12 @@ async function open(
     createdAt: now,
     updatedAt: now,
     activeRun: null,
+    accountId: quota.accountId,
   };
+  let push: (value: unknown) => void = () => {};
   await page.routeWebSocket('ws://127.0.0.1:18892/ws', (route) => {
     const reply = (value: unknown) => route.send(JSON.stringify(value));
+    push = reply;
     route.onMessage((raw) => {
       const message = JSON.parse(String(raw));
       commands.push(message.type);
@@ -75,6 +79,7 @@ async function open(
           connectionId,
           adapter: 'claude-code',
           sessions: [session],
+          features: quota.pool ? ['account-pool'] : [],
         });
         return;
       }
@@ -130,7 +135,7 @@ async function open(
                   ],
                 },
                 usage: null,
-                rateLimits: null,
+                rateLimits: quota.limits ?? null,
               },
             },
           ],
@@ -142,6 +147,8 @@ async function open(
           sessionId: message.sessionId,
           ...stats,
         });
+      if (message.type === 'pool.status' && quota.pool)
+        reply({ type: 'pool.state', ...quota.pool });
       reply({ type: 'response', requestId: message.requestId, ok: true });
     });
   });
@@ -157,7 +164,7 @@ async function open(
     .locator('.session-select')
     .click();
   await expect(page.locator('.message.assistant')).toContainText('有什么可以帮你');
-  return commands;
+  return { commands, push, session };
 }
 
 test('the bar under the input box shows the session, and each part opens a card above it', async ({
@@ -235,9 +242,14 @@ test('both cards stay inside a 430px window', async ({ page }) => {
   expect(bar!.x + bar!.width).toBeLessThanOrEqual(430);
 });
 
-test('a session without any request has no bar', async ({ page }) => {
+test('a session without any request still shows context and quota placeholders', async ({
+  page,
+}) => {
   await open(page, { ...figures, turns: 0, requests: 0, ttftMs: null, outputPerSecond: null });
-  await expect(page.locator('.session-bar-part:not(.context)')).toHaveCount(0);
+  await expect(page.locator('.session-bar-part.session, .session-bar-part.tokens')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '当前账号剩余额度' })).toHaveText(
+    '5 小时剩余 — · 周剩余 —',
+  );
   // The ring is still there to show the context window.
   await expect(page.locator('.session-bar-part.context > button')).toHaveText('8%');
 });
@@ -292,14 +304,14 @@ test('the strip is one centred row with the context ring, which leaves the toolb
   const bar = page.locator('.session-bar');
   await expect(bar.locator('.session-bar-part.context > button')).toHaveText('8%');
   await expect(page.locator('.composer-controls .context-control')).toHaveCount(0);
-  // Three items on one row, as far from the left edge of the strip as from its right.
+  // All four items fit on one row, centred within the strip.
   const items = await bar.locator(':scope > *').all();
-  expect(items).toHaveLength(3);
+  expect(items).toHaveLength(4);
   const boxes = await Promise.all(items.map((item) => item.boundingBox()));
   expect(new Set(boxes.map((box) => Math.round(box!.y))).size).toBe(1);
   const strip = (await bar.boundingBox())!;
   const left = boxes[0]!.x - strip.x;
-  const right = strip.x + strip.width - (boxes[2]!.x + boxes[2]!.width);
+  const right = strip.x + strip.width - (boxes[3]!.x + boxes[3]!.width);
   expect(Math.abs(left - right)).toBeLessThanOrEqual(2);
   // Like the other parts, it opens a card when clicked, not when pointed at.
   const context = bar.locator('.session-bar-part.context');
@@ -376,9 +388,86 @@ for (const [percentage, level, colour] of [
 test('an older service keeps its context meter without receiving unsupported stats commands', async ({
   page,
 }) => {
-  const commands = await open(page, figures, true, 8, 18);
+  const { commands } = await open(page, figures, true, 8, 18);
   const bar = page.locator('.session-bar');
   await bar.getByRole('button', { name: '上下文窗口' }).click();
   await expect(bar.getByRole('dialog', { name: '上下文窗口' })).toContainText('16,000 tok');
   expect(commands).not.toContain('session.stats');
+});
+
+const limits = (five: number | null, week: number | null): NativeMetrics['rateLimits'] => ({
+  available: true,
+  measuredAt: new Date().toISOString(),
+  windows: [
+    {
+      name: 'five_hour',
+      utilization: five,
+      resetsAt: new Date(Date.now() + 3600000).toISOString(),
+    },
+    { name: 'seven_day', utilization: week, resetsAt: null },
+    { name: 'seven_day:opus', utilization: 99, resetsAt: null },
+  ],
+});
+
+test('the bar shows remaining account quotas, keeps missing windows unknown and opens account settings', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 430, height: 900 });
+  await open(page, figures, true, 8, PROTOCOL_VERSION, { limits: limits(16.6, null) });
+  const quota = page.getByRole('button', { name: '当前账号剩余额度' });
+  await expect(quota).toHaveText('5 小时剩余 83% · 周剩余 —');
+  await expect(quota).toHaveAttribute('title', /5 小时剩余 83%.*重置/);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await quota.click();
+  await expect(page.getByRole('heading', { name: '账号与额度' }).first()).toBeVisible();
+});
+
+test('account quota follows the session account through handoff and live refresh, never global or preferred account metrics', async ({
+  page,
+}) => {
+  const second = randomUUID();
+  const pool: ServerPoolState = {
+    settings: {
+      enabled: false,
+      strategy: 'order',
+      order: ['default', second],
+      preferredId: second,
+    },
+    refreshing: false,
+    accounts: ['default', second].map((id, index) => ({
+      id,
+      name: `账号${index + 1}`,
+      email: `account${index + 1}@example.test`,
+      enabled: true,
+      loggedIn: true,
+      checkedAt: Date.now(),
+      blockedUntil: null,
+      login: null,
+      busy: false,
+      limits: limits(index ? 93 : 20, index ? 75 : 40),
+    })),
+  };
+  const { push, session } = await open(page, figures, true, 8, PROTOCOL_VERSION, {
+    pool,
+    accountId: 'default',
+    limits: limits(99, 99), // Historical readings belong to a previous account.
+  });
+  const quota = page.getByRole('button', { name: '当前账号剩余额度' });
+  await expect(quota).toHaveText('5 小时剩余 80% · 周剩余 60%');
+  await expect(quota).toHaveAttribute('title', /account1@example.test/);
+  push({ type: 'session.updated', session: { ...session, accountId: second } });
+  await expect(quota).toHaveText('5 小时剩余 7% · 周剩余 25%');
+  await expect(quota).toHaveAttribute('title', /account2@example.test/);
+  await expect(quota.locator('.danger')).toHaveText('5 小时剩余 7%');
+  await expect(quota.locator('.warn')).toHaveText('周剩余 25%');
+  pool.accounts[1]!.limits = limits(100, 80);
+  push({ type: 'pool.state', ...pool });
+  await expect(quota).toHaveText('5 小时剩余 0% · 周剩余 20%');
+  pool.accounts[1]!.error = '额度读取失败';
+  push({ type: 'pool.state', ...pool });
+  await expect(quota).toHaveText('5 小时剩余 — · 周剩余 —');
+  await expect(quota).toHaveAttribute('title', /额度读取失败/);
+  push({ type: 'session.updated', session: { ...session, accountId: randomUUID() } });
+  await expect(quota).toHaveText('5 小时剩余 — · 周剩余 —');
+  await expect(quota).not.toHaveAttribute('title', /account[12]@example.test/);
 });

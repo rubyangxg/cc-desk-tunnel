@@ -2575,7 +2575,7 @@ details[open] > summary > .fold-chevron {
   height: 14px;
   flex: none;
 }
-/* The strip under the input box: two buttons, each with a card like a reply's. */
+/* The strip under the input box: session figures, context and the current account's quota. */
 .session-bar {
   display: flex;
   flex-wrap: wrap;
@@ -2599,6 +2599,17 @@ details[open] > summary > .fold-chevron {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.session-bar-part.account-quota > button {
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0 4px;
+}
+.session-bar-part.account-quota .warn {
+  color: var(--warn);
+}
+.session-bar-part.account-quota .danger {
+  color: var(--danger);
 }
 /* The context ring in the strip is drawn smaller, and in the card's header as well. */
 .session-bar-part .context-ring {

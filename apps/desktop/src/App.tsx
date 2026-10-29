@@ -2226,6 +2226,20 @@ export function App({
                 refresh={turnReports}
                 metrics={metrics}
                 native={nativeMode}
+                accountQuota={{
+                  name: accountName,
+                  // Pool readings are scoped to this server and this session's account. Global
+                  // native metrics may belong to a different account after a handoff.
+                  limits: serverPool
+                    ? sessionAccount?.loggedIn === true && !sessionAccount.login
+                      ? sessionAccount.limits
+                      : null
+                    : signedOut
+                      ? null
+                      : (accountMetrics?.rateLimits ?? null),
+                  error: serverPool ? sessionAccount?.error : accountMetrics?.errors?.usage,
+                }}
+                openAccount={() => open('settings', 'account')}
               />
             )}
           </main>

@@ -41,8 +41,25 @@ for (const slow of [false, true])
       createdAt: new Date().toISOString(),
       payload: { type: 'text.delta', messageId: randomUUID(), text },
     });
+    const quotaEvent = (index: number, five: number, week: number): SessionEvent => ({
+      ...event(index, ''),
+      payload: {
+        type: 'native.metrics',
+        context: null,
+        usage: null,
+        rateLimits: {
+          available: true,
+          measuredAt: new Date().toISOString(),
+          windows: [
+            { name: 'five_hour', utilization: five, resetsAt: null },
+            { name: 'seven_day', utilization: week, resetsAt: null },
+          ],
+        },
+      },
+    });
     for (let n = 1; n <= 2; n++) {
       events[n - 1]!.push(event(n - 1, `服务器${n}正在运行`));
+      events[n - 1]!.push(quotaEvent(n - 1, n === 1 ? 20 : 60, n === 1 ? 40 : 80));
       await page.routeWebSocket(`ws://127.0.0.1:1889${n}/ws`, (route) => {
         const send = (value: unknown) => route.send(JSON.stringify(value));
         pushers.set(n, send);
@@ -82,6 +99,7 @@ for (const slow of [false, true])
     }
     await page.addInitScript(
       ({ device, remote, slow }) => {
+        localStorage.setItem('proxy-prefs', JSON.stringify({ sessionBar: { enabled: true } }));
         localStorage.setItem(
           'proxy-account-pool',
           JSON.stringify({ enabled: false, strategy: 'manual', order: [] }),
@@ -147,6 +165,8 @@ for (const slow of [false, true])
     await page.goto('/');
     await expect(page.getByRole('button', { name: /任务2 · 服务2/ })).toBeVisible();
     await page.getByRole('button', { name: /任务1 · 服务1/ }).click();
+    const quota = page.getByRole('button', { name: '当前账号剩余额度' });
+    await expect(quota).toHaveText('5 小时剩余 80% · 周剩余 60%');
     const input = page.getByRole('textbox', { name: '消息', exact: true });
     await input.fill('服务器1的草稿');
     await page.getByRole('button', { name: /任务2 · 服务2/ }).click();
@@ -158,16 +178,23 @@ for (const slow of [false, true])
       finishReady!();
     }
     await expect(page.getByText('服务器2正在运行', { exact: true })).toBeVisible();
+    await expect(quota).toHaveText('5 小时剩余 40% · 周剩余 20%');
     await expect(page.getByRole('heading', { name: '连接代理服务', exact: true })).toHaveCount(0);
     await input.fill('服务器2的草稿');
     const background = event(0, '切换后任务1仍继续输出');
     events[0]!.push(background);
     pushers.get(1)!({ type: 'session.event', event: background });
+    const backgroundQuota = quotaEvent(0, 50, 45);
+    events[0]!.push(backgroundQuota);
+    pushers.get(1)!({ type: 'session.event', event: backgroundQuota });
+    await expect(quota).toHaveText('5 小时剩余 40% · 周剩余 20%');
     await page.getByRole('button', { name: /任务1 · 服务1/ }).click();
     await expect(page.getByText('切换后任务1仍继续输出', { exact: true })).toBeVisible();
     await expect(input).toHaveValue('服务器1的草稿');
+    await expect(quota).toHaveText('5 小时剩余 50% · 周剩余 55%');
     await page.getByRole('button', { name: /任务2 · 服务2/ }).click();
     await expect(input).toHaveValue('服务器2的草稿');
+    await expect(quota).toHaveText('5 小时剩余 40% · 周剩余 20%');
     await expect
       .poll(async () =>
         page.evaluate(
@@ -184,7 +211,7 @@ for (const slow of [false, true])
           { id: sessions[0]!.id },
         ),
       )
-      .toEqual([2, 1]);
+      .toEqual([4, 2]);
     expect(dialogs).toBe(0);
     expect(
       sent.filter((item) =>

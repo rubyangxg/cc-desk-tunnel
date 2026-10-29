@@ -1,11 +1,70 @@
 import { useEffect, useState } from 'react';
-import { Activity, Database } from 'lucide-react';
+import { Activity, Clock3, Database } from 'lucide-react';
 import type { NativeMetrics } from '@cc-desk-tunnel/protocol';
 import ContextMeter from './ContextMeter.tsx';
 import { usePrefs } from './prefs.ts';
 import type { ProxyClient } from './client.ts';
 import { barText, sessionFields, type SessionField, type SessionStats } from './sessionStats.ts';
 import { usePopover } from './usePopover.ts';
+
+type AccountQuota = {
+  name: string;
+  limits: NativeMetrics['rateLimits'];
+  error?: string;
+};
+
+function QuotaPart({ quota, openAccount }: { quota: AccountQuota; openAccount: () => void }) {
+  const figures = [
+    ['five_hour', '5 小时'],
+    ['seven_day', '周'],
+  ].map(([name, label]) => {
+    const window = quota.limits?.windows.find((item) => item.name === name);
+    const remaining =
+      !quota.error && quota.limits?.available && typeof window?.utilization === 'number'
+        ? Math.round(Math.max(0, Math.min(100, 100 - window.utilization)))
+        : null;
+    return { label, remaining, resetsAt: window?.resetsAt };
+  });
+  return (
+    <div className="session-bar-part account-quota">
+      <button
+        type="button"
+        aria-label="当前账号剩余额度"
+        title={[
+          quota.name,
+          quota.error,
+          ...figures.map(({ label, remaining, resetsAt }) =>
+            remaining === null
+              ? `${label}额度尚未读取`
+              : `${label}剩余 ${remaining}%${
+                  resetsAt && Number.isFinite(Date.parse(resetsAt))
+                    ? `，${new Date(resetsAt).toLocaleString('zh-CN')} 重置`
+                    : ''
+                }`,
+          ),
+          '点击查看账号与额度',
+        ]
+          .filter(Boolean)
+          .join('\n')}
+        onClick={openAccount}
+      >
+        <Clock3 aria-hidden="true" />
+        {figures.map(({ label, remaining }, index) => (
+          <span key={label}>
+            {index > 0 && <span className="quota-separator"> · </span>}
+            <span
+              className={
+                remaining === null ? '' : remaining <= 10 ? 'danger' : remaining <= 30 ? 'warn' : ''
+              }
+            >
+              {label}剩余 {remaining === null ? '—' : `${remaining}%`}
+            </span>
+          </span>
+        ))}
+      </button>
+    </div>
+  );
+}
 
 // One part of the bar: a button with the figures switched on that opens a card with all of them.
 function Part({
@@ -68,12 +127,16 @@ export default function SessionBar({
   refresh,
   metrics,
   native,
+  accountQuota,
+  openAccount,
 }: {
   client: ProxyClient;
   sessionId: string;
   refresh: number;
   metrics: NativeMetrics | null;
   native: boolean;
+  accountQuota: AccountQuota;
+  openAccount: () => void;
 }) {
   const { sessionBar } = usePrefs();
   const [stats, setStats] = useState<SessionStats | null>(null);
@@ -118,6 +181,7 @@ export default function SessionBar({
         </>
       )}
       {native && <ContextMeter metrics={metrics} withPercent />}
+      {native && <QuotaPart quota={accountQuota} openAccount={openAccount} />}
     </div>
   );
 }
