@@ -1025,7 +1025,17 @@ export function App({
     if (!selected || linkedHistory?.forward) return;
     const sessionId = selected.id;
     void act(async () => {
-      await client.request({ type: 'run.continue', sessionId });
+      try {
+        await client.request({ type: 'run.continue', sessionId });
+      } catch (error) {
+        // This rejection confirms that no continuation started on the source. Use the same
+        // cross-service selection and handoff checks as a new message; never retry a lost ack.
+        if (error instanceof RequestRejectedError && error.code === 'pool_unavailable') {
+          await rotation.sendAfterQuota(selected, 'continue', 'chat');
+          return;
+        }
+        throw error;
+      }
     });
   }
   async function compact() {

@@ -25,7 +25,15 @@ for (const {
   legacyGoal = false,
   storageAbort = false,
   storageFull = false,
+  continueQuota = false,
+  continueUnconfirmed = false,
+  continueTimeout = false,
+  continueLocal = false,
 } of [
+  { manual: false, loseAck: false, continueQuota: true, otherRunning: true },
+  { manual: false, loseAck: false, continueQuota: true, continueUnconfirmed: true },
+  { manual: false, loseAck: false, continueQuota: true, continueTimeout: true },
+  { manual: false, loseAck: false, continueQuota: true, continueLocal: true },
   { manual: false, loseAck: false, storageAbort: true },
   { manual: false, loseAck: false, storageFull: true, queued: true },
   { manual: false, loseAck: false, goal: true },
@@ -57,7 +65,7 @@ for (const {
   { manual: false, loseAck: false, away: true },
   { manual: false, loseAck: false, queued: true, loseQueueAck: true },
 ])
-  test(`cross-server ${manual ? 'manual' : 'quota'}${goal ? ' goal' : ''}${legacyGoal ? ' legacy goal' : ''}${loseAck ? ' lost acknowledgement' : ''}${paginated ? ' paginated' : ''}${localAvailable ? ' available local account' : ''}${queued ? ' queued' : ''}${paused ? ' paused' : ''}${stoppedSend ? ' stopped resend' : ''}${away ? ' other device' : ''}${loseQueueAck ? ' lost queue acknowledgement' : ''}${quotaQueue ? ' idle quota queue' : ''}${legacyQueue ? ' legacy' : ''}${userPaused ? ' user paused' : ''}${prioritySend ? ' weekly priority send' : ''}${priorityBlocked ? ' unresolved tool' : ''}${manualPriority ? ' manual preference' : ''}${overnight ? ' overnight weekly recovery' : ''}${otherRunning ? ' other active task' : ''}${storageAbort ? ' storage abort' : ''}${storageFull ? ' storage full' : ''} handoff retains history, submits once and survives reload`, async ({
+  test(`cross-server ${manual ? 'manual' : 'quota'}${goal ? ' goal' : ''}${legacyGoal ? ' legacy goal' : ''}${loseAck ? ' lost acknowledgement' : ''}${paginated ? ' paginated' : ''}${localAvailable ? ' available local account' : ''}${queued ? ' queued' : ''}${paused ? ' paused' : ''}${stoppedSend ? ' stopped resend' : ''}${away ? ' other device' : ''}${loseQueueAck ? ' lost queue acknowledgement' : ''}${quotaQueue ? ' idle quota queue' : ''}${legacyQueue ? ' legacy' : ''}${userPaused ? ' user paused' : ''}${prioritySend ? ' weekly priority send' : ''}${priorityBlocked ? ' unresolved tool' : ''}${manualPriority ? ' manual preference' : ''}${overnight ? ' overnight weekly recovery' : ''}${otherRunning ? ' other active task' : ''}${storageAbort ? ' storage abort' : ''}${storageFull ? ' storage full' : ''}${continueQuota ? ' continue button' : ''}${continueUnconfirmed ? ' unconfirmed receipt' : ''}${continueTimeout ? ' timeout' : ''}${continueLocal ? ' local success' : ''} handoff retains history, submits once and survives reload`, async ({
     page,
   }) => {
     const device = { id: randomUUID(), name: 'test computer', platform: 'linux' as const };
@@ -106,7 +114,7 @@ for (const {
           }
         : undefined,
       activeRun:
-        manual || localAvailable || stoppedSend || quotaQueue || prioritySend
+        manual || localAvailable || stoppedSend || quotaQueue || prioritySend || continueQuota
           ? null
           : { id: runId, connectionId, status: 'running', surface: 'chat' },
     };
@@ -158,19 +166,30 @@ for (const {
     if (paginated)
       for (let i = 0; i < 60; i++)
         event(source, { type: 'native.notice', text: `历史记录 ${i}` }, old);
-    if (localAvailable)
+    if (localAvailable || continueQuota)
       event(source, { type: 'run.error', code: 'quota_five_hour', message: '旧账号额度耗尽' }, old);
+    if (continueUnconfirmed)
+      event(
+        source,
+        {
+          type: 'message.delivery',
+          messageId: old[0]!.payload.type === 'message.user' ? old[0]!.payload.messageId : '',
+          status: 'unconfirmed',
+        },
+        old,
+      );
     event(
       source,
       {
         type: 'run.status',
-        status: localAvailable
-          ? 'failed'
-          : stoppedSend
-            ? 'cancelled'
-            : manual || quotaQueue || prioritySend
-              ? 'completed'
-              : 'running',
+        status:
+          localAvailable || continueQuota
+            ? 'failed'
+            : stoppedSend
+              ? 'cancelled'
+              : manual || quotaQueue || prioritySend
+                ? 'completed'
+                : 'running',
         connectionId,
       },
       old,
@@ -326,6 +345,19 @@ for (const {
               message: '账号池暂无可用额度',
             });
             return;
+          }
+          if (m.type === 'run.continue' && server === 1 && continueQuota) {
+            if (continueTimeout) return;
+            if (!continueLocal) {
+              send({
+                type: 'response',
+                requestId: m.requestId,
+                ok: false,
+                code: 'pool_unavailable',
+                message: '账号池暂无可用额度',
+              });
+              return;
+            }
           }
           if (m.type === 'message.queue.pause' && target) {
             target.messageQueue = { ...(target.messageQueue ?? { items: [] }), paused: m.paused };
@@ -536,6 +568,29 @@ for (const {
       await page.getByRole('textbox', { name: '消息', exact: true }).fill('停止后新的指令');
       await page.getByRole('textbox', { name: '消息', exact: true }).press('Control+Enter');
     }
+    if (continueQuota) {
+      await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
+      await page.getByRole('button', { name: '接着上一轮继续', exact: true }).click();
+      if (continueUnconfirmed || continueTimeout || continueLocal) {
+        if (!continueLocal)
+          await expect(
+            page
+              .getByRole('alert')
+              .filter({ hasText: continueTimeout ? /超时/ : /消息送达状态未确认/ }),
+          ).toBeVisible({ timeout: 15000 });
+        else
+          await expect(
+            page.getByRole('button', { name: '接着上一轮继续', exact: true }),
+          ).toBeEnabled();
+        expect(sent.filter((m) => m.type === 'run.continue')).toHaveLength(1);
+        expect(
+          sent.filter((m) => m.server === 2 && ['session.create', 'message.send'].includes(m.type)),
+        ).toHaveLength(0);
+        await expect(page.getByLabel('当前服务器：服务器1', { exact: true })).toBeVisible();
+        expect(errors).toEqual([]);
+        return;
+      }
+    }
     if (localAvailable) {
       await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
       await expect(page.locator('.service-workspace:not([hidden]) .message.user')).toContainText(
@@ -617,9 +672,10 @@ for (const {
         '不在历史摘录里的原始验收条件',
       );
     expect(sent.filter((m) => m.type === 'run.handoff')).toHaveLength(
-      manual || stoppedSend || quotaQueue || prioritySend ? 0 : 1,
+      manual || stoppedSend || quotaQueue || prioritySend || continueQuota ? 0 : 1,
     );
     expect(sent.filter((m) => m.type === 'message.send' && m.server === 2)).toHaveLength(1);
+    if (continueQuota) expect(sent.filter((m) => m.type === 'run.continue')).toHaveLength(1);
     if (storageAbort)
       expect(sent.filter((m) => m.type === 'session.create' && m.server === 2)).toHaveLength(1);
     if (otherRunning) {
