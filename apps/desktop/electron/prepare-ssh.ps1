@@ -8,10 +8,9 @@ if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 is required.' }
 # The parent reads stdout as UTF-8, including executable paths in the connection JSON.
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-$acl = Get-Acl -LiteralPath $Runtime
-$acl.SetAccessRuleProtection($true, $false)
-$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
-Set-Acl -LiteralPath $Runtime -AclObject $acl
+# Use DACL-only permissions without requiring audit/security privileges (upstream PR #137).
+& icacls.exe $Runtime /inheritance:r /grant:r "*$($sid.Value):(OI)(CI)F" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw '无法设置本机 SSH 目录权限，请检查目录访问权限后重试。' }
 $keygen = Join-Path $OpenSshDirectory 'ssh-keygen.exe'
 foreach ($name in @('host', 'identity')) {
   & $keygen -q -t ed25519 -N '' -f (Join-Path $Runtime $name)

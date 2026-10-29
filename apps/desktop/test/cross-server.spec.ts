@@ -555,9 +555,26 @@ for (const {
     if (frozenQueue) {
       await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
       const recovery = page.getByRole('button', { name: '恢复原队列', exact: true });
+      const queueRegion = page.getByRole('region', { name: '待发送消息' });
+      await expect(queueRegion).toContainText('等待续接确认');
+      await page.evaluate(() => {
+        window.desktop!.copyText = async (text) => {
+          Object.assign(window, { copiedQueue: text });
+        };
+      });
+      await page.getByRole('button', { name: '复制待发送消息', exact: true }).click();
+      await expect(page.getByRole('button', { name: '已复制', exact: true })).toBeVisible();
+      expect(
+        await page.evaluate(() => (window as unknown as { copiedQueue: string }).copiedQueue),
+      ).toBe('后续任务1\n\n后续任务2');
+      expect(source.messageQueue?.handoff).toBeDefined();
+      expect(
+        sent.filter((m) => ['message.send', 'session.handoff.cancel'].includes(m.type)),
+      ).toHaveLength(0);
       if (legacyRecovery) {
         await expect(recovery).toBeDisabled();
         await expect(recovery).toHaveAttribute('title', /升级服务端/);
+        await expect(queueRegion).toContainText('请先升级服务端');
         expect(sent.filter((m) => m.type === 'session.handoff.cancel')).toHaveLength(0);
         return;
       }

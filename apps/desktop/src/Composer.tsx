@@ -28,6 +28,7 @@ import ComposerControls from './ComposerControls.tsx';
 import PermissionMenu from './PermissionMenu.tsx';
 import { usePopover } from './usePopover.ts';
 import { IconButton } from './ui.tsx';
+import { CopyButton } from './copy.tsx';
 import type { MenuPosition } from './ui.tsx';
 
 export type SendMode = 'direct' | 'queue';
@@ -287,6 +288,10 @@ export default function Composer({
               </span>
             </button>
           ))}
+          <p className="slash-menu-help">
+            ↑↓ 选择 · Tab 补全 ·{' '}
+            {queueEnabled ? 'Enter 排队 · Ctrl/⌘+Enter 直接发送' : 'Enter 执行'} · Esc 关闭
+          </p>
         </div>
       )}
       {queued.length > 0 && (
@@ -295,7 +300,7 @@ export default function Composer({
             <span>
               <ListOrdered />
               待发送 {queued.length}
-              {queue?.handoff ? ' · 跨服备份' : queue?.paused ? ' · 已暂停' : ''}
+              {queue?.handoff ? ' · 等待续接确认' : queue?.paused ? ' · 已暂停' : ''}
             </span>
             <IconButton
               title={queue?.paused ? '继续队列' : '暂停队列'}
@@ -306,21 +311,32 @@ export default function Composer({
             </IconButton>
           </header>
           {queue?.paused && queue.reason && <small role="status">{queue.reason}</small>}
-          {queue?.handoff && (
-            <button
-              type="button"
-              className="button secondary"
-              disabled={!connected || busy || !recoverQueue}
-              title={
-                recoverQueue
-                  ? '确认没有续接任务后，恢复为暂停队列'
-                  : '需升级服务端，并在项目所在电脑操作'
-              }
-              onClick={recoverQueue}
-            >
-              恢复原队列
-            </button>
+          {queue?.handoff && !recoverQueue && (
+            <small role="status">
+              原消息仍保留在此处。若已有续接会话，请前往当前会话；否则请先升级服务端，并在项目所在电脑恢复队列。
+            </small>
           )}
+          <div className="queue-actions">
+            <CopyButton
+              label="复制待发送消息"
+              text={() => queued.map((item) => item.text).join('\n\n')}
+            />
+            {queue?.handoff && (
+              <button
+                type="button"
+                className="button secondary"
+                disabled={!connected || busy || !recoverQueue}
+                title={
+                  recoverQueue
+                    ? '确认没有续接任务后，恢复为暂停队列'
+                    : '需升级服务端，并在项目所在电脑操作'
+                }
+                onClick={recoverQueue}
+              >
+                恢复原队列
+              </button>
+            )}
+          </div>
           <ol>
             {queued.map((item) => (
               <li key={item.id}>

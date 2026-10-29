@@ -151,6 +151,7 @@ test('what follows the slash narrows the list, other names of a command included
 test('Tab puts the picked command in the box without sending it', async ({ page }) => {
   const sent = await open(page);
   await box(page).fill('/rev');
+  await expect(menu(page)).toContainText('Tab 补全');
   await box(page).press('Tab');
   await expect(box(page)).toHaveValue('/review ');
   await expect(box(page)).toBeFocused();

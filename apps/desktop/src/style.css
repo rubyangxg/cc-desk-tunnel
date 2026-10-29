@@ -3285,6 +3285,16 @@ details[open] > summary > .fold-chevron {
   overflow-y: auto;
   padding: 6px;
 }
+.slash-menu-help {
+  position: sticky;
+  bottom: -6px;
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+}
 .slash-menu button em {
   margin-left: 6px;
   color: var(--faint);
@@ -3439,6 +3449,15 @@ details[open] > summary > .fold-chevron {
   display: block;
   color: var(--muted);
   overflow-wrap: anywhere;
+}
+.message-queue .queue-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.message-queue .copy-button {
+  opacity: 1;
 }
 .message-queue ol {
   margin: 0;
