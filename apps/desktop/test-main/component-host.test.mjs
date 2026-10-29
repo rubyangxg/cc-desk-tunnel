@@ -26,8 +26,8 @@ function execute(file, args) {
     ),
   );
 }
-async function prepare(powershell = 'pwsh.exe', legacyEncoding = false) {
-  const directory = await mkdtemp(join(tmpdir(), 'cc-desk-tunnel-ssh-'));
+async function prepare(powershell = 'pwsh.exe', legacyEncoding = false, made = undefined) {
+  const directory = made ?? (await mkdtemp(join(tmpdir(), 'cc-desk-tunnel-ssh-')));
   const server = createServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
@@ -358,6 +358,91 @@ test(
       }
       await rm(directory, { recursive: true, force: true });
       await rm(fixture, { recursive: true, force: true });
+    }
+  },
+);
+
+// What the runtime directory allows, as SDDL, and the SID of this user.
+async function permissions(path) {
+  return JSON.parse(
+    await execute('pwsh.exe', [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `@{ sddl = (Get-Acl -LiteralPath '${path.replaceAll("'", "''")}').Sddl; sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value } | ConvertTo-Json -Compress`,
+    ]),
+  );
+}
+
+test(
+  'the SSH runtime directory and its keys are reachable by this user alone',
+  { skip: !available, timeout: 30000 },
+  async () => {
+    const { directory } = await prepare();
+    try {
+      const folder = await permissions(directory);
+      // Protected from inheritance, with one entry: full control for this user, passed on to what is inside.
+      assert.match(folder.sddl, new RegExp(`D:PAI\\(A;OICI;FA;;;${folder.sid}\\)$`));
+      const key = await permissions(join(directory, 'authorized_keys'));
+      assert.match(key.sddl, new RegExp(`D:AI\\(A;ID;FA;;;${key.sid}\\)$`));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'a runtime directory that already keeps its own entries ends reachable by this user alone',
+  { skip: !available, timeout: 30000 },
+  async () => {
+    const made = await mkdtemp(join(tmpdir(), 'cc-desk-tunnel-ssh-'));
+    // Inherited entries become entries of its own, those of SYSTEM and Administrators among them.
+    await execute('icacls.exe', [made, '/inheritance:d']);
+    const { directory } = await prepare('pwsh.exe', false, made);
+    try {
+      const folder = await permissions(directory);
+      assert.match(folder.sddl, new RegExp(`D:PAI\\(A;OICI;FA;;;${folder.sid}\\)$`));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'preparing fails at once where this user may write but not change permissions',
+  { skip: !available, timeout: 30000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cc-desk-tunnel-ssh-'));
+    try {
+      // OWNER RIGHTS takes the place of what the owner may implicitly do, here everything but changing permissions.
+      await execute('icacls.exe', [
+        directory,
+        '/inheritance:r',
+        '/grant:r',
+        '*S-1-3-4:(OI)(CI)M',
+        '*S-1-5-32-545:(OI)(CI)RX',
+      ]);
+      const started = Date.now();
+      await assert.rejects(
+        execute('pwsh.exe', [
+          '-NoLogo',
+          '-NoProfile',
+          '-NonInteractive',
+          '-File',
+          resolve('apps/desktop/electron/prepare-ssh.ps1'),
+          '-Runtime',
+          directory,
+          '-OpenSshDirectory',
+          join(vendor, 'openssh'),
+          '-Port',
+          '1',
+        ]),
+      );
+      // Not the timeout of a key generator left waiting in a directory it cannot secure.
+      assert.ok(Date.now() - started < 10000);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
     }
   },
 );

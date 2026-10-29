@@ -8,9 +8,13 @@ if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 is required.' }
 # The parent reads stdout as UTF-8, including executable paths in the connection JSON.
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-# Use DACL-only permissions without requiring audit/security privileges (upstream PR #137).
-& icacls.exe $Runtime /inheritance:r /grant:r "*$($sid.Value):(OI)(CI)F" | Out-Null
-if ($LASTEXITCODE -ne 0) { throw '无法设置本机 SSH 目录权限，请检查目录访问权限后重试。' }
+# Only this user may reach the keys: a new list with that one entry replaces whatever the directory had, entries of
+# its own included. Written this way only the DACL is set. Set-Acl would also write the audit list where the
+# directory already keeps its entries from being inherited, and a standard user lacks the privilege for that.
+$security = [Security.AccessControl.DirectorySecurity]::new()
+$security.SetAccessRuleProtection($true, $false)
+$security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
+[IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]::new($Runtime), $security)
 $keygen = Join-Path $OpenSshDirectory 'ssh-keygen.exe'
 foreach ($name in @('host', 'identity')) {
   & $keygen -q -t ed25519 -N '' -f (Join-Path $Runtime $name)
