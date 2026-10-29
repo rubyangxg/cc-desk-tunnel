@@ -456,7 +456,7 @@ test(
           '-Port',
           '1',
         ]),
-        /Access.*denied|UnauthorizedAccess|拒绝|权限/i,
+        /SetAccessControl[\s\S]*(Access.*denied|unauthorized|拒绝|权限)/i,
       );
       // Not the timeout of a key generator left waiting in a directory it cannot secure.
       assert.ok(Date.now() - started < 10000);
