@@ -29,10 +29,14 @@ export function handoffBlockReason(
   events: SessionEvent[],
   runId: string,
   confirmedMessageIds: string[] = [],
+  confirmedTaskIds: string[] = [],
 ): string | null {
   const current = events.filter((event) => event.runId === runId);
   const background = current.findLast((event) => event.payload.type === 'native.tasks');
-  if (background?.payload.type === 'native.tasks' && background.payload.tasks.length)
+  if (
+    background?.payload.type === 'native.tasks' &&
+    background.payload.tasks.some((task) => !confirmedTaskIds.includes(task.id))
+  )
     return '后台任务尚未确认结束，请先核实任务状态。';
   const tools = new Set<string>();
   for (const { payload } of current) {

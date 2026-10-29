@@ -26,7 +26,9 @@ function handoffError(reason: string) {
   return new Error(
     reason === '消息送达状态未确认，请先核实。'
       ? '消息送达状态未确认。请展开上一轮记录核实进度，再点击右下角“继续”确认续接。'
-      : reason,
+      : reason === '后台任务尚未结束，不能交接。'
+        ? '历史记录中仍有后台任务。请先核实项目电脑上的任务已结束，再点击右下角“继续”确认交接。重启客户端不会清除此记录。'
+        : reason,
   );
 }
 
@@ -94,24 +96,36 @@ export function usePoolRotation(options: {
     const checked = allowQueueHandoff ? { ...live, messageQueue: undefined } : live;
     let blocked = transferBlock(checked, events);
     let confirmedMessageIds: string[] = [];
-    if (manual && blocked === '消息送达状态未确认，请先核实。') {
+    let confirmedTaskIds: string[] = [];
+    if (
+      manual &&
+      (blocked === '消息送达状态未确认，请先核实。' || blocked === '后台任务尚未结束，不能交接。')
+    ) {
       const runId = events.findLast((event) => event.payload.type === 'run.status')?.runId;
-      const ids = events.flatMap(({ runId: eventRun, payload }) =>
-        eventRun === runId &&
-        payload.type === 'message.delivery' &&
-        ['unconfirmed', 'not_sent'].includes(payload.status)
+      const latest = events.filter((event) => event.runId === runId);
+      const ids = latest.flatMap(({ payload }) =>
+        payload.type === 'message.delivery' && ['unconfirmed', 'not_sent'].includes(payload.status)
           ? [payload.messageId]
           : [],
       );
-      // Confirm only delivery uncertainty. Unknown tools and background work remain blockers.
-      const remaining = transferBlock(checked, events, false, ids);
-      if (remaining) throw new Error(remaining);
+      const background = latest.findLast((event) => event.payload.type === 'native.tasks')?.payload;
+      const tasks = background?.type === 'native.tasks' ? background.tasks : [];
+      const taskIds = tasks.map((task) => task.id);
+      // A user may verify historical task lists and receipts, never unknown tool results.
+      const remaining = transferBlock(checked, events, false, ids, taskIds);
+      if (remaining) throw handoffError(remaining);
+      if (tasks.length && !client.state.features.includes('cross-server-task-confirmation'))
+        throw new Error('历史记录仍有后台任务；请先升级来源服务端和客户端，再点击“继续”核实交接。');
+      const detail = tasks.length
+        ? `历史记录中仍有后台任务（重启不会证明它们已结束）：\n${tasks.map((task) => `• ${task.description.slice(0, 120)} [${task.id}]`).join('\n')}\n\n请在项目所在电脑确认这些任务已结束。`
+        : '上一轮有消息未确认送达。';
       if (
         window.confirm(
-          '上一轮有消息未确认送达。请先展开任务记录核实进度，并确认没有其他续接会话正在执行。已核实并继续？续接会携带已有进度，要求先检查已完成的操作。',
+          `${detail}\n请展开任务记录核实进度，并确认没有其他续接会话正在执行。已核实并继续？续接会携带已有进度，要求先检查已完成的操作。`,
         )
       ) {
         confirmedMessageIds = [...new Set(ids)];
+        confirmedTaskIds = [...new Set(taskIds)];
         blocked = null;
       }
     }
@@ -132,6 +146,7 @@ export function usePoolRotation(options: {
     );
     handoff.manual = manual;
     if (confirmedMessageIds.length) handoff.confirmedMessageIds = confirmedMessageIds;
+    if (confirmedTaskIds.length) handoff.confirmedTaskIds = confirmedTaskIds;
     if (allowQueueHandoff && live.messageQueue?.items.length)
       handoff.queue = {
         items: live.messageQueue.items,
@@ -162,7 +177,11 @@ export function usePoolRotation(options: {
     return handoff;
   }
 
-  async function freezeQueue(session: Session, confirmedMessageIds?: string[]) {
+  async function freezeQueue(
+    session: Session,
+    confirmedMessageIds?: string[],
+    confirmedTaskIds?: string[],
+  ) {
     const live = client.state.sessions.find((item) => item.id === session.id);
     if (
       !live ||
@@ -184,6 +203,7 @@ export function usePoolRotation(options: {
       sessionId: session.id,
       queueIds: live.messageQueue.items.map((item) => item.id),
       ...(confirmedMessageIds?.length ? { confirmedMessageIds } : {}),
+      ...(confirmedTaskIds?.length ? { confirmedTaskIds } : {}),
     });
     claimedQueues.current.add(session.id);
   }
@@ -241,7 +261,11 @@ export function usePoolRotation(options: {
           handoff.history,
         );
       }
-      await freezeQueue(handoff.history!.segments.at(-1)!.session, handoff.confirmedMessageIds);
+      await freezeQueue(
+        handoff.history!.segments.at(-1)!.session,
+        handoff.confirmedMessageIds,
+        handoff.confirmedTaskIds,
+      );
       await current.current.close();
       await current.current.profiles.select(next.id, true, handoff);
       return true;
@@ -275,7 +299,11 @@ export function usePoolRotation(options: {
         client.state.sessions.some((item) => item.activeRun && isHere(item, client.state.device))
       )
         throw new Error('任务状态已改变，未切换服务器。');
-      await freezeQueue(handoff.history!.segments.at(-1)!.session, handoff.confirmedMessageIds);
+      await freezeQueue(
+        handoff.history!.segments.at(-1)!.session,
+        handoff.confirmedMessageIds,
+        handoff.confirmedTaskIds,
+      );
       await current.current.close();
       await current.current.profiles.select(targetId, true, handoff);
     } catch (error) {

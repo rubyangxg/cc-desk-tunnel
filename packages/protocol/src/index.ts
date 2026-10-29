@@ -885,6 +885,7 @@ export const commandSchema = z.discriminatedUnion('type', [
       sessionId: id,
       queueIds: z.array(id).max(20),
       confirmedMessageIds: z.array(id).max(100).optional(),
+      confirmedTaskIds: z.array(z.string().min(1).max(200)).max(100).optional(),
     })
     .strict(),
   z

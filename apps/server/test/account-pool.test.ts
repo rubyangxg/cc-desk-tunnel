@@ -368,3 +368,48 @@ test('weekly rejection never overrides a later exhausted five-hour deadline', as
   assert.equal(nextAccountReset(pool.accounts)?.at, weekly);
   assert.equal(availableAccount(pool.get('default')), false);
 });
+
+test('background task confirmation is explicit, complete and cannot override unknown tools', () => {
+  const sessionId = randomUUID(),
+    runId = randomUUID();
+  const event = (payload: SessionEvent['payload']): SessionEvent => ({
+    sessionId,
+    runId,
+    sequence: 1,
+    createdAt: new Date().toISOString(),
+    payload,
+  });
+  const history = [
+    event({
+      type: 'native.tasks',
+      tasks: [
+        { id: 'a', kind: 'local_bash', description: 'build' },
+        { id: 'b', kind: 'agent', description: 'review' },
+      ],
+    }),
+  ];
+  assert.ok(handoffBlockReason(history, runId));
+  assert.ok(handoffBlockReason(history, runId, [], ['a']));
+  assert.equal(handoffBlockReason(history, runId, [], ['a', 'b']), null);
+  assert.ok(
+    handoffBlockReason(
+      [
+        ...history,
+        event({
+          type: 'tool.result',
+          toolId: 'tool',
+          status: 'unknown',
+          output: '',
+          exitCode: null,
+        }),
+      ],
+      runId,
+      [],
+      ['a', 'b'],
+    ),
+  );
+  assert.equal(
+    handoffBlockReason([...history, event({ type: 'native.tasks', tasks: [] })], runId),
+    null,
+  );
+});

@@ -142,3 +142,26 @@ test('background pool probe advertises the weekly-first usable account', () => {
   accounts[1].limits.windows[0].utilization = 100;
   assert.equal(poolQuota(state), accounts[0].limits);
 });
+
+test('historical background tasks require explicit confirmation of every task, with tool checks retained', () => {
+  const history = events([
+    { type: 'native.tasks', tasks: [{ id: 'task-a' }, { id: 'task-b' }] },
+    { type: 'run.status', status: 'cancelled', reason: 'service restarted' },
+  ]);
+  assert.ok(transferBlock(session, history));
+  assert.ok(transferBlock(session, history, false, [], ['task-a']));
+  assert.equal(transferBlock(session, history, false, [], ['task-a', 'task-b']), null);
+  assert.ok(
+    transferBlock(
+      session,
+      [...history, ...events([{ type: 'tool.result', toolId: 'tool', status: 'unknown' }])],
+      false,
+      [],
+      ['task-a', 'task-b'],
+    ),
+  );
+  assert.equal(
+    transferBlock(session, [...history, ...events([{ type: 'native.tasks', tasks: [] }])]),
+    null,
+  );
+});

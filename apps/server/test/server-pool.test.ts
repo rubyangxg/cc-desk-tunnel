@@ -955,6 +955,25 @@ for (const queued of [false, true])
         assert.equal(recovered.handoff, undefined);
         assert.equal(recovered.reasonCode, undefined);
         assert.equal(f.server.store.get(sessionId!).session.activeRun, null);
+        f.server.store.append(sessionId!, runId, {
+          type: 'native.tasks',
+          tasks: [{ id: 'old-build', kind: 'local_bash', description: 'historical build' }],
+        });
+        const blockedId = randomUUID();
+        f.socket.send(
+          JSON.stringify({ type: 'session.handoff', sessionId, queueIds, requestId: blockedId }),
+        );
+        const blocked = await f.wait((m) => m.type === 'response' && m.requestId === blockedId);
+        assert.ok(blocked.type === 'response' && !blocked.ok && blocked.code === 'handoff_blocked');
+        assert.equal(f.server.store.get(sessionId!).session.messageQueue!.handoff, undefined);
+        await f.request({
+          type: 'session.handoff',
+          sessionId,
+          queueIds,
+          confirmedTaskIds: ['old-build'],
+        });
+        assert.ok(f.server.store.get(sessionId!).session.messageQueue!.handoff);
+        await f.request({ type: 'session.handoff.cancel', sessionId, queueIds });
         await f.request({ type: 'message.queue.remove', sessionId, messageId: queue.items[0].id });
         assert.deepEqual(f.server.store.get(sessionId!).session.messageQueue!.items, [
           queue.items[1],

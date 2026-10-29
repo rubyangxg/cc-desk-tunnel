@@ -72,6 +72,7 @@ export function transferBlock(
   events: SessionEvent[],
   allowQueueHandoff = false,
   confirmedMessageIds: string[] = [],
+  confirmedTaskIds: string[] = [],
 ): string | null {
   if (session.activeRun) return '请先等待当前任务结束，再续接到另一台服务器。';
   if (session.messageQueue?.items.length && !(allowQueueHandoff && session.messageQueue.handoff))
@@ -80,7 +81,10 @@ export function transferBlock(
   if (!run) return null;
   const current = events.filter((event) => event.runId === run.runId);
   const background = current.findLast((event) => event.payload.type === 'native.tasks');
-  if (background?.payload.type === 'native.tasks' && background.payload.tasks.length)
+  if (
+    background?.payload.type === 'native.tasks' &&
+    background.payload.tasks.some((task) => !confirmedTaskIds.includes(task.id))
+  )
     return '后台任务尚未结束，不能交接。';
   const tools = new Set<string>();
   for (const { payload } of current) {

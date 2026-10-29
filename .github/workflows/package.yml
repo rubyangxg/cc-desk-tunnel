@@ -58,6 +58,8 @@ jobs:
       # The bundled OpenSSH and PowerShell, fetched and checked against the hashes the script names.
       - run: npm run prepare:windows:package || (sleep 60 && npm run prepare:windows:package)
         shell: bash
+      # Exercise the actual Windows SSH setup and component lifecycle before packaging.
+      - run: node --test apps/desktop/test-main/component-host.test.mjs
       # Ends with the packaged program started offline; a package that does not start fails here.
       - run: npm run package:windows || (sleep 60 && npm run package:windows)
         shell: bash

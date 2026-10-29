@@ -1999,6 +1999,7 @@ export function createProxyServer(options: ServerOptions) {
               store.runEvents(session.id, lastRun),
               lastRun,
               command.type === 'session.handoff' ? command.confirmedMessageIds : undefined,
+              command.type === 'session.handoff' ? command.confirmedTaskIds : undefined,
             )
           : null;
         if (blocked) throw new DomainError('handoff_blocked', blocked);
@@ -2215,6 +2216,7 @@ export function createProxyServer(options: ServerOptions) {
               'cross-server-handoff',
               'cross-server-queue-handoff',
               'cross-server-queue-recovery',
+              'cross-server-task-confirmation',
             ]
           : []),
       ],

@@ -79,6 +79,9 @@ test('handoff recovery requires an explicit bounded queue snapshot', () => {
     assert.equal(commandSchema.safeParse({ ...command, queueIds }).success, false);
   const handoff = { ...command, type: 'session.handoff', confirmedMessageIds: [randomUUID()] };
   assert.ok(commandSchema.safeParse(handoff).success);
+  assert.ok(commandSchema.safeParse({ ...handoff, confirmedTaskIds: ['task-a'] }).success);
+  for (const confirmedTaskIds of [[''], ['x'.repeat(201)], Array(101).fill('a')])
+    assert.equal(commandSchema.safeParse({ ...handoff, confirmedTaskIds }).success, false);
   assert.equal(
     commandSchema.safeParse({ ...handoff, confirmedMessageIds: ['invalid'] }).success,
     false,
