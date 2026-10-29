@@ -62,6 +62,33 @@ test('only clients accept the audited v0.3.1 protocol and retry its version refu
   assert.equal(fallbackServerProtocol({ ...refusal, code: 'unauthorized' }, 17), null);
 });
 
+test('handoff recovery requires an explicit bounded queue snapshot', () => {
+  const command = {
+    type: 'session.handoff.cancel',
+    requestId: randomUUID(),
+    sessionId: randomUUID(),
+    queueIds: [randomUUID()],
+  };
+  assert.ok(commandSchema.safeParse(command).success);
+  for (const queueIds of [
+    undefined,
+    [],
+    ['invalid'],
+    Array.from({ length: 21 }, () => randomUUID()),
+  ])
+    assert.equal(commandSchema.safeParse({ ...command, queueIds }).success, false);
+  const handoff = { ...command, type: 'session.handoff', confirmedMessageIds: [randomUUID()] };
+  assert.ok(commandSchema.safeParse(handoff).success);
+  assert.equal(
+    commandSchema.safeParse({ ...handoff, confirmedMessageIds: ['invalid'] }).success,
+    false,
+  );
+  assert.equal(
+    commandSchema.safeParse({ ...handoff, type: 'run.handoff', runId: randomUUID() }).success,
+    false,
+  );
+});
+
 test('protocol validates UTF-8 text, IDs and bounded input', () => {
   const command = {
     type: 'message.send',

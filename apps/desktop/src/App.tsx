@@ -2215,6 +2215,35 @@ export function App({
                     });
                   })
                 }
+                recoverQueue={
+                  !controlsDisabled &&
+                  !away &&
+                  state.features.includes('cross-server-queue-recovery') &&
+                  !linkedHistory?.forward
+                    ? () => {
+                        if (
+                          !window.confirm(
+                            '请先确认其他服务器没有正在执行的续接会话。恢复后原消息仍保持暂停，不会自动发送；你可以检查、删除或继续队列。恢复原队列？',
+                          )
+                        )
+                          return;
+                        void act(async () => {
+                          const archive = await sharedHistory(
+                            historyKey(profiles.initial, selected.id),
+                          );
+                          if (archive?.forward)
+                            throw new Error(
+                              '已找到续接会话，请点击“前往当前会话”，不要恢复原队列。',
+                            );
+                          await client.request({
+                            type: 'session.handoff.cancel',
+                            sessionId: selected.id,
+                            queueIds: selected.messageQueue!.items.map((item) => item.id),
+                          });
+                        });
+                      }
+                    : undefined
+                }
                 send={(text, mode) => {
                   void send(text, mode);
                 }}

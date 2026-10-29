@@ -71,6 +71,7 @@ export function transferBlock(
   session: Session,
   events: SessionEvent[],
   allowQueueHandoff = false,
+  confirmedMessageIds: string[] = [],
 ): string | null {
   if (session.activeRun) return '请先等待当前任务结束，再续接到另一台服务器。';
   if (session.messageQueue?.items.length && !(allowQueueHandoff && session.messageQueue.handoff))
@@ -88,7 +89,11 @@ export function transferBlock(
       if (payload.status === 'unknown') return '工具结果未确认，请先核实，避免重复执行。';
       tools.delete(payload.toolId);
     }
-    if (payload.type === 'message.delivery' && ['unconfirmed', 'not_sent'].includes(payload.status))
+    if (
+      payload.type === 'message.delivery' &&
+      ['unconfirmed', 'not_sent'].includes(payload.status) &&
+      !confirmedMessageIds.includes(payload.messageId)
+    )
       return '消息送达状态未确认，请先核实。';
   }
   return tools.size ? '仍有工具未返回结果，不能交接。' : null;

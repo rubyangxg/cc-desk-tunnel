@@ -86,6 +86,7 @@ export default function Composer({
   setSendMode,
   removeQueued,
   pauseQueue,
+  recoverQueue,
   resume,
   compact,
   refresh,
@@ -123,6 +124,7 @@ export default function Composer({
   setSendMode: (mode: SendMode) => void;
   removeQueued: (messageId: string) => void;
   pauseQueue: (paused: boolean) => void;
+  recoverQueue?: () => void;
   // Present when the session's last turn was stopped or cut off: takes it up again without a message.
   resume?: () => void;
   compact: () => void;
@@ -304,6 +306,21 @@ export default function Composer({
             </IconButton>
           </header>
           {queue?.paused && queue.reason && <small role="status">{queue.reason}</small>}
+          {queue?.handoff && (
+            <button
+              type="button"
+              className="button secondary"
+              disabled={!connected || busy || !recoverQueue}
+              title={
+                recoverQueue
+                  ? '确认没有续接任务后，恢复为暂停队列'
+                  : '需升级服务端，并在项目所在电脑操作'
+              }
+              onClick={recoverQueue}
+            >
+              恢复原队列
+            </button>
+          )}
           <ol>
             {queued.map((item) => (
               <li key={item.id}>

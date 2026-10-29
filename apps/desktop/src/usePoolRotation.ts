@@ -22,6 +22,14 @@ import {
   transferBlock,
 } from './sharedHistory.ts';
 
+function handoffError(reason: string) {
+  return new Error(
+    reason === '消息送达状态未确认，请先核实。'
+      ? '消息送达状态未确认。请展开上一轮记录核实进度，再点击右下角“继续”确认续接。'
+      : reason,
+  );
+}
+
 export function usePoolRotation(options: {
   client: ProxyClient;
   profiles: ProfileControls;
@@ -79,8 +87,35 @@ export function usePoolRotation(options: {
     }
     const live = client.state.sessions.find((item) => item.id === session.id);
     if (!live) throw new Error('原会话已不存在。');
-    const blocked = transferBlock(live, events, allowQueueHandoff);
-    if (blocked) throw new Error(blocked);
+    if (allowQueueHandoff && live.messageQueue?.dispatching)
+      throw new Error('队列消息正在发送，未交接。');
+    // Validate and persist the full history BEFORE freezing an idle queue. A failed history
+    // read, receipt check or local write must leave the source editable.
+    const checked = allowQueueHandoff ? { ...live, messageQueue: undefined } : live;
+    let blocked = transferBlock(checked, events);
+    let confirmedMessageIds: string[] = [];
+    if (manual && blocked === '消息送达状态未确认，请先核实。') {
+      const runId = events.findLast((event) => event.payload.type === 'run.status')?.runId;
+      const ids = events.flatMap(({ runId: eventRun, payload }) =>
+        eventRun === runId &&
+        payload.type === 'message.delivery' &&
+        ['unconfirmed', 'not_sent'].includes(payload.status)
+          ? [payload.messageId]
+          : [],
+      );
+      // Confirm only delivery uncertainty. Unknown tools and background work remain blockers.
+      const remaining = transferBlock(checked, events, false, ids);
+      if (remaining) throw new Error(remaining);
+      if (
+        window.confirm(
+          '上一轮有消息未确认送达。请先展开任务记录核实进度，并确认没有其他续接会话正在执行。已核实并继续？续接会携带已有进度，要求先检查已完成的操作。',
+        )
+      ) {
+        confirmedMessageIds = [...new Set(ids)];
+        blocked = null;
+      }
+    }
+    if (blocked) throw handoffError(blocked);
     if (
       !profiles.persistent &&
       client.state.sessions.some((item) => item.activeRun && isHere(item, client.state.device))
@@ -96,8 +131,12 @@ export function usePoolRotation(options: {
       attempted,
     );
     handoff.manual = manual;
-    if (allowQueueHandoff && live.messageQueue?.handoff)
-      handoff.queue = { items: live.messageQueue.items, paused: live.messageQueue.handoff.paused };
+    if (confirmedMessageIds.length) handoff.confirmedMessageIds = confirmedMessageIds;
+    if (allowQueueHandoff && live.messageQueue?.items.length)
+      handoff.queue = {
+        items: live.messageQueue.items,
+        paused: live.messageQueue.handoff?.paused ?? live.messageQueue.paused,
+      };
     handoff.history = {
       prompt: handoff.prompt,
       segments: [
@@ -123,16 +162,28 @@ export function usePoolRotation(options: {
     return handoff;
   }
 
-  async function freezeQueue(session: Session) {
+  async function freezeQueue(session: Session, confirmedMessageIds?: string[]) {
     const live = client.state.sessions.find((item) => item.id === session.id);
+    if (
+      !live ||
+      JSON.stringify(live.messageQueue?.items ?? []) !==
+        JSON.stringify(session.messageQueue?.items ?? [])
+    )
+      throw new Error('准备期间队列已改变，未交接。');
     if (!live?.messageQueue?.items.length) return;
     if (live.messageQueue.handoff && claimedQueues.current.has(session.id)) return;
     if (!client.state.features.includes('cross-server-queue-handoff'))
       throw new Error('当前服务端不支持携带排队消息接力，请先升级服务端。');
+    if (
+      confirmedMessageIds?.length &&
+      !client.state.features.includes('cross-server-queue-recovery')
+    )
+      throw new Error('请先升级当前服务端，才能确认未送达消息并携带队列续接。');
     await client.request({
       type: 'session.handoff',
       sessionId: session.id,
       queueIds: live.messageQueue.items.map((item) => item.id),
+      ...(confirmedMessageIds?.length ? { confirmedMessageIds } : {}),
     });
     claimedQueues.current.add(session.id);
   }
@@ -178,7 +229,6 @@ export function usePoolRotation(options: {
       if (priority && (!next || next.id === id || !current.current.profiles.pool.config.enabled))
         return false;
       if (!next) throw new Error('暂无可用的其他服务器，消息保留在草稿中。');
-      await freezeQueue(session);
       const handoff = await prepare(session, [id], true, true);
       const suffix = `\n\n用户本次新消息：\n${text}`;
       handoff.prompt = handoff.prompt.slice(0, 16000 - suffix.length) + suffix;
@@ -191,6 +241,7 @@ export function usePoolRotation(options: {
           handoff.history,
         );
       }
+      await freezeQueue(handoff.history!.segments.at(-1)!.session, handoff.confirmedMessageIds);
       await current.current.close();
       await current.current.profiles.select(next.id, true, handoff);
       return true;
@@ -218,13 +269,13 @@ export function usePoolRotation(options: {
     try {
       const target = profiles.profiles.find((profile) => profile.id === targetId);
       if (!target || target.id === id) throw new Error('请选择另一台服务器。');
-      await freezeQueue(session);
       const handoff = await prepare(session, [id], true, true);
       if (
         client.state.status !== 'connected' ||
         client.state.sessions.some((item) => item.activeRun && isHere(item, client.state.device))
       )
         throw new Error('任务状态已改变，未切换服务器。');
+      await freezeQueue(handoff.history!.segments.at(-1)!.session, handoff.confirmedMessageIds);
       await current.current.close();
       await current.current.profiles.select(targetId, true, handoff);
     } catch (error) {
@@ -295,11 +346,11 @@ export function usePoolRotation(options: {
             setNotice('等待可用额度，恢复后自动发送。');
             return;
           }
-          await freezeQueue(latest);
           const handoff = await prepare(latest, [id], false, true);
           // This pause was created by a rejected dispatch, not by the user.
           if (handoff.queue) handoff.queue.paused = false;
           if (!current.current.profiles.pool.config.enabled) return;
+          await freezeQueue(handoff.history!.segments.at(-1)!.session);
           await current.current.close();
           await current.current.profiles.select(next.id, true, handoff);
         } catch (error) {
@@ -351,6 +402,17 @@ export function usePoolRotation(options: {
           const queued = client.state.sessions.find((item) => item.id === session.id)?.messageQueue;
           if (queued?.items.length && !client.state.features.includes('cross-server-queue-handoff'))
             throw new Error('当前服务端不支持携带排队消息接力，请先升级服务端。');
+          // The source is in a confirmed quota wait, but its initial input can still lack a
+          // receipt. Check that before run.handoff freezes the queue and ends the wait.
+          const events = await completeHistory(client, session.id, undefined, profiles.initial);
+          const waiting = client.state.sessions.find((item) => item.id === session.id);
+          if (!waiting || waiting.activeRun?.id !== runId)
+            throw new Error('任务状态已改变，未交接。');
+          const blocked = transferBlock(
+            { ...waiting, activeRun: null, messageQueue: undefined },
+            events,
+          );
+          if (blocked) throw handoffError(blocked);
           await client.request({
             type: 'run.handoff',
             sessionId: session.id,

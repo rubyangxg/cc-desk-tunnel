@@ -28,6 +28,7 @@ export type Handoff = {
   queue?: Session['messageQueue'];
   sourceDraftSessionId?: string;
   scenario?: NonNullable<Session['messageQueue']>['items'][number]['scenario'];
+  confirmedMessageIds?: string[];
 };
 export const quotaFreshMs = 120_000;
 

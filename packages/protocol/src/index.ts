@@ -884,6 +884,15 @@ export const commandSchema = z.discriminatedUnion('type', [
       ...request,
       sessionId: id,
       queueIds: z.array(id).max(20),
+      confirmedMessageIds: z.array(id).max(100).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('session.handoff.cancel'),
+      ...request,
+      sessionId: id,
+      queueIds: z.array(id).min(1).max(20),
     })
     .strict(),
   // Takes up a session whose last turn was stopped or cut off, without the user writing a message.

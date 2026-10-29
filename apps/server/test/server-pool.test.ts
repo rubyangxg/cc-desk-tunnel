@@ -920,6 +920,46 @@ for (const queued of [false, true])
       );
       const reply = await f.wait((m) => m.type === 'response' && m.requestId === duplicate);
       assert.ok(reply.type === 'response' && !reply.ok);
+      if (queued) {
+        const queue = f.server.store.get(sessionId!).session.messageQueue!;
+        const rejectedId = randomUUID();
+        f.socket.send(
+          JSON.stringify({
+            type: 'session.handoff.cancel',
+            sessionId,
+            queueIds: [randomUUID()],
+            requestId: rejectedId,
+          }),
+        );
+        const rejected = await f.wait((m) => m.type === 'response' && m.requestId === rejectedId);
+        assert.ok(rejected.type === 'response' && !rejected.ok);
+        assert.ok(f.server.store.get(sessionId!).session.messageQueue!.handoff);
+        const originalDevice = f.server.store.get(sessionId!).session.device!;
+        f.socket.send(JSON.stringify({ type: 'device', id: randomUUID(), platform: 'linux' }));
+        const foreignId = randomUUID();
+        f.socket.send(
+          JSON.stringify({
+            type: 'session.handoff.cancel',
+            sessionId,
+            queueIds,
+            requestId: foreignId,
+          }),
+        );
+        const foreign = await f.wait((m) => m.type === 'response' && m.requestId === foreignId);
+        assert.ok(foreign.type === 'response' && !foreign.ok && foreign.code === 'handoff_device');
+        f.socket.send(JSON.stringify({ type: 'device', id: originalDevice.id, platform: 'linux' }));
+        await f.request({ type: 'session.handoff.cancel', sessionId, queueIds });
+        const recovered = f.server.store.get(sessionId!).session.messageQueue!;
+        assert.deepEqual(recovered.items, queue.items);
+        assert.equal(recovered.paused, true);
+        assert.equal(recovered.handoff, undefined);
+        assert.equal(recovered.reasonCode, undefined);
+        assert.equal(f.server.store.get(sessionId!).session.activeRun, null);
+        await f.request({ type: 'message.queue.remove', sessionId, messageId: queue.items[0].id });
+        assert.deepEqual(f.server.store.get(sessionId!).session.messageQueue!.items, [
+          queue.items[1],
+        ]);
+      }
       assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 1);
     },
   );

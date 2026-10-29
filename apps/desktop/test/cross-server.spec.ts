@@ -29,7 +29,23 @@ for (const {
   continueUnconfirmed = false,
   continueTimeout = false,
   continueLocal = false,
+  frozenQueue = false,
+  legacyRecovery = false,
+  confirmedContinue = false,
 } of [
+  {
+    manual: false,
+    loseAck: false,
+    queued: true,
+    continueQuota: true,
+    continueUnconfirmed: true,
+    confirmedContinue: true,
+  },
+  { manual: false, loseAck: false, queued: true, frozenQueue: true },
+  { manual: false, loseAck: false, queued: true, frozenQueue: true, legacyRecovery: true },
+  { manual: false, loseAck: false, queued: true, continueUnconfirmed: true },
+  { manual: false, loseAck: false, queued: true, quotaQueue: true, continueUnconfirmed: true },
+  { manual: false, loseAck: false, queued: true, continueQuota: true, continueUnconfirmed: true },
   { manual: false, loseAck: false, continueQuota: true, otherRunning: true },
   { manual: false, loseAck: false, continueQuota: true, continueUnconfirmed: true },
   { manual: false, loseAck: false, continueQuota: true, continueTimeout: true },
@@ -65,7 +81,7 @@ for (const {
   { manual: false, loseAck: false, away: true },
   { manual: false, loseAck: false, queued: true, loseQueueAck: true },
 ])
-  test(`cross-server ${manual ? 'manual' : 'quota'}${goal ? ' goal' : ''}${legacyGoal ? ' legacy goal' : ''}${loseAck ? ' lost acknowledgement' : ''}${paginated ? ' paginated' : ''}${localAvailable ? ' available local account' : ''}${queued ? ' queued' : ''}${paused ? ' paused' : ''}${stoppedSend ? ' stopped resend' : ''}${away ? ' other device' : ''}${loseQueueAck ? ' lost queue acknowledgement' : ''}${quotaQueue ? ' idle quota queue' : ''}${legacyQueue ? ' legacy' : ''}${userPaused ? ' user paused' : ''}${prioritySend ? ' weekly priority send' : ''}${priorityBlocked ? ' unresolved tool' : ''}${manualPriority ? ' manual preference' : ''}${overnight ? ' overnight weekly recovery' : ''}${otherRunning ? ' other active task' : ''}${storageAbort ? ' storage abort' : ''}${storageFull ? ' storage full' : ''}${continueQuota ? ' continue button' : ''}${continueUnconfirmed ? ' unconfirmed receipt' : ''}${continueTimeout ? ' timeout' : ''}${continueLocal ? ' local success' : ''} handoff retains history, submits once and survives reload`, async ({
+  test(`cross-server ${manual ? 'manual' : 'quota'}${goal ? ' goal' : ''}${legacyGoal ? ' legacy goal' : ''}${loseAck ? ' lost acknowledgement' : ''}${paginated ? ' paginated' : ''}${localAvailable ? ' available local account' : ''}${queued ? ' queued' : ''}${paused ? ' paused' : ''}${stoppedSend ? ' stopped resend' : ''}${away ? ' other device' : ''}${loseQueueAck ? ' lost queue acknowledgement' : ''}${quotaQueue ? ' idle quota queue' : ''}${legacyQueue ? ' legacy' : ''}${userPaused ? ' user paused' : ''}${prioritySend ? ' weekly priority send' : ''}${priorityBlocked ? ' unresolved tool' : ''}${manualPriority ? ' manual preference' : ''}${overnight ? ' overnight weekly recovery' : ''}${otherRunning ? ' other active task' : ''}${storageAbort ? ' storage abort' : ''}${storageFull ? ' storage full' : ''}${continueQuota ? ' continue button' : ''}${continueUnconfirmed ? ' unconfirmed receipt' : ''}${continueTimeout ? ' timeout' : ''}${continueLocal ? ' local success' : ''}${frozenQueue ? ' frozen recovery' : ''}${legacyRecovery ? ' old server' : ''}${confirmedContinue ? ' user verified' : ''} handoff retains history, submits once and survives reload`, async ({
     page,
   }) => {
     const device = { id: randomUUID(), name: 'test computer', platform: 'linux' as const };
@@ -102,7 +118,10 @@ for (const {
               scenario: 'chat' as const,
               createdAt: now,
             })),
-            paused: paused || stoppedSend || quotaQueue,
+            paused: paused || stoppedSend || quotaQueue || frozenQueue,
+            ...(frozenQueue
+              ? { handoff: { paused: false }, reason: '跨服队列备份，请到续接会话继续。' }
+              : {}),
             ...(quotaQueue
               ? {
                   reason: userPaused ? undefined : '账号池暂无可用额度，请检测账号或等待额度重置。',
@@ -114,7 +133,13 @@ for (const {
           }
         : undefined,
       activeRun:
-        manual || localAvailable || stoppedSend || quotaQueue || prioritySend || continueQuota
+        manual ||
+        localAvailable ||
+        stoppedSend ||
+        quotaQueue ||
+        prioritySend ||
+        continueQuota ||
+        frozenQueue
           ? null
           : { id: runId, connectionId, status: 'running', surface: 'chat' },
     };
@@ -242,6 +267,7 @@ for (const {
                 'account-pool',
                 'cross-server-handoff',
                 'cross-server-queue-handoff',
+                ...(!legacyRecovery ? ['cross-server-queue-recovery'] : []),
                 'message-queue',
                 ...(!legacyGoal || server === 1 ? ['goal-continuation'] : []),
               ],
@@ -304,6 +330,15 @@ for (const {
           }
           if (m.type === 'run.handoff' || m.type === 'session.handoff') {
             expect(server).toBe(1);
+            if (confirmedContinue)
+              expect(m.confirmedMessageIds).toEqual(
+                old.flatMap(({ payload }) =>
+                  payload.type === 'message.delivery' && payload.status === 'unconfirmed'
+                    ? [payload.messageId]
+                    : [],
+                ),
+              );
+            else expect(m.confirmedMessageIds).toBeUndefined();
             if (queued) {
               expect(m.queueIds).toEqual(source.messageQueue!.items.map((item) => item.id));
               source.messageQueue = {
@@ -317,6 +352,16 @@ for (const {
               type: 'session.event',
               event: event(source, { type: 'run.status', status: 'cancelled', connectionId }, old),
             });
+            send({ type: 'session.updated', session: source });
+          }
+          if (m.type === 'session.handoff.cancel') {
+            expect(server).toBe(1);
+            expect(m.queueIds).toEqual(source.messageQueue!.items.map((item) => item.id));
+            source.messageQueue = {
+              items: source.messageQueue!.items,
+              paused: true,
+              reason: '原队列已恢复，请检查消息后继续队列。',
+            };
             send({ type: 'session.updated', session: source });
           }
           if (m.type === 'session.create') {
@@ -507,6 +552,51 @@ for (const {
     );
     if (overnight) await page.clock.install();
     await page.goto('/');
+    if (frozenQueue) {
+      await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
+      const recovery = page.getByRole('button', { name: '恢复原队列', exact: true });
+      if (legacyRecovery) {
+        await expect(recovery).toBeDisabled();
+        await expect(recovery).toHaveAttribute('title', /升级服务端/);
+        expect(sent.filter((m) => m.type === 'session.handoff.cancel')).toHaveLength(0);
+        return;
+      }
+      await expect(recovery).toBeEnabled();
+      page.once('dialog', (dialog) => dialog.dismiss());
+      await recovery.click();
+      expect(source.messageQueue?.handoff).toBeDefined();
+      expect(sent.filter((m) => m.type === 'session.handoff.cancel')).toHaveLength(0);
+      page.once('dialog', (dialog) => dialog.accept());
+      await recovery.click();
+      await expect(page.getByRole('region', { name: '待发送消息' })).toContainText('原队列已恢复');
+      expect(source.messageQueue?.handoff).toBeUndefined();
+      expect(source.messageQueue?.paused).toBe(true);
+      expect(source.messageQueue?.items.map((item) => item.text)).toEqual([
+        '后续任务1',
+        '后续任务2',
+      ]);
+      await expect(page.getByRole('button', { name: '继续队列', exact: true })).toBeEnabled();
+      await page.reload();
+      await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
+      await expect(page.getByRole('region', { name: '待发送消息' })).toContainText('原队列已恢复');
+      expect(
+        sent.filter((m) => ['message.send', 'message.enqueue', 'run.continue'].includes(m.type)),
+      ).toHaveLength(0);
+      expect(sent.filter((m) => m.type === 'session.handoff.cancel')).toHaveLength(1);
+      expect(errors).toEqual([]);
+      return;
+    }
+    if (continueUnconfirmed && !continueQuota) {
+      await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
+      await expect(page.getByRole('alert').filter({ hasText: /消息送达状态未确认/ })).toBeVisible();
+      expect(source.messageQueue?.handoff).toBeUndefined();
+      expect(source.messageQueue?.items).toHaveLength(2);
+      expect(
+        sent.filter((m) => ['session.handoff', 'run.handoff', 'message.send'].includes(m.type)),
+      ).toHaveLength(0);
+      expect(errors).toEqual([]);
+      return;
+    }
     if (overnight) {
       await expect(
         page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }),
@@ -570,8 +660,9 @@ for (const {
     }
     if (continueQuota) {
       await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
+      if (confirmedContinue) page.once('dialog', (dialog) => dialog.accept());
       await page.getByRole('button', { name: '接着上一轮继续', exact: true }).click();
-      if (continueUnconfirmed || continueTimeout || continueLocal) {
+      if ((continueUnconfirmed && !confirmedContinue) || continueTimeout || continueLocal) {
         if (!continueLocal)
           await expect(
             page
@@ -583,6 +674,10 @@ for (const {
             page.getByRole('button', { name: '接着上一轮继续', exact: true }),
           ).toBeEnabled();
         expect(sent.filter((m) => m.type === 'run.continue')).toHaveLength(1);
+        if (queued) {
+          expect(source.messageQueue?.handoff).toBeUndefined();
+          expect(sent.filter((m) => m.type === 'session.handoff')).toHaveLength(0);
+        }
         expect(
           sent.filter((m) => m.server === 2 && ['session.create', 'message.send'].includes(m.type)),
         ).toHaveLength(0);
@@ -658,6 +753,8 @@ for (const {
     await expect(page.locator('.service-workspace:not([hidden]) .message.user')).toContainText(
       '保留原来的任务和对话',
     );
+    // Wait until the target reply has joined the archived turn before opening its process fold.
+    await expect(page.getByText('服务器2继续完成第二步', { exact: true })).toBeVisible();
     // Upstream groups continuation into the original turn. Earlier replies remain in its process fold.
     const earlierTurns = page.locator(
       '.service-workspace:not([hidden]) .turn-process:not([open]) > summary',

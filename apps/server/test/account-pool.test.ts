@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { AccountPool, availableAccount, orderedAccounts } from '../src/account-pool.ts';
 import { SessionStore } from '../src/store.ts';
-import { poolHandoff, canHandoff } from '../src/pool-handoff.ts';
+import { poolHandoff, canHandoff, handoffBlockReason } from '../src/pool-handoff.ts';
 import { nativeStore } from '../src/native-store.ts';
 import type { ServerPoolAccount, SessionEvent } from '@cc-desk-tunnel/protocol';
 
@@ -195,6 +195,24 @@ test('handoff omits reasoning, is bounded, and refuses unknown tools and unconfi
     event({ type: 'message.delivery', messageId: supplementalId, status: 'unconfirmed' }),
   ];
   assert.equal(canHandoff(supplemental, runId), false);
+  assert.equal(handoffBlockReason(supplemental, runId, [supplementalId]), null);
+  assert.ok(handoffBlockReason(supplemental, runId, [randomUUID()]));
+  assert.ok(
+    handoffBlockReason(
+      [
+        ...supplemental,
+        event({
+          type: 'tool.result',
+          toolId: 'unknown',
+          status: 'unknown',
+          output: '',
+          exitCode: null,
+        }),
+      ],
+      runId,
+      [supplementalId],
+    ),
+  );
   const continuedId = randomUUID();
   const continued = [
     ...events,

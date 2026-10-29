@@ -25,7 +25,11 @@ export function poolHandoff(events: SessionEvent[]) {
   ].join('\n\n');
 }
 
-export function handoffBlockReason(events: SessionEvent[], runId: string): string | null {
+export function handoffBlockReason(
+  events: SessionEvent[],
+  runId: string,
+  confirmedMessageIds: string[] = [],
+): string | null {
   const current = events.filter((event) => event.runId === runId);
   const background = current.findLast((event) => event.payload.type === 'native.tasks');
   if (background?.payload.type === 'native.tasks' && background.payload.tasks.length)
@@ -51,6 +55,7 @@ export function handoffBlockReason(events: SessionEvent[], runId: string): strin
       (event) =>
         event.payload.type === 'message.delivery' &&
         messages.has(event.payload.messageId) &&
+        !confirmedMessageIds.includes(event.payload.messageId) &&
         ['unconfirmed', 'not_sent'].includes(event.payload.status),
     )
   )

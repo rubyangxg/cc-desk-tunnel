@@ -1995,7 +1995,11 @@ export function createProxyServer(options: ServerOptions) {
         const lastRun =
           run?.id ?? store.history(session.id, command.requestId, 0).events.at(-1)?.runId;
         const blocked = lastRun
-          ? handoffBlockReason(store.runEvents(session.id, lastRun), lastRun)
+          ? handoffBlockReason(
+              store.runEvents(session.id, lastRun),
+              lastRun,
+              command.type === 'session.handoff' ? command.confirmedMessageIds : undefined,
+            )
           : null;
         if (blocked) throw new DomainError('handoff_blocked', blocked);
         const queue = session.messageQueue;
@@ -2017,6 +2021,28 @@ export function createProxyServer(options: ServerOptions) {
           updated(session.id);
         }
         if (run) cancel(run, '已确认额度等待结束，交接到其他服务器。');
+        return command.sessionId;
+      }
+      case 'session.handoff.cancel': {
+        // Explicit recovery only: the client must first ask the user to check the destination.
+        // Restore editing while paused, never execute or discard the original messages here.
+        if (runs.has(session.id) || session.activeRun || terminals.has(session.id))
+          throw new DomainError('handoff_unavailable', '任务仍在运行，不能恢复原队列。');
+        if (session.device?.id !== deviceOf(peer).id)
+          throw new DomainError('handoff_device', '请在项目所在电脑恢复原队列。');
+        const queue = session.messageQueue;
+        if (
+          !queue?.handoff ||
+          queue.dispatching ||
+          JSON.stringify(command.queueIds) !== JSON.stringify(queue.items.map((item) => item.id))
+        )
+          throw new DomainError('handoff_unavailable', '队列状态已改变，请刷新后重试。');
+        store.setMessageQueue(session.id, {
+          items: queue.items,
+          paused: true,
+          reason: '原队列已恢复，请检查消息后继续队列。',
+        });
+        updated(session.id);
         return command.sessionId;
       }
     }
@@ -2188,6 +2214,7 @@ export function createProxyServer(options: ServerOptions) {
               'project-quota-resume',
               'cross-server-handoff',
               'cross-server-queue-handoff',
+              'cross-server-queue-recovery',
             ]
           : []),
       ],
