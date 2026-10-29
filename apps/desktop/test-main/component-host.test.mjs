@@ -362,7 +362,7 @@ test(
   },
 );
 
-// What the runtime directory allows, as SDDL, and the SID of this user.
+// Inspect numeric identities and access rules: Windows may abbreviate SIDs in SDDL (e.g. LA).
 async function permissions(path) {
   return JSON.parse(
     await execute('pwsh.exe', [
@@ -370,9 +370,22 @@ async function permissions(path) {
       '-NoProfile',
       '-NonInteractive',
       '-Command',
-      `@{ sddl = (Get-Acl -LiteralPath '${path.replaceAll("'", "''")}').Sddl; sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value } | ConvertTo-Json -Compress`,
+      `$acl = Get-Acl -LiteralPath '${path.replaceAll("'", "''")}'; @{ protected = $acl.AreAccessRulesProtected; sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object { @{ sid = $_.IdentityReference.Value; rights = [int]$_.FileSystemRights; inherited = $_.IsInherited; inheritance = [int]$_.InheritanceFlags; propagation = [int]$_.PropagationFlags; allow = $_.AccessControlType -eq 'Allow' } }) } | ConvertTo-Json -Depth 4 -Compress`,
     ]),
   );
+}
+
+function onlyCurrentUser(acl, directory) {
+  assert.equal(acl.rules.length, 1, 'no inherited or explicit grants to other identities');
+  assert.deepEqual(acl.rules[0], {
+    sid: acl.sid,
+    rights: 2032127, // FullControl
+    inherited: !directory,
+    inheritance: directory ? 3 : 0, // ContainerInherit | ObjectInherit
+    propagation: 0,
+    allow: true,
+  });
+  assert.equal(acl.protected, directory);
 }
 
 test(
@@ -383,9 +396,9 @@ test(
     try {
       const folder = await permissions(directory);
       // Protected from inheritance, with one entry: full control for this user, passed on to what is inside.
-      assert.match(folder.sddl, new RegExp(`D:PAI\\(A;OICI;FA;;;${folder.sid}\\)$`));
+      onlyCurrentUser(folder, true);
       const key = await permissions(join(directory, 'authorized_keys'));
-      assert.match(key.sddl, new RegExp(`D:AI\\(A;ID;FA;;;${key.sid}\\)$`));
+      onlyCurrentUser(key, false);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -402,7 +415,7 @@ test(
     const { directory } = await prepare('pwsh.exe', false, made);
     try {
       const folder = await permissions(directory);
-      assert.match(folder.sddl, new RegExp(`D:PAI\\(A;OICI;FA;;;${folder.sid}\\)$`));
+      onlyCurrentUser(folder, true);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -415,14 +428,19 @@ test(
   async () => {
     const directory = await mkdtemp(join(tmpdir(), 'cc-desk-tunnel-ssh-'));
     try {
-      // OWNER RIGHTS takes the place of what the owner may implicitly do, here everything but changing permissions.
+      const { sid } = await permissions(directory);
+      // Deny WRITE_DAC to the actual identity, including administrator runners. OWNER RIGHTS
+      // removes the owner's implicit grant, while retaining Modify so file creation remains possible.
       await execute('icacls.exe', [
         directory,
         '/inheritance:r',
         '/grant:r',
         '*S-1-3-4:(OI)(CI)M',
         '*S-1-5-32-545:(OI)(CI)RX',
+        '/deny',
+        `*${sid}:(WDAC)`,
       ]);
+      await writeFile(join(directory, 'writable.txt'), 'permission fixture');
       const started = Date.now();
       await assert.rejects(
         execute('pwsh.exe', [
@@ -438,6 +456,7 @@ test(
           '-Port',
           '1',
         ]),
+        /Access.*denied|UnauthorizedAccess|拒绝|权限/i,
       );
       // Not the timeout of a key generator left waiting in a directory it cannot secure.
       assert.ok(Date.now() - started < 10000);
