@@ -12,7 +12,25 @@ Ubuntu amd64 优先；arm64 为实验性支持：镜像构建、部署自测和�
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/rubyangxg/cc-desk-tunnel/personal/deploy/install.sh)"
 ```
 
-目前不提供现成镜像：镜像在你的服务器上从程序包构建，首次需要几分钟，期间联网下载系统包、Node.js、Claude Code 和 npm 依赖。
+默认在你的服务器上从程序包构建镜像，首次需要几分钟，期间联网下载系统包、Node.js、Claude Code 和 npm 依赖。也可以改用现成镜像，见下面的[拉取现成镜像](#拉取现成镜像)。
+
+### 拉取现成镜像
+
+每次推送 `personal` 分支和每个 `vX.Y.Z` 标签，GitHub Actions 都会构建 amd64 / arm64 两种架构的镜像，发布到 `ghcr.io/rubyangxg/cc-desk-tunnel`。标签：`personal`（分支最新）、`sha-<提交前 7 位>`（固定某次提交）、`X.Y.Z` 与 `latest`（正式版）。在私有配置 `.local/docker.env` 里把 `PROXY_IMAGE` 改成带仓库地址的镜像名，`build`、`upgrade` 和 `setup` 就改为 `docker pull`，不再在服务器上构建：
+
+```sh
+sudo sed -i "s|^PROXY_IMAGE=.*|PROXY_IMAGE='ghcr.io/rubyangxg/cc-desk-tunnel:personal'|" .local/docker.env
+sudo bash deploy/manage.sh upgrade
+```
+
+拉取失败（网络不通、镜像为私有且未登录）时自动退回本机构建，并以同一名字打 tag。镜像包为私有时先 `sudo docker login ghcr.io -u 用户名`，密码填有 `read:packages` 权限的 token。`upgrade --from 程序包` 总是从程序包构建；设 `PROXY_BUILD=always` 也可强制本机构建。改回 `PROXY_IMAGE='cc-desk-tunnel:local'` 即恢复原来的行为。
+
+在国内等访问官方源较慢的服务器上本机构建时，可在 `.local/docker.env` 里指定镜像源（留空即官方源）。`APT_MIRROR` 替换 Ubuntu 软件源地址，amd64 用 `…/ubuntu`，arm64 用 `…/ubuntu-ports`；`NPM_REGISTRY` 用于 Claude Code 和 npm 依赖：
+
+```sh
+APT_MIRROR='http://mirrors.aliyun.com/ubuntu'
+NPM_REGISTRY='https://registry.npmmirror.com'
+```
 
 也可以手动准备：从项目的 GitHub 发布页取同一版本的三个文件：服务端程序包 `cc-desk-tunnel-server-X.Y.Z.tar.gz`、Windows 安装包 `CC-Desk-Tunnel-Setup-X.Y.Z-x64.exe` 和 `SHA256SUMS`。放到 VPS 的同一目录后先校验，再把程序包解压到专用程序目录：
 
@@ -136,7 +154,7 @@ sudo bash deploy/manage.sh uninstall
 
 Compose 崩溃 / 主机重启恢复，`tini -g` 管理信号与孤儿进程；停止给代理 30 秒正常回收，强杀则 Docker 回收容器中全部进程。日志上限 3 × 10MB。健康检查不发模型请求，也不是深度外部可用性探测；Docker 不会仅因 unhealthy 自动重启进程。
 
-升级先构建新镜像，构建失败不停止旧容器；成功后替换容器，数据保留。上线前先 backup；可将旧镜像另行打 tag，并在私有 `docker.env` 中设置 `PROXY_IMAGE`，`up` 切回。镜像可 `docker save` 后在 VPS `docker load`，无需 VPS 重建；当前无公共镜像注册表，不假称可直接 pull 产品镜像。
+升级先构建新镜像，构建失败不停止旧容器；成功后替换容器，数据保留。上线前先 backup；可将旧镜像另行打 tag，并在私有 `docker.env` 中设置 `PROXY_IMAGE`，`up` 切回。镜像可 `docker save` 后在 VPS `docker load`，无需 VPS 重建；也可以按[拉取现成镜像](#拉取现成镜像)直接从 GHCR 拉取。
 
 仅导入镜像、手工 Compose 管理时，使用 `deploy/compose.yml`（无 build）。在独立部署目录复制为 `compose.yml`，将初始化生成的 `docker.env` 复制为同目录 `.env`，确认 `PROXY_IMAGE` 为已导入 tag；该配置不含 token / API key，但目录和文件仍保持私有。运行 `sudo docker compose up -d` / `ps` / `logs` / `stop`。调用备份等脚本时设置 `PROXY_DEPLOY_CONFIG=/部署目录/.env`、`PROXY_COMPOSE_FILE=/部署目录/compose.yml`，确保使用相同数据和项目。纯镜像部署升级使用 `docker load`、更新 tag、`docker compose up -d`，不用 `manage.sh build` / `upgrade`。
 

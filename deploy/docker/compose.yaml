@@ -4,6 +4,10 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
+      # Optional mirrors for building on the server, set in docker.env; empty uses the public sources.
+      args:
+        APT_MIRROR: ${APT_MIRROR:-}
+        NPM_REGISTRY: ${NPM_REGISTRY:-}
     restart: unless-stopped
     stop_grace_period: 30s
     ports:

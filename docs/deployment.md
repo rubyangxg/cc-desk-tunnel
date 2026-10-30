@@ -6,7 +6,7 @@
 
 官方 CLI、PTY 与代理服务在同一个容器里，通往 Windows 的随机 SSH 端口只在容器回环上，不需要 host 网络、特权容器或 Docker socket。镜像是较完整的 Ubuntu 工具环境，预装 Git、SSH、Node、Python 以及编译、文本、网络工具，保留可写层与持久的工作目录，普通用户可以安装用户级工具。
 
-`deploy/install.sh` 检查 Docker 与 Compose（缺少时只给出安装命令），单独运行时还会从发布页下载并校验最新的程序包；`deploy/manage.sh` 负责初始化、构建、启动、升级、更换证书与凭据、备份恢复和卸载。`npm run package:server` 生成不含秘密、携带同版本 Web 前端构建的源码包；运行镜像不需要 Electron 或 Vite。也可以在别处构建镜像后 `docker save` / `load`，配合不含构建步骤的 `deploy/compose.yml` 使用。目前没有公共镜像仓库。
+`deploy/install.sh` 检查 Docker 与 Compose（缺少时只给出安装命令），单独运行时还会从发布页下载并校验最新的程序包；`deploy/manage.sh` 负责初始化、构建、启动、升级、更换证书与凭据、备份恢复和卸载。`npm run package:server` 生成不含秘密、携带同版本 Web 前端构建的源码包；运行镜像不需要 Electron 或 Vite。也可以在别处构建镜像后 `docker save` / `load`，配合不含构建步骤的 `deploy/compose.yml` 使用；或在 `docker.env` 里把 `PROXY_IMAGE` 设为 `ghcr.io/rubyangxg/cc-desk-tunnel:personal` 等现成镜像，由 `manage.sh` 拉取而不构建，见[拉取现成镜像](../deploy/README.md#拉取现成镜像)。
 
 Node.js、Claude Code、Agent SDK 均为固定版本（见 `scripts/install-linux.sh` 与 `package-lock.json`），不声称最新或无漏洞。`scripts/install-linux.sh` 与 `scripts/deploy-linux.mjs` 另提供一条普通用户直接运行的开发调试路径，没有进程监督，不用于生产。
 
