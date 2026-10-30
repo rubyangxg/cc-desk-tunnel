@@ -3,6 +3,8 @@ import { spawn as spawnPty } from 'node-pty';
 import type { AccountState } from '@cc-desk-tunnel/protocol';
 import { definedEnvironment } from './native-terminal.ts';
 import type { TerminalSpawner } from './native-terminal.ts';
+import { statusFailure } from './diagnostics.ts';
+import type { CommandFailure } from './diagnostics.ts';
 
 type Account = Omit<AccountState, 'login' | 'notice'>;
 // Terminal hyperlink (OSC) and styling (CSI) sequences; only the visible text is read.
@@ -21,22 +23,35 @@ export function parseAccountStatus(output: string): Account {
     }),
   };
 }
+type Ran = { code: number | null; stdout: string; failure?: CommandFailure };
 function run(executable: string, args: string[], environment?: NodeJS.ProcessEnv) {
-  return new Promise<{ code: number | null; stdout: string }>((resolve) => {
+  return new Promise<Ran>((resolve) => {
     // `auth status` exits 1 when signed out and still prints its JSON.
     execFile(
       executable,
       args,
       { env: { ...process.env, ...environment }, timeout: 20000 },
       (error, stdout) =>
-        resolve({ code: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout }),
+        resolve({
+          code: error ? (typeof error.code === 'number' ? error.code : null) : 0,
+          stdout,
+          ...(error && {
+            failure: {
+              ...(typeof error.code === 'string' && { code: error.code }),
+              killed: error.killed === true,
+            },
+          }),
+        }),
     );
   });
 }
 export async function accountStatus(executable: string, environment?: NodeJS.ProcessEnv) {
-  return parseAccountStatus(
-    (await run(executable, ['auth', 'status', '--json'], environment)).stdout,
-  );
+  const ran = await run(executable, ['auth', 'status', '--json'], environment);
+  try {
+    return parseAccountStatus(ran.stdout);
+  } catch {
+    throw statusFailure(ran);
+  }
 }
 export async function accountLogout(executable: string, environment?: NodeJS.ProcessEnv) {
   if ((await run(executable, ['auth', 'logout'], environment)).code !== 0)

@@ -4,6 +4,16 @@ import { createProxyServer } from './server.ts';
 import { rmSync } from 'node:fs';
 import { clearServiceVariables, environmentConfig } from './config.ts';
 import { removeFrpLeftovers } from './legacy.ts';
+import { logFailure } from './diagnostics.ts';
+
+// A promise nobody waited on must not end the service with every run and tunnel it carries: it is logged, masked,
+// and the service goes on. An exception thrown past every handler leaves the state unknown, so after logging it
+// the process still ends and its supervisor starts it again.
+process.on('unhandledRejection', (reason) => logFailure('unhandled rejection', reason, true));
+process.on('uncaughtException', (error) => {
+  logFailure('uncaught exception', error, true);
+  process.exit(1);
+});
 
 const { options, native, port } = environmentConfig(
   process.env,

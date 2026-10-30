@@ -51,6 +51,12 @@ import { runClaude, nativeDirectory, prepareNativeDirectory, readNativeStatus } 
 import type { ClaudeOptions } from './claude.ts';
 import { ClientReleases } from './client-release.ts';
 import { DomainError } from './errors.ts';
+import {
+  classifyProbeFailure,
+  logFailure,
+  probeFailureMessages,
+  trackTask,
+} from './diagnostics.ts';
 import { NativeInput } from './native-input.ts';
 import { completeOnboarding } from './native-onboarding.ts';
 import { readNativeSettings, updateNativeSettings, settingsPath } from './native-settings.ts';
@@ -422,8 +428,7 @@ export function createProxyServer(options: ServerOptions) {
       );
   }
   function track(task: Promise<unknown>, group = tasks) {
-    group.add(task);
-    void task.finally(() => group.delete(task));
+    trackTask(group, task);
   }
   function updated(sessionId: string) {
     broadcast({ type: 'session.updated', session: store.get(sessionId).session });
@@ -472,6 +477,18 @@ export function createProxyServer(options: ServerOptions) {
     if (target) send(target, message);
     else for (const peer of peers) if (peer.authenticated && peer.poolClient) send(peer, message);
   }
+  // Records why checking an account failed: the log gets the masked error, the card a message naming the cause.
+  // A rejected credential marks the account signed out, so the card asks for a new sign-in instead of a retry.
+  function poolCheckFailed(accountId: string, step: string, error: unknown) {
+    if (!pool) return;
+    const kind = classifyProbeFailure(error);
+    logFailure(`account pool ${accountId} ${step} (${kind})`, error);
+    pool.update(accountId, {
+      ...(kind === 'auth' ? { loggedIn: false, limits: null } : {}),
+      checkedAt: Date.now(),
+      error: probeFailureMessages[kind],
+    });
+  }
   async function refreshPool() {
     if (!pool || closing) return;
     if (poolRefresh) return poolRefresh;
@@ -488,23 +505,31 @@ export function createProxyServer(options: ServerOptions) {
         )
           continue;
         const claude = pool.options(account.id);
+        // Each step fails for its own reasons, so each is caught and reported on its own.
+        let identity: Awaited<ReturnType<typeof accountStatus>>;
         try {
-          const identity = await accountStatus(claude.executable, claude.environment);
-          if (closing) break;
+          identity = await accountStatus(claude.executable, claude.environment);
+        } catch (error) {
+          if (!closing) poolCheckFailed(account.id, 'auth status', error);
+          publishPool();
+          continue;
+        }
+        if (closing) break;
+        pool.update(account.id, {
+          loggedIn: identity.loggedIn,
+          email: identity.email,
+          subscriptionType: identity.subscriptionType,
+        });
+        if (!identity.loggedIn) {
           pool.update(account.id, {
-            loggedIn: identity.loggedIn,
-            email: identity.email,
-            subscriptionType: identity.subscriptionType,
+            limits: null,
+            checkedAt: Date.now(),
+            error: '尚未登录或登录已失效',
           });
-          if (!identity.loggedIn) {
-            pool.update(account.id, {
-              limits: null,
-              checkedAt: Date.now(),
-              error: '尚未登录或登录已失效',
-            });
-            publishPool();
-            continue;
-          }
+          publishPool();
+          continue;
+        }
+        try {
           const active = [...runs.values()].find(
             (run) =>
               (store.get(run.sessionId).session.accountId ?? 'default') === account.id &&
@@ -531,12 +556,8 @@ export function createProxyServer(options: ServerOptions) {
               poolProbes.delete(account.id);
             }
           }
-        } catch {
-          if (!closing)
-            pool.update(account.id, {
-              checkedAt: Date.now(),
-              error: '检测失败，请检查此账号的登录状态与服务网络',
-            });
+        } catch (error) {
+          if (!closing) poolCheckFailed(account.id, 'usage probe', error);
         }
         publishPool();
       }
@@ -665,7 +686,8 @@ export function createProxyServer(options: ServerOptions) {
     poolLogins.set(id, signing);
     try {
       signing.url = await signing.process.url;
-    } catch {
+    } catch (error) {
+      logFailure(`account pool ${id} login`, error);
       throw new DomainError('login_failed', '官方登录命令未返回链接，请检查 CLI 和网络。');
     }
     pool.update(id, { login: { url: signing.url } });
@@ -1072,7 +1094,8 @@ export function createProxyServer(options: ServerOptions) {
         run.goalContinuation = true;
       }
       finish(run, 'cancelled', run.cancelReason);
-    } catch {
+    } catch (error) {
+      logFailure(`native run ${run.sessionId}`, error);
       emit(run, {
         type: 'run.error',
         code: 'native_adapter_failed',
@@ -1129,7 +1152,8 @@ export function createProxyServer(options: ServerOptions) {
       login?.process.cancel();
       try {
         await logoutAccount('default');
-      } catch {
+      } catch (error) {
+        logFailure('account logout', error);
         throw new DomainError('logout_failed', '退出登录失败，请在原生终端执行 /logout 确认。');
       }
       await publishAccount();
@@ -1165,7 +1189,8 @@ export function createProxyServer(options: ServerOptions) {
       login = current;
       try {
         current.url = await current.process.url;
-      } catch {
+      } catch (error) {
+        logFailure('account login', error);
         throw new DomainError('login_failed', '官方登录命令没有给出授权链接，请检查 CLI 与网络。');
       }
     }
@@ -1292,7 +1317,8 @@ export function createProxyServer(options: ServerOptions) {
       });
       updated(command.sessionId);
       send(peer, { type: 'terminal.opened', sessionId: command.sessionId, terminalId: current.id });
-    } catch {
+    } catch (error) {
+      logFailure(`terminal ${command.sessionId}`, error);
       await current.process?.close();
       if (terminals.get(current.sessionId) === current) terminals.delete(current.sessionId);
       throw new DomainError('terminal_failed', '原生终端启动失败，请检查 Linux PTY 组件与 CLI。');
@@ -1772,7 +1798,8 @@ export function createProxyServer(options: ServerOptions) {
               ? readNativeSettings(path)
               : updateNativeSettings(command.values, path);
           send(peer, { type: 'settings.state', requestId: command.requestId, values });
-        } catch {
+        } catch (error) {
+          logFailure(`settings ${command.type}`, error);
           throw new DomainError(
             'settings_failed',
             '原生设置文件无法读取或写入；请在原生终端用 /config 检查。',
@@ -2354,13 +2381,17 @@ export function createProxyServer(options: ServerOptions) {
         ok: true,
         sessionId,
       }),
-      (error): ServerMessage => ({
-        type: 'response',
-        requestId: command.requestId,
-        ok: false,
-        code: error instanceof DomainError ? error.code : 'internal_error',
-        message: error instanceof DomainError ? error.message : '服务处理失败。',
-      }),
+      (error): ServerMessage => {
+        // A domain error is an answer the client shows; anything else is a fault only the log can explain.
+        if (!(error instanceof DomainError)) logFailure(`command ${command.type}`, error);
+        return {
+          type: 'response',
+          requestId: command.requestId,
+          ok: false,
+          code: error instanceof DomainError ? error.code : 'internal_error',
+          message: error instanceof DomainError ? error.message : '服务处理失败。',
+        };
+      },
     );
     peer.responses.set(command.requestId, { command: serialized, response });
     // A resend follows its request closely: the latest few are all that can still be asked for again.
