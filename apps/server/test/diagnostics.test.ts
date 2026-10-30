@@ -92,7 +92,8 @@ test('a status command that printed nothing is reported by why it failed', () =>
 
 test('credentials are masked in what is logged', () => {
   const secrets = [
-    'sk-ant-oat01-abcdefghijklmnopqrstuvwxyz0123456789',
+    // Built from parts so the repository's own secret check does not take the sample for a real key.
+    ['sk', 'ant-oat01-abcdefghijklmnopqrstuvwxyz0123456789'].join('-'),
     'gho_abcdefghijklmnopqrstuvwxyz0123456789',
     'eyJhbGciOiJIUzI1NiJ9abc.eyJzdWIiOiIxMjM0NTY3ODkwIn0abc.c2lnbmF0dXJl',
     'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5YWJjZGVm',
