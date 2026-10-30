@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, realpathSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+  realpathSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -15,11 +23,19 @@ import { createProxyServer } from '../src/server.ts';
 // The deployed CLI adapter runs on Unix; Windows is a desktop client in this architecture.
 const nativeTest = process.platform === 'win32' ? test.skip : test;
 
+// The fixture CLI polls its state file during a run, so the file is replaced whole: written beside it, then renamed
+// over it. A plain write can be read half-done and fail the run.
+function writeFixture(file: string, data: string) {
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, data);
+  renameSync(temporary, file);
+}
+
 async function fixture(t: TestContext, fail = 'quota') {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cc-pool-integration-')));
   const config = join(dir, 'original');
   mkdirSync(config);
-  writeFileSync(
+  writeFixture(
     join(config, 'fixture.json'),
     JSON.stringify({ loggedIn: true, email: 'a@example.test', fail, hours: 1 }),
   );
@@ -98,7 +114,7 @@ async function fixture(t: TestContext, fail = 'quota') {
   );
   assert.equal(added.type, 'pool.state');
   const id = added.type === 'pool.state' ? added.accounts[1].id : '';
-  writeFileSync(
+  writeFixture(
     join(dir, 'accounts', id, 'config', 'fixture.json'),
     JSON.stringify({ loggedIn: true, email: 'b@example.test', hours: 2 }),
   );
@@ -232,7 +248,7 @@ nativeTest(
           await f.request({ type: 'pool.configure', values: { enabled: false } });
           const file = join(f.config, 'fixture.json');
           if (!alreadyRejected)
-            writeFileSync(
+            writeFixture(
               file,
               JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), pauseBeforeQuota: true }),
             );
@@ -252,7 +268,7 @@ nativeTest(
           );
           await f.request({ type: 'pool.configure', values: { enabled: true } });
           if (!alreadyRejected)
-            writeFileSync(
+            writeFixture(
               file,
               JSON.stringify({
                 ...JSON.parse(readFileSync(file, 'utf8')),
@@ -355,7 +371,7 @@ nativeTest(
     const f = await fixture(t);
     await f.request({ type: 'pool.account.update', accountId: f.id, enabled: false });
     const file = join(f.config, 'fixture.json');
-    writeFileSync(
+    writeFixture(
       file,
       JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), resetSeconds: 1 }),
     );
@@ -371,7 +387,7 @@ nativeTest(
         message.event.payload.type === 'native.notice' &&
         message.event.payload.text.includes('任务已暂停'),
     );
-    writeFileSync(file, JSON.stringify({ loggedIn: true, email: 'a@example.test' }));
+    writeFixture(file, JSON.stringify({ loggedIn: true, email: 'a@example.test' }));
     await f.wait(
       (message) =>
         message.type === 'session.event' &&
@@ -398,7 +414,7 @@ nativeTest(
         const f = await fixture(t);
         await f.request({ type: 'pool.configure', values: { enabled: false } });
         const configFile = join(f.config, 'fixture.json');
-        writeFileSync(
+        writeFixture(
           configFile,
           JSON.stringify({ ...JSON.parse(readFileSync(configFile, 'utf8')), resetSeconds: 2 }),
         );
@@ -433,7 +449,7 @@ nativeTest(
         const reset =
           rejection.payload.type === 'run.error' ? Date.parse(rejection.payload.resetsAt!) : 0;
         assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 1);
-        writeFileSync(configFile, JSON.stringify({ loggedIn: true, email: 'a@example.test' }));
+        writeFixture(configFile, JSON.stringify({ loggedIn: true, email: 'a@example.test' }));
         await f.wait(
           (message) =>
             message.type === 'session.event' &&
@@ -586,7 +602,7 @@ nativeTest(
     const f = await fixture(t, '');
     await f.request({ type: 'pool.configure', values: { enabled: false } });
     const file = join(f.config, 'fixture.json');
-    writeFileSync(
+    writeFixture(
       file,
       JSON.stringify({
         loggedIn: true,
@@ -671,7 +687,7 @@ nativeTest(
     const f = await fixture(t);
     const backup = join(f.dir, 'accounts', f.id, 'config', 'fixture.json');
     const at = Date.now() + 5000;
-    writeFileSync(
+    writeFixture(
       backup,
       JSON.stringify({
         loggedIn: true,
@@ -697,7 +713,7 @@ nativeTest(
     assert.equal(waiting.quotaWaits![0].at, at);
     assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 1);
     // A successful quota observation is available when the scheduled check fires.
-    writeFileSync(
+    writeFixture(
       backup,
       JSON.stringify({
         loggedIn: true,
@@ -767,7 +783,7 @@ nativeTest(
   async (t) => {
     const f = await fixture(t);
     const file = join(f.config, 'fixture.json');
-    writeFileSync(
+    writeFixture(
       file,
       JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), pauseBeforeQuota: true }),
     );
@@ -784,7 +800,7 @@ nativeTest(
     );
     await f.request({ type: 'message.enqueue', sessionId, text: 'queued follow-up' });
     assert.equal(f.server.store.get(sessionId).session.messageQueue?.items.length, 1);
-    writeFileSync(
+    writeFixture(
       file,
       JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), pauseBeforeQuota: false }),
     );
@@ -841,7 +857,7 @@ for (const queued of [false, true])
     { timeout: 30000 },
     async (t) => {
       const f = await fixture(t);
-      writeFileSync(
+      writeFixture(
         join(f.dir, 'accounts', f.id, 'config', 'fixture.json'),
         JSON.stringify({ loggedIn: true, email: 'b@example.test', blocked: true }),
       );
@@ -1024,7 +1040,7 @@ nativeTest(
     const f = await fixture(t);
     for (const directory of [f.config, join(f.dir, 'accounts', f.id, 'config')]) {
       const file = join(directory, 'fixture.json');
-      writeFileSync(
+      writeFixture(
         file,
         JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), blocked: true }),
       );
@@ -1089,7 +1105,7 @@ nativeTest(
     await send();
     assert.equal(f.server.store.get(sessionId!).session.accountId, f.id);
     const backup = join(f.dir, 'accounts', f.id, 'config', 'fixture.json');
-    writeFileSync(
+    writeFixture(
       backup,
       JSON.stringify({ loggedIn: true, email: 'b@example.test', blocked: true, hours: 2 }),
     );
@@ -1125,7 +1141,7 @@ nativeTest(
             await f.request({ type: 'pool.account.update', accountId: f.id, enabled: false });
             const file = join(f.config, 'fixture.json');
             const fiveAt = Date.now() + 5000;
-            writeFileSync(
+            writeFixture(
               file,
               JSON.stringify({
                 loggedIn: true,
@@ -1169,7 +1185,7 @@ nativeTest(
                 .filter((call) => call.prompt !== '/goal');
             assert.equal(calls().length, 1);
             // Weekly quota recovers first. The five-hour quota must still prevent execution.
-            writeFileSync(
+            writeFixture(
               file,
               JSON.stringify({
                 loggedIn: true,
@@ -1186,7 +1202,7 @@ nativeTest(
                 sessionId,
                 runId: f.server.store.get(sessionId!).session.activeRun!.id,
               });
-            writeFileSync(file, JSON.stringify({ loggedIn: true, email: 'a@example.test' }));
+            writeFixture(file, JSON.stringify({ loggedIn: true, email: 'a@example.test' }));
             if (stop) {
               await delay(5500);
               await f.request({ type: 'pool.status', refresh: true });
@@ -1283,7 +1299,7 @@ nativeTest(
       resumed.every((call) => call.appendSystemPrompt.includes(context)),
       'the original handoff context survives later native resumes',
     );
-    writeFileSync(
+    writeFixture(
       join(f.config, 'fixture.json'),
       JSON.stringify({ loggedIn: true, email: 'a@example.test', hours: 1 }),
     );
@@ -1322,7 +1338,7 @@ nativeTest(
           finishGoal: ending === 'finished',
           pauseBeforeQuota: ending === 'paused',
         };
-        writeFileSync(file, JSON.stringify(config));
+        writeFixture(file, JSON.stringify(config));
         const { sessionId } = await f.request({
           type: 'session.create',
           title: 'goal lifecycle',
@@ -1351,7 +1367,7 @@ nativeTest(
           });
         }
         await ended();
-        writeFileSync(file, JSON.stringify({ ...config, pauseBeforeQuota: false }));
+        writeFixture(file, JSON.stringify({ ...config, pauseBeforeQuota: false }));
         if (ending === 'cleared') {
           await f.request({ type: 'message.send', sessionId, text: '/goal clear' });
           await ended();
@@ -1387,7 +1403,7 @@ nativeTest(
       await t.test(rejectGoal ? 'refused' : 'restored', async (t) => {
         const f = await fixture(t, '');
         await f.request({ type: 'pool.configure', values: { enabled: false } });
-        writeFileSync(
+        writeFixture(
           join(f.config, 'fixture.json'),
           JSON.stringify({ loggedIn: true, email: 'a@example.test', rejectGoal, finishGoal: true }),
         );
