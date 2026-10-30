@@ -55,7 +55,9 @@ export function upgradeService({ url, fingerprint, token, deviceName, service },
         else if (message.state === 'restarting') end(null, message.latest);
         else if (message.state === 'failed') end(message.detail ?? '服务端升级失败。');
         else if (message.state === 'manual')
-          end(`服务端 ${message.latest} 需要更新镜像，请在服务器上执行 manage.sh upgrade。`);
+          end(
+            `服务端 ${message.latest} 需要更新镜像，请在服务器上执行 sudo bash deploy/manage.sh upgrade（已配置 GHCR 时只拉镜像）。`,
+          );
         else if (message.state === 'idle') end('服务端没有找到更新的正式版本。');
       }
     });
