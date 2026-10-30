@@ -10,11 +10,16 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const directory = resolve(process.argv[2] ?? 'artifacts/release');
 const version = JSON.parse(readFileSync(join(root, 'apps/desktop/package.json'), 'utf8')).version;
+export const prebuiltServers = (version) =>
+  ['x64', 'arm64'].map((arch) => `cc-desk-tunnel-server-${version}-linux-${arch}.tar.gz`);
 export const releaseFiles = (version, target = 'windows-server', android = false) => {
   if (!['windows-server', 'all'].includes(target))
     throw new Error(`Unknown release target: ${target}`);
   const files = [`CC-Desk-Tunnel-Setup-${version}-x64.exe`];
   files.push(`cc-desk-tunnel-server-${version}.tar.gz`);
+  // The same program with its dependencies installed, one per server architecture: a running server upgrades
+  // from these without npm. Servers from before them read only the plain package above.
+  files.push(...prebuiltServers(version));
   if (target === 'all') files.push(`CC-Desk-Tunnel-${version}-linux-amd64.deb`);
   if (android) files.push(`CC-Desk-Tunnel-${version}-android.apk`);
   return files;

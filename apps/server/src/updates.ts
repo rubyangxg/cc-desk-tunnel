@@ -31,7 +31,17 @@ export type UpdateOptions = {
   installed?: () => void;
   // How a download is paced, in milliseconds; the defaults unless a test shortens them.
   download?: Partial<typeof downloadPace>;
+  // Installs the dependencies of an unpacked program; npm unless a test stands in for it.
+  npm?: (args: string[], cwd: string) => Promise<unknown>;
 };
+// The program package of a release built for this machine, dependencies included, if releases carry one for it.
+export function prebuiltPackage(version: string, platform = process.platform, arch = process.arch) {
+  return platform === 'linux' && (arch === 'x64' || arch === 'arm64')
+    ? `cc-desk-tunnel-server-${version}-linux-${arch}.tar.gz`
+    : undefined;
+}
+// What a prebuilt package says it was built with: its native modules load only where these are the same.
+type Prebuilt = { platform: string; arch: string; modules: string; native?: string[] };
 // A connection to the release host can start fast and then slow to a crawl, or stop without closing. A file is
 // therefore fetched in stretches: each connection is used for `stretch` at most and the next one continues
 // where it ended; one that delivers nothing for `stall` is given up at once. After `attempts` connections in a
@@ -302,6 +312,22 @@ export class ServiceUpdates {
     });
     return this.pending;
   }
+  // A prebuilt program is used only if it was built for this platform and Node's module version, and each of
+  // its native modules loads here.
+  private async usable(work: string) {
+    const built = JSON.parse(readFileSync(join(work, 'prebuilt.json'), 'utf8')) as Prebuilt;
+    if (
+      built.platform !== process.platform ||
+      built.arch !== process.arch ||
+      String(built.modules) !== process.versions.modules
+    )
+      throw new Error('预构建程序包与本机不符。');
+    for (const name of built.native ?? [])
+      await run(process.execPath, ['-e', `require(${JSON.stringify(name)})`], {
+        cwd: join(work, 'apps/server'),
+        timeout: 60_000,
+      });
+  }
   // Runs in the background; progress and the outcome reach clients as state changes.
   install(version: string) {
     const manifest = this.manifest;
@@ -312,32 +338,52 @@ export class ServiceUpdates {
     const work = join(root, `${version}.new`);
     const step = (detail: string) => this.set({ state: 'installing', latest: version, detail });
     step('下载服务端程序');
+    const archive = join(root, `${version}.tar.gz`);
+    const options = { cwd: work, timeout: 900_000, maxBuffer: 16 << 20 };
+    const unpack = async (name: string) => {
+      await this.download(manifest, name, archive);
+      const { stdout } = await run('tar', ['-tzf', archive], { maxBuffer: 64 << 20 });
+      if (stdout.split('\n').some((path) => path.startsWith('/') || /(^|\/)\.\.(\/|$)/.test(path)))
+        throw new Error('程序包内含不安全的路径。');
+      await run('tar', ['-xzf', archive, '-C', work, '--no-same-owner']);
+      await rm(archive, { force: true });
+    };
     void (async () => {
       try {
         // Only the running program is kept beside the new one.
         await this.clearPrograms();
         mkdirSync(work, { recursive: true });
-        const archive = join(root, `${version}.tar.gz`);
-        await this.download(manifest, `cc-desk-tunnel-server-${version}.tar.gz`, archive);
-        const { stdout } = await run('tar', ['-tzf', archive], { maxBuffer: 16 << 20 });
+        // The package built for this machine needs no installing. Should it be missing, not the announced file,
+        // or not load here, the plain one is installed as before.
+        const prebuilt = prebuiltPackage(version);
+        let ready = false;
         if (
-          stdout.split('\n').some((path) => path.startsWith('/') || /(^|\/)\.\.(\/|$)/.test(path))
+          prebuilt &&
+          manifest.assets.has(prebuilt) &&
+          manifest.files.some((file) => file.name === prebuilt)
         )
-          throw new Error('程序包内含不安全的路径。');
-        await run('tar', ['-xzf', archive, '-C', work, '--no-same-owner']);
-        await rm(archive, { force: true });
-        step('安装依赖');
-        const options = { cwd: work, timeout: 900_000, maxBuffer: 16 << 20 };
-        await run(
-          'npm',
-          [
-            'ci',
-            '--omit=dev',
-            '--workspace=@cc-desk-tunnel/server',
-            '--workspace=@cc-desk-tunnel/protocol',
-          ],
-          options,
-        );
+          try {
+            await unpack(prebuilt);
+            await this.usable(work);
+            ready = true;
+          } catch {
+            await rm(archive, { force: true });
+            await rm(work, { recursive: true, force: true });
+            mkdirSync(work, { recursive: true });
+          }
+        if (!ready) {
+          await unpack(`cc-desk-tunnel-server-${version}.tar.gz`);
+          step('安装依赖');
+          await (this.options.npm ?? ((args, cwd) => run('npm', args, { ...options, cwd })))(
+            [
+              'ci',
+              '--omit=dev',
+              '--workspace=@cc-desk-tunnel/server',
+              '--workspace=@cc-desk-tunnel/protocol',
+            ],
+            work,
+          );
+        }
         // The release names the Claude Code it was built against; the image's copy is used when it is that one.
         const wanted = /^CLAUDE_VERSION=([\w.-]+)$/m.exec(
           readFileSync(join(work, 'scripts/install-linux.sh'), 'utf8'),

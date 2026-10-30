@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { releaseFiles } from './release-manifest.mjs';
+import { prebuiltServers, releaseFiles } from './release-manifest.mjs';
 
 // Releases the version in apps/desktop/package.json from what the personal branch on GitHub holds. Nothing is
 // built on this computer: the `package` workflow on GitHub builds the selected files from that commit, starts each
@@ -59,7 +59,10 @@ const section = new RegExp(
   .trim();
 if (!section) throw new Error(`CHANGELOG.md has no section "## ${version}".`);
 const repository = `https://github.com/${repositoryName}`;
-const [installer, server, ...others] = releaseFiles(version, target);
+const [installer, server, ...rest] = releaseFiles(version, target);
+// The prebuilt server packages are what a running server upgrades from; the rest are Linux clients.
+const prebuilt = prebuiltServers(version);
+const others = rest.filter((name) => !prebuilt.includes(name));
 const androidName = `CC-Desk-Tunnel-${version}-android.apk`;
 // Every release reads the same way: what the project is, this version's section of the change log with its
 // headings one level up, then how to get and upgrade to it. A preview carries the same text, so that making
@@ -78,7 +81,7 @@ const notes = [
   '',
   '- **已在使用**：可在客户端的“设置 → 关于与更新”里检查更新；升级顺序与兼容版本以本版“升级说明”为准。',
   `- **Windows 客户端**：下载 \`${installer}\` 并安装。安装包没有代码签名，SmartScreen 与杀毒软件的提示见[说明](${repository}#杀毒软件与-smartscreen)。`,
-  `- **服务端**：新部署按[快速开始](${repository}#快速开始)用一条命令安装；\`${server}\` 是它下载的程序包。`,
+  `- **服务端**：新部署按[快速开始](${repository}#快速开始)用一条命令安装；\`${server}\` 是它下载的程序包；\`${prebuilt.join('`、`')}\` 是带好依赖的同一程序，已部署的服务端在应用内升级时按架构选用，省去安装依赖。`,
   ...(others.length
     ? [
         `- **Linux 客户端（实验性）**：${others.map((name) => `\`${name}\``).join('、')}。没有签名，也不带应用内更新，升级时重新下载安装；安装与首次打开见 [Linux 说明](${repository}/blob/${releaseBranch}/docs/linux.md)。`,

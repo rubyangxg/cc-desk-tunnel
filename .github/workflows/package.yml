@@ -1,4 +1,4 @@
-# Builds the Windows installer and server bundle by default, with Linux available on request. macOS packages are not built.
+# Builds the Windows installer and server bundle (plain and prebuilt per architecture) by default, with Linux available on request. macOS packages are not built.
 # Each client is started as a check. This is where a release
 # is built: the release script names its draft in `release`, and the files are attached to it with their
 # hashes. Nothing is signed with a certificate. Otherwise the files are kept with the run for 30 days; it
@@ -137,6 +137,49 @@ jobs:
           path: artifacts/server/*.tar.gz
           if-no-files-found: error
           retention-days: 30
+  # The server package again with its production dependencies installed, for each architecture a server may
+  # have: an in-app upgrade then only unpacks it. Built on a machine of that architecture in the deploy image's
+  # `node` stage (the layers the images workflow caches), so node-pty is compiled against the image's Node and
+  # glibc.
+  server-prebuilt:
+    needs: server
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, arch: x64 }
+          - { runner: ubuntu-24.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: server
+          path: artifacts/server
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          target: node
+          load: true
+          tags: cc-desk-tunnel-node:local
+          cache-from: type=gha,scope=image-${{ runner.arch }}
+      - run: |
+          plain="$(cd artifacts/server && ls cc-desk-tunnel-server-*.tar.gz)"
+          mkdir -p artifacts/prebuilt && chmod 777 artifacts/prebuilt
+          docker run --rm -e HOME=/tmp/home \
+            -v "$PWD/scripts/prebuild-server.sh:/tmp/prebuild-server.sh:ro" \
+            -v "$PWD/artifacts/server:/tmp/in:ro" -v "$PWD/artifacts/prebuilt:/tmp/out" \
+            cc-desk-tunnel-node:local \
+            bash /tmp/prebuild-server.sh "/tmp/in/$plain" "/tmp/out/${plain%.tar.gz}-linux-${{ matrix.arch }}.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-prebuilt-${{ matrix.arch }}
+          path: artifacts/prebuilt/*.tar.gz
+          if-no-files-found: error
+          retention-days: 30
   android:
     if: inputs.android == true
     runs-on: ubuntu-24.04
@@ -191,11 +234,12 @@ jobs:
       always() && !cancelled() && inputs.release != '' &&
       needs.windows.result == 'success' &&
       needs.server.result == 'success' &&
+      needs.server-prebuilt.result == 'success' &&
       ((inputs.android == true && needs.android.result == 'success') ||
        (inputs.android != true && needs.android.result == 'skipped')) &&
       ((inputs.target == 'all' && needs.linux.result == 'success') ||
        (inputs.target != 'all' && needs.linux.result == 'skipped'))
-    needs: [windows, linux, server, android]
+    needs: [windows, linux, server, server-prebuilt, android]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -207,7 +251,7 @@ jobs:
           node-version: 24
       - uses: actions/download-artifact@v4
         with:
-          pattern: '{windows-x64,linux-x64,server}'
+          pattern: '{windows-x64,linux-x64,server,server-prebuilt-*}'
           merge-multiple: true
           path: downloaded
       - run: |
