@@ -13,7 +13,7 @@ Usage:
     [--data ABSOLUTE_PATH] [--control-port 8787]
     [--cert FULLCHAIN --key PRIVATE_KEY] [--url wss://DOMAIN/ws] [--token SECRET]
   manage.sh build|up|status|logs|stop|restart|uninstall|connection|summary
-  manage.sh upgrade [--from SERVER_ARCHIVE]   rebuild the image and replace the container in place
+  manage.sh upgrade [--from SERVER_ARCHIVE]   rebuild (or pull) the image and replace the container in place
   manage.sh client INSTALLER_EXE              offer a Windows installer to connected clients
   manage.sh token [SECRET]                    replace the service token (random when omitted) and restart
   manage.sh release-token [FILE]              save a read-only GitHub token for following releases (none: remove)
@@ -26,6 +26,8 @@ Requires Docker Engine + Compose v2+, Bash, OpenSSL, curl, tar.
 Use sudo if your user cannot access Docker. Config defaults to .local/docker.env;
 set PROXY_DEPLOY_CONFIG to manage a different isolated installation.
 Set PROXY_COMPOSE_FILE when managing an image-only standalone compose.yml.
+A PROXY_IMAGE with a registry in docker.env (ghcr.io/rubyangxg/cc-desk-tunnel:personal) is pulled, not built;
+APT_MIRROR and NPM_REGISTRY in docker.env give the local build package mirrors.
 Uninstall keeps all data; backup/restore pause the service.
 HELP
 }
@@ -79,8 +81,20 @@ wait_healthy() {
 # A release archive brings the Web client built, and the image uses it over any sources beside it: an archive
 # unpacked into a git checkout leaves the checkout's older client sources in place. A checkout that has moved
 # on since drops the unpacked client, so that the image builds the client from the sources again.
+# A PROXY_IMAGE that names a registry (ghcr.io/owner/cc-desk-tunnel:personal, for one) is pulled from it instead:
+# no build on the server. If the pull fails the image is built here as before, under the same name; an upgrade from
+# a server archive always builds, as does PROXY_BUILD='always'.
+remote_image() {
+  local registry="${PROXY_IMAGE%%/*}"
+  [[ "$PROXY_IMAGE" = */* && ( "$registry" = *.* || "$registry" = *:* || "$registry" = localhost ) ]]
+}
 build_image() {
   local web="$ROOT/apps/server/web/index.html" commit
+  if [[ "${PROXY_BUILD:-}" != always ]] && remote_image; then
+    echo "拉取镜像 $PROXY_IMAGE …"
+    if docker pull "$PROXY_IMAGE"; then return; fi
+    echo "拉取失败，改为在本机构建镜像。私有镜像需先 docker login ghcr.io。" >&2
+  fi
   if [[ -f "$web" && -d "$ROOT/.git" ]] && command -v git >/dev/null; then
     commit="$(git -c safe.directory="$ROOT" -C "$ROOT" log -1 --format=%ct 2>/dev/null || echo 0)"
     if ((commit > $(stat -c %Y "$web"))); then rm -rf -- "$ROOT/apps/server/web"; fi
@@ -256,7 +270,7 @@ case "$command" in
       if tar -tzf "$2" | grep -E '(^/|(^|/)\.\.(/|$))' >/dev/null; then fail "Unsafe archive paths."; fi
       tar -tzf "$2" | grep -Fx 'deploy/manage.sh' >/dev/null || fail "Not a CC Desk Tunnel server archive."
       tar -xzf "$2" -C "$ROOT" --no-same-owner
-      exec bash "$ROOT/deploy/manage.sh" upgrade
+      PROXY_BUILD=always exec bash "$ROOT/deploy/manage.sh" upgrade
     fi
     # The port frp had before 0.2.10 is no longer published; its setting goes with it.
     if grep -q '^FRPS_PORT=' "$CONFIG"; then sed -i '/^FRPS_PORT=/d' "$CONFIG"; fi

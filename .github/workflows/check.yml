@@ -28,8 +28,22 @@ jobs:
       - run: npm run typecheck
       - run: npm run format:check
       - run: npm test
+  # The service's own tests on arm64, for what it compiles there; beside the image jobs rather than after them.
+  linux-arm:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: sudo apt-get install -y --no-install-recommends zsh
+      - run: npm ci
+      - run: npm test
   # The service as it is deployed: the image built on the machine, then every way of setting it up, on both
-  # architectures a server may have. On arm64 the service's own tests run as well, for what it compiles there.
+  # architectures a server may have. The layers come from the GitHub Actions cache: the images workflow fills it
+  # from the personal branch, so a change builds only what it touched.
   deploy:
     strategy:
       fail-fast: false
@@ -39,15 +53,16 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -f deploy/docker/Dockerfile -t cc-desk-tunnel:local .
-      - run: sudo bash deploy/test.sh
-      - if: matrix.runner == 'ubuntu-24.04-arm'
-        uses: actions/setup-node@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
         with:
-          node-version: 24
-          cache: npm
-      - if: matrix.runner == 'ubuntu-24.04-arm'
-        run: sudo apt-get install -y --no-install-recommends zsh && npm ci && npm test
+          context: .
+          file: deploy/docker/Dockerfile
+          load: true
+          tags: cc-desk-tunnel:local
+          cache-from: type=gha,scope=image-${{ runner.arch }}
+          cache-to: type=gha,mode=min,scope=image-${{ runner.arch }}
+      - run: sudo bash deploy/test.sh
   # A Docker without buildx builds with the older builder, which gives the directories it makes to root whoever
   # the build runs as. The image is built that way too, so that it goes on working where BuildKit is missing.
   deploy-legacy:
