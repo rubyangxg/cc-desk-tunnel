@@ -1,7 +1,14 @@
 #!/usr/bin/env node
 // Deterministic, offline CLI producer for account isolation and SDK transport integration tests.
 import { createInterface } from 'node:readline';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -9,11 +16,24 @@ import { setTimeout as delay } from 'node:timers/promises';
 const directory = process.env.CLAUDE_CONFIG_DIR;
 if (!directory) process.exit(2);
 const file = join(directory, 'fixture.json');
-const state = () =>
-  existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { loggedIn: false };
+// The test and other fixture processes rewrite this file while a run polls it. Writers replace it whole (a temporary
+// file, then a rename); a reader that still meets a cut-off file reads it again instead of failing the run.
+const state = () => {
+  for (let attempt = 0; ; attempt++) {
+    if (!existsSync(file)) return { loggedIn: false };
+    try {
+      return JSON.parse(readFileSync(file, 'utf8'));
+    } catch (error) {
+      if (!(error instanceof SyntaxError || error?.code === 'ENOENT') || attempt >= 50) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
+  }
+};
 const save = (value) => {
   mkdirSync(directory, { recursive: true });
-  writeFileSync(file, JSON.stringify(value));
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, JSON.stringify(value));
+  renameSync(temporary, file);
 };
 const emit = (value) => process.stdout.write(JSON.stringify(value) + '\n');
 const input = createInterface({ input: process.stdin });
