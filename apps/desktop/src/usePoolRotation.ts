@@ -81,7 +81,7 @@ export function usePoolRotation(options: {
       events = await completeHistory(
         client,
         session.id,
-        (count) => setNotice(`正在准备续接，已就绪 ${count} 条历史记录…`),
+        (count, detail) => setNotice(detail ?? `正在准备续接，已就绪 ${count} 条历史记录…`),
         profiles.initial,
       );
     } finally {

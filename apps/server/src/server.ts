@@ -351,6 +351,47 @@ export function createProxyServer(options: ServerOptions) {
   function send(peer: Peer, message: ServerMessage) {
     if (peer.socket.readyState === WebSocket.OPEN) peer.socket.send(JSON.stringify(message));
   }
+  async function sendHistory(
+    peer: Peer,
+    message: Extract<ServerMessage, { type: 'session.snapshot' }>,
+    chunked = false,
+  ) {
+    const text = JSON.stringify(message);
+    if (Buffer.byteLength(text) <= 128 * 1024) {
+      send(peer, message);
+      return;
+    }
+    if (!chunked) {
+      if (Buffer.byteLength(text) > 2 * 1024 * 1024)
+        throw new DomainError(
+          'history_upgrade_required',
+          '历史中有较大记录，请升级客户端后重新打开会话；记录和草稿均保留。',
+        );
+      send(peer, message);
+      return;
+    }
+    const total = Math.ceil(text.length / 32768);
+    if (total > 4096)
+      throw new DomainError(
+        'history_too_large',
+        '单条历史记录过大，未自动交接；请保留原会话并查看服务端日志。',
+      );
+    for (let index = 0; index < total; index++) {
+      if (peer.socket.readyState !== WebSocket.OPEN) throw new Error('History connection closed');
+      const part: ServerMessage = {
+        type: 'session.snapshot.part',
+        requestId: message.requestId,
+        sessionId: message.session.id,
+        index,
+        total,
+        data: text.slice(index * 32768, (index + 1) * 32768),
+      };
+      // Respect socket backpressure and allow heartbeat/control traffic between pieces.
+      await new Promise<void>((resolve, reject) =>
+        peer.socket.send(JSON.stringify(part), (error) => (error ? reject(error) : resolve())),
+      );
+    }
+  }
   function broadcast(message: ServerMessage, sessionId?: string) {
     for (const peer of peers) {
       if (peer.authenticated && (!sessionId || peer.subscriptions.has(sessionId)))
@@ -2025,10 +2066,14 @@ export function createProxyServer(options: ServerOptions) {
       case 'session.subscribe':
         peer.subscriptions.clear();
         peer.subscriptions.add(command.sessionId);
-        send(peer, {
-          type: 'session.snapshot',
-          ...store.history(command.sessionId, command.requestId, command.afterSequence),
-        });
+        await sendHistory(
+          peer,
+          {
+            type: 'session.snapshot',
+            ...store.history(command.sessionId, command.requestId, command.afterSequence),
+          },
+          command.chunked,
+        );
         // The history ends where the run's unfinished output begins.
         {
           const run = runs.get(command.sessionId);
@@ -2042,10 +2087,14 @@ export function createProxyServer(options: ServerOptions) {
         }
         return command.sessionId;
       case 'session.history':
-        send(peer, {
-          type: 'session.snapshot',
-          ...store.history(command.sessionId, command.requestId, 0, command.beforeSequence),
-        });
+        await sendHistory(
+          peer,
+          {
+            type: 'session.snapshot',
+            ...store.history(command.sessionId, command.requestId, 0, command.beforeSequence),
+          },
+          command.chunked,
+        );
         return command.sessionId;
       case 'run.cancel':
       case 'run.task.stop':
@@ -2288,6 +2337,7 @@ export function createProxyServer(options: ServerOptions) {
       features: [
         'remote-session-create',
         'running-session-fork',
+        'chunked-history',
         'message-queue',
         'project-move',
         ...(pool

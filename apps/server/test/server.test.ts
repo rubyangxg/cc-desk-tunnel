@@ -19,9 +19,9 @@ class Client {
   socket: WebSocket;
   messages: ServerMessage[] = [];
   computer: typeof device;
-  constructor(url: string, origin?: string, computer = device) {
+  constructor(url: string, origin?: string, computer = device, maxPayload?: number) {
     this.computer = computer;
-    this.socket = new WebSocket(url.replace('http', 'ws') + '/ws', { origin });
+    this.socket = new WebSocket(url.replace('http', 'ws') + '/ws', { origin, maxPayload });
     this.socket.on('message', (raw) =>
       this.messages.push(serverMessageSchema.parse(JSON.parse(raw.toString()))),
     );
@@ -1394,4 +1394,49 @@ test('the first active turn forks an empty independent task without its goal or 
   assert.equal(f.server.store.get(sessionId).session.activeRun?.id, run.id);
   assert.equal(f.server.store.get(sessionId).session.messageQueue?.items.length, 1);
   await client.request({ type: 'run.cancel', sessionId, runId: run.id });
+});
+
+test('large history is negotiated into bounded frames and legacy readers get an actionable error', async (t) => {
+  const f = await fixture(t);
+  const client = new Client(f.url, undefined, device, 256 * 1024);
+  f.clients.push(client);
+  const ready = await client.open();
+  assert.ok(ready.type === 'ready' && ready.features?.includes('chunked-history'));
+  const sessionId = await f.create(client);
+  const text = '中文🧩"\\'.repeat(350000);
+  const event = f.server.store.append(sessionId, randomUUID(), { type: 'native.notice', text });
+  const requestId = randomUUID();
+  client.send({ type: 'session.subscribe', sessionId, afterSequence: 0, chunked: true, requestId });
+  const response = await client.wait((m) => m.type === 'response' && m.requestId === requestId);
+  assert.ok(response.type === 'response' && response.ok);
+  const parts = client.messages.filter(
+    (m) => m.type === 'session.snapshot.part' && m.requestId === requestId,
+  );
+  assert.ok(parts.length > 10);
+  assert.ok(
+    parts.every(
+      (m, i) =>
+        m.type === 'session.snapshot.part' &&
+        m.index === i &&
+        m.total === parts.length &&
+        Buffer.byteLength(JSON.stringify(m)) < 256 * 1024,
+    ),
+  );
+  const snapshot = JSON.parse(
+    parts.map((m) => (m.type === 'session.snapshot.part' ? m.data : '')).join(''),
+  );
+  assert.equal(snapshot.type, 'session.snapshot');
+  assert.deepEqual(snapshot.events, [event]);
+  const legacy = await client.request({
+    type: 'session.history',
+    sessionId,
+    beforeSequence: event.sequence + 1,
+  });
+  assert.ok(legacy.type === 'response' && !legacy.ok && legacy.code === 'history_upgrade_required');
+  assert.equal(
+    client.socket.readyState,
+    WebSocket.OPEN,
+    'oversized old-format history must not break the connection',
+  );
+  assert.ok(await f.create(client), 'the same connection still accepts a normal request');
 });

@@ -831,6 +831,7 @@ export const commandSchema = z.discriminatedUnion('type', [
       ...request,
       sessionId: id,
       afterSequence: z.number().int().nonnegative().default(0),
+      chunked: z.boolean().optional(),
     })
     .strict(),
   z
@@ -839,6 +840,7 @@ export const commandSchema = z.discriminatedUnion('type', [
       ...request,
       sessionId: id,
       beforeSequence: z.number().int().positive(),
+      chunked: z.boolean().optional(),
     })
     .strict(),
   z
@@ -1024,6 +1026,15 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
     message: z.string().optional(),
   }),
   z.object({ type: z.literal('session.snapshot'), ...historyPageSchema.shape }),
+  // Opt-in only (chunked-history capability). A completed sequence decodes to one snapshot.
+  z.object({
+    type: z.literal('session.snapshot.part'),
+    requestId: id,
+    sessionId: id,
+    index: z.number().int().nonnegative(),
+    total: z.number().int().min(1).max(4096),
+    data: z.string().max(32768),
+  }),
   z.object({ type: z.literal('session.updated'), session: sessionSchema }),
   z.object({ type: z.literal('session.deleted'), sessionId: id }),
   z.object({ type: z.literal('session.event'), event: eventSchema }),

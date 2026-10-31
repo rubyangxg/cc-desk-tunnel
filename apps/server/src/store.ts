@@ -26,7 +26,7 @@ import type {
 
 type StoredSession = SessionSnapshot & { createRequestId: string };
 const pageEvents = 1000;
-const pageBytes = 512 * 1024;
+const pageBytes = 128 * 1024;
 
 // What goes beside the copy of the history made before it is rewritten.
 const backupNote = (file: string) => `CC Desk Tunnel：会话历史备份
@@ -698,12 +698,22 @@ export class SessionStore {
     if (afterSequence > last || (beforeSequence !== undefined && beforeSequence > last + 1))
       throw new DomainError('invalid_cursor', '历史游标超出范围。');
     if (afterSequence > 0) {
-      const size = this.database
+      let count = 0,
+        bytes = 0,
+        fits = true;
+      for (const row of this.database
         .prepare(
-          'SELECT COUNT(*) AS count, COALESCE(SUM(length(data)), 0) AS bytes FROM events WHERE session_id = ? AND sequence > ?',
+          'SELECT length(CAST(data AS BLOB)) AS bytes FROM events WHERE session_id = ? AND sequence > ? ORDER BY sequence LIMIT ?',
         )
-        .get(sessionId, afterSequence)!;
-      if (Number(size.count) <= pageEvents && Number(size.bytes) <= pageBytes) {
+        .iterate(sessionId, afterSequence, pageEvents + 1)) {
+        count++;
+        bytes += Number(row.bytes);
+        if (count > pageEvents || bytes > pageBytes) {
+          fits = false;
+          break;
+        }
+      }
+      if (fits) {
         const events = this.events(sessionId, afterSequence);
         return {
           session,
@@ -716,28 +726,32 @@ export class SessionStore {
         };
       }
     }
-    // Keep a complete run together: a single unusually large run may exceed the soft page budget.
-    const groups = this.database
+    // Bound even one very long run. Keep a small run whole when a page has room,
+    // but never turn a large run into one unbounded WebSocket message.
+    const rows: Array<{ sequence: unknown; run_id: unknown; bytes: unknown }> = [];
+    let count = 0,
+      bytes = 0;
+    for (const row of this.database
       .prepare(
         `
-      SELECT run_id, MIN(sequence) AS first, COUNT(*) AS count, SUM(length(data)) AS bytes
-      FROM events WHERE session_id = ? AND sequence < ? GROUP BY run_id ORDER BY first DESC LIMIT 1000
+      SELECT sequence, run_id, length(CAST(data AS BLOB)) AS bytes
+      FROM events WHERE session_id = ? AND sequence < ? ORDER BY sequence DESC LIMIT ?
     `,
       )
-      .all(sessionId, beforeSequence ?? last + 1);
-    let first = 0,
-      count = 0,
-      bytes = 0;
-    for (const group of groups) {
-      if (
-        first &&
-        (count + Number(group.count) > pageEvents || bytes + Number(group.bytes) > pageBytes)
-      )
-        break;
-      first = Number(group.first);
-      count += Number(group.count);
-      bytes += Number(group.bytes);
+      .iterate(sessionId, beforeSequence ?? last + 1, pageEvents + 1)) {
+      rows.push(row as (typeof rows)[number]);
+      if (count >= pageEvents || (count && bytes + Number(row.bytes) > pageBytes)) break;
+      count++;
+      bytes += Number(row.bytes);
     }
+    // Drop the partial oldest run only if there is a newer run in this page. A run
+    // larger than the budget must itself be paged; a single large event is chunked in transport.
+    if (count && rows[count]?.run_id === rows[count - 1]!.run_id) {
+      let boundary = count - 1;
+      while (boundary >= 0 && rows[boundary]!.run_id === rows[count - 1]!.run_id) boundary--;
+      if (boundary >= 0) count = boundary + 1;
+    }
+    const first = count ? Number(rows[count - 1]!.sequence) : 0;
     const events = first ? this.events(sessionId, first - 1, beforeSequence) : [];
     return {
       session,

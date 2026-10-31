@@ -1,6 +1,6 @@
 import type { Session, SessionEvent } from '@cc-desk-tunnel/protocol';
 import type { ConnectionProfile } from './connections.ts';
-import { RequestTimeoutError, RequestRejectedError } from './client.ts';
+import { RequestTimeoutError, RequestRejectedError, RequestInterruptedError } from './client.ts';
 import type { ProxyClient } from './client.ts';
 import {
   cacheKey,
@@ -110,18 +110,85 @@ type HistoryCheckpoint = {
   connection: string | null;
   events: SessionEvent[];
   hasEarlier: boolean;
+  revision?: string;
 };
 const checkpoints = new WeakMap<ProxyClient, HistoryCheckpoint>();
 
 export async function completeHistory(
   client: ProxyClient,
   sessionId: string,
-  progress: (count: number) => void = () => {},
+  progress: (count: number, detail?: string) => void = () => {},
   profile?: ConnectionProfile,
 ) {
   const release = holdHistoryWarmup(client);
+  const credentials = client.credentials;
+  const service = client.state.service;
+  const initialRevision = client.state.sessions.find(
+    (session) => session.id === sessionId,
+  )?.updatedAt;
+  let saved = 0;
   try {
-    return await readCompleteHistory(client, sessionId, progress, profile);
+    for (let attempt = 0; ; attempt++) {
+      const connection = client.state.connectionId;
+      try {
+        return await readCompleteHistory(
+          client,
+          sessionId,
+          (count, detail) => {
+            saved = count;
+            progress(count, detail);
+          },
+          profile,
+        );
+      } catch (error) {
+        if (
+          !(error instanceof RequestInterruptedError) ||
+          !error.readOnly ||
+          attempt >= 2 ||
+          !credentials ||
+          client.credentials !== credentials ||
+          !credentials.reconnect
+        )
+          throw error;
+        progress(saved, `连接中断，已就绪 ${saved} 条历史记录；等待重连后继续读取…`);
+        await new Promise<void>((resolve, reject) => {
+          let unsubscribe = () => {};
+          const finish = (reason?: Error) => {
+            clearTimeout(timer);
+            unsubscribe();
+            reason ? reject(reason) : resolve();
+          };
+          const check = () => {
+            if (
+              client.credentials !== credentials ||
+              !credentials.reconnect ||
+              client.state.status === 'disconnected'
+            )
+              finish(new Error('连接已改变，未交接。'));
+            else if (client.state.status === 'connected') finish();
+          };
+          const timer = setTimeout(
+            () => finish(new Error('等待重连超时，原会话和草稿保留；恢复连接后可重新继续。')),
+            60000,
+          );
+          unsubscribe = client.subscribe(check);
+          check();
+        });
+        const checkpoint = checkpoints.get(client);
+        const revision =
+          checkpoint?.sessionId === sessionId && checkpoint.connection === connection
+            ? (checkpoint.revision ?? initialRevision)
+            : initialRevision;
+        if (
+          client.state.service !== service ||
+          client.state.sessions.find((session) => session.id === sessionId)?.updatedAt !== revision
+        )
+          throw new Error('重连后会话或服务端已改变，请核实任务进度后重新继续。');
+        if (checkpoint?.sessionId === sessionId && checkpoint.connection === connection)
+          checkpoints.set(client, { ...checkpoint, connection: client.state.connectionId });
+        progress(saved, `连接已恢复，从已确认的 ${saved} 条历史记录继续读取…`);
+      }
+    }
   } finally {
     release();
   }
@@ -130,7 +197,7 @@ export async function completeHistory(
 async function readCompleteHistory(
   client: ProxyClient,
   sessionId: string,
-  progress: (count: number) => void,
+  progress: (count: number, detail?: string) => void,
   profile?: ConnectionProfile,
 ) {
   const connection = client.state.connectionId;
@@ -195,6 +262,11 @@ async function readCompleteHistory(
           before === undefined
             ? { type: 'session.subscribe', sessionId, afterSequence }
             : { type: 'session.history', sessionId, beforeSequence: before },
+          (received, total) =>
+            progress(
+              events.size || cached?.events.length || 0,
+              `正在读取历史分片 ${received}/${total}，已就绪 ${events.size || cached?.events.length || 0} 条记录…`,
+            ),
         );
       } catch (error) {
         if (
@@ -280,7 +352,7 @@ async function readCompleteHistory(
       candidates.splice(index--, 1);
     }
     const ordered = [...events.values()].sort((a, b) => a.sequence - b.sequence);
-    checkpoints.set(client, { sessionId, connection, events: ordered, hasEarlier });
+    checkpoints.set(client, { sessionId, connection, events: ordered, hasEarlier, revision });
     progress(events.size);
     if (profile && client.state.service) {
       try {

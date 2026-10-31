@@ -201,7 +201,11 @@ for (const {
       );
     if (paginated)
       for (let i = 0; i < 60; i++)
-        event(source, { type: 'native.notice', text: `历史记录 ${i}` }, old);
+        event(
+          source,
+          { type: 'native.notice', text: `历史记录 ${i} ${'中文🧩'.repeat(300)}` },
+          old,
+        );
     if (localAvailable || continueQuota)
       event(source, { type: 'run.error', code: 'quota_five_hour', message: '旧账号额度耗尽' }, old);
     if (taskConfirmation)
@@ -290,6 +294,7 @@ for (const {
                 ...(!legacyRecovery ? ['cross-server-queue-recovery'] : []),
                 ...(!legacyTaskConfirmation ? ['cross-server-task-confirmation'] : []),
                 'message-queue',
+                ...(paginated ? ['chunked-history'] : []),
                 ...(!legacyGoal || server === 1 ? ['goal-continuation'] : []),
               ],
             });
@@ -338,7 +343,7 @@ for (const {
               (event) => !m.beforeSequence || event.sequence < m.beforeSequence,
             );
             const page = paginated && server === 1 ? entries.slice(-10) : entries;
-            send({
+            const snapshot = {
               type: 'session.snapshot',
               requestId: m.requestId,
               session: current,
@@ -347,7 +352,20 @@ for (const {
               lastSequence: page.at(-1)?.sequence ?? 0,
               hasEarlier: page.length < entries.length,
               events: page,
-            });
+            };
+            if (paginated && m.chunked) {
+              const raw = JSON.stringify(snapshot);
+              const total = Math.ceil(raw.length / 8192);
+              for (let index = 0; index < total; index++)
+                send({
+                  type: 'session.snapshot.part',
+                  requestId: m.requestId,
+                  sessionId: current.id,
+                  index,
+                  total,
+                  data: raw.slice(index * 8192, (index + 1) * 8192),
+                });
+            } else send(snapshot);
           }
           if (m.type === 'run.handoff' || m.type === 'session.handoff') {
             expect(server).toBe(1);

@@ -200,6 +200,17 @@ export class ProxyClient {
     progress: {},
   };
   results = new Map<string, DataMessage>();
+  private historyParts = new Map<
+    string,
+    {
+      sessionId: string;
+      total: number;
+      next: number;
+      size: number;
+      parts: string[];
+      done?: boolean;
+    }
+  >();
   listeners = new Set<() => void>();
   terminalListeners = new Set<(message: TerminalMessage) => void>();
   socket: ClientSocket | null = null;
@@ -245,6 +256,9 @@ export class ProxyClient {
       timer: ReturnType<typeof setTimeout>;
       type: Command['type'];
       capture: boolean;
+      sessionId?: string;
+      renew?: () => void;
+      progress?: (received: number, total: number) => void;
     }
   >();
   getSnapshot = () => this.state;
@@ -455,6 +469,60 @@ export class ProxyClient {
         socket.close();
         return;
       }
+      if (message.type === 'session.snapshot.part') {
+        const requestId = message.requestId;
+        const pending = this.pending.get(requestId);
+        if (!pending || !['session.subscribe', 'session.history'].includes(pending.type)) return;
+        try {
+          let part = this.historyParts.get(requestId);
+          if (!part && message.index === 0) {
+            part = {
+              sessionId: message.sessionId,
+              total: message.total,
+              next: 0,
+              size: 0,
+              parts: [],
+            };
+            this.historyParts.set(requestId, part);
+          }
+          if (
+            !part ||
+            part.done ||
+            pending.sessionId !== message.sessionId ||
+            part.sessionId !== message.sessionId ||
+            part.total !== message.total ||
+            part.next !== message.index
+          )
+            throw new Error('历史分片顺序不一致，请重试读取。');
+          part.parts.push(message.data);
+          part.size += message.data.length;
+          if (part.size > 128 * 1024 * 1024)
+            throw new Error('单页历史过大，请保留原会话并检查服务端。');
+          part.next++;
+          pending.renew?.();
+          pending.progress?.(part.next, part.total);
+          if (part.next < part.total) return;
+          const complete = clientServerMessageSchema.parse(JSON.parse(part.parts.join('')));
+          if (
+            complete.type !== 'session.snapshot' ||
+            complete.requestId !== requestId ||
+            complete.session.id !== part.sessionId
+          )
+            throw new Error('历史分片内容不一致，请重试读取。');
+          part.parts = [];
+          part.done = true;
+          message = complete;
+        } catch (error) {
+          clearTimeout(pending.timer);
+          this.pending.delete(requestId);
+          this.results.delete(requestId);
+          this.historyParts.delete(requestId);
+          pending.reject(
+            new RequestRejectedError('history_invalid', '历史分片读取失败，请重试读取。'),
+          );
+          return;
+        }
+      }
       if (message.type === 'ready') {
         ready = true;
         if (
@@ -594,8 +662,13 @@ export class ProxyClient {
           if (
             this.pending.get(message.requestId)?.type === 'session.subscribe' &&
             this.state.sessions.some((session) => session.id === message.session.id)
-          )
-            this.upsert(message.session);
+          ) {
+            const current = this.state.sessions.find(
+              (session) => session.id === message.session.id,
+            );
+            if (!current || current.updatedAt <= message.session.updatedAt)
+              this.upsert(message.session);
+          }
           this.results.set(message.requestId, message);
           return;
         }
@@ -606,10 +679,17 @@ export class ProxyClient {
           !this.state.sessions.some((session) => session.id === message.session.id)
         )
           return;
-        this.upsert(message.session);
+        const current = this.state.sessions.find((session) => session.id === message.session.id);
+        if (!current || current.updatedAt <= message.session.updatedAt)
+          this.upsert(message.session);
         const id = message.session.id;
+        // Chunked history may overlap new live output; retain events newer than the snapshot.
+        const tail = (this.state.events[id] ?? []).filter(
+          (event) => event.sequence > message.lastSequence,
+        );
+        const newer = tail.length > 0 || (current?.updatedAt ?? '') > message.session.updatedAt;
         // History up to now ends where unfinished output begins; the service sends that again, whole.
-        if (message.mode !== 'prepend' && this.state.live[id]) {
+        if (message.mode !== 'prepend' && !newer && this.state.live[id]) {
           const { [id]: _stale, ...live } = this.state.live;
           this.update({ live });
         }
@@ -622,13 +702,13 @@ export class ProxyClient {
           lastSequence:
             message.mode === 'prepend'
               ? (previous?.lastSequence ?? message.lastSequence)
-              : message.lastSequence,
+              : (tail.at(-1)?.sequence ?? message.lastSequence),
           hasEarlier:
             message.mode === 'append' ? (previous?.hasEarlier ?? false) : message.hasEarlier,
           loading: false,
           loadingEarlier: false,
         };
-        this.merge(id, message.events, history, message.mode === 'replace');
+        this.merge(id, [...message.events, ...tail], history, message.mode === 'replace');
       } else if (message.type === 'session.event') {
         const payload = message.event.payload;
         const at = Date.parse(message.event.createdAt);
@@ -723,6 +803,7 @@ export class ProxyClient {
       request.reject(new RequestInterruptedError(request.type));
     }
     this.pending.clear();
+    this.historyParts.clear();
   }
   private upsert(session: Session) {
     this.update({
@@ -951,42 +1032,76 @@ export class ProxyClient {
       this.socket.send(JSON.stringify(command));
   }
   // Data replies arrive just before their response frame.
-  async fetch<T extends keyof Replies>(command: Extract<NewCommand, { type: T }>) {
-    const response = await this.request(command, true);
+  async fetch<T extends keyof Replies>(
+    command: Extract<NewCommand, { type: T }>,
+    progress?: (received: number, total: number) => void,
+  ) {
+    const response = await this.request(command, true, progress);
     const result = this.results.get(response.requestId);
     this.results.delete(response.requestId);
     if (!result) throw new Error('服务没有返回数据。');
     return result as Extract<ServerMessage, { type: Replies[T] }>;
   }
-  async request(command: NewCommand, capture = false): Promise<Response> {
+  async request(
+    command: NewCommand,
+    capture = false,
+    progress?: (received: number, total: number) => void,
+  ): Promise<Response> {
     if (this.state.status !== 'connected' || this.socket?.readyState !== WebSocket.OPEN)
       throw new Error('服务未连接。');
     const requestId = crypto.randomUUID();
     const historyRead = ['session.subscribe', 'session.history'].includes(command.type);
     return new Promise<Response>((resolve, reject) => {
-      const timer = setTimeout(
-        () => {
-          this.pending.delete(requestId);
-          this.results.delete(requestId);
-          reject(
-            new RequestTimeoutError(
-              historyRead
-                ? '读取会话历史超时。'
-                : command.type === 'message.enqueue'
-                  ? '排队请求超时；请查看待发送队列及历史确认结果，未自动重发。'
-                  : '请求超时；请查看历史确认结果，未自动重发。',
-            ),
-          );
-        },
+      const timeout = () => {
+        this.pending.delete(requestId);
+        this.results.delete(requestId);
+        this.historyParts.delete(requestId);
+        reject(
+          new RequestTimeoutError(
+            historyRead
+              ? '读取会话历史超时。'
+              : command.type === 'message.enqueue'
+                ? '排队请求超时；请查看待发送队列及历史确认结果，未自动重发。'
+                : '请求超时；请查看历史确认结果，未自动重发。',
+          ),
+        );
+      };
+      const wait =
         command.type === 'session.status' ||
-          historyRead ||
-          command.type.startsWith('account.') ||
-          command.type.startsWith('service.')
+        historyRead ||
+        command.type.startsWith('account.') ||
+        command.type.startsWith('service.')
           ? 30000
-          : 10000,
+          : 10000;
+      const timer = setTimeout(timeout, wait);
+      const renew = historyRead
+        ? () => {
+            const pending = this.pending.get(requestId);
+            if (pending) {
+              clearTimeout(pending.timer);
+              pending.timer = setTimeout(timeout, wait);
+            }
+          }
+        : undefined;
+      this.pending.set(requestId, {
+        resolve,
+        reject,
+        timer,
+        type: command.type,
+        capture,
+        ...('sessionId' in command ? { sessionId: command.sessionId } : {}),
+        renew,
+        progress,
+      });
+      this.socket!.send(
+        JSON.stringify({
+          ...command,
+          ...(historyRead && this.state.features.includes('chunked-history')
+            ? { chunked: true }
+            : {}),
+          requestId,
+        }),
       );
-      this.pending.set(requestId, { resolve, reject, timer, type: command.type, capture });
-      this.socket!.send(JSON.stringify({ ...command, requestId }));
-    });
+    }).finally(() => this.historyParts.delete(requestId));
   }
 }

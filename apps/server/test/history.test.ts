@@ -248,3 +248,33 @@ test('reading the native state of a session leaves its time of last use alone', 
   reopened.close();
   assert.equal(restored, used);
 });
+
+test('one huge run is paged by UTF-8 bytes without dropping or repeating events', (t) => {
+  const { store, session } = fixture(t);
+  const runId = randomUUID();
+  for (let i = 0; i < 150; i++)
+    store.append(session.id, runId, {
+      type: 'native.notice',
+      text: `${i}:` + '中文🧩'.repeat(1000),
+    });
+  const expected = store.snapshot(session.id).events;
+  let page = store.history(session.id, randomUUID());
+  let all = page.events;
+  let pages = 1;
+  for (;;) {
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(page.events)) < 140 * 1024,
+      'page is bounded in UTF-8',
+    );
+    assert.ok(page.events.length > 0);
+    if (!page.hasEarlier) break;
+    page = store.history(session.id, randomUUID(), 0, page.firstSequence);
+    all = [...page.events, ...all];
+    pages++;
+  }
+  assert.ok(pages > 10);
+  assert.deepEqual(all, expected);
+  const delta = store.history(session.id, randomUUID(), 1);
+  assert.equal(delta.mode, 'replace', 'a large incremental gap also uses bounded tail pages');
+  assert.ok(delta.events.length < expected.length);
+});

@@ -349,3 +349,66 @@ test('retry after a failed older page reuses verified pages and fetches only the
     [0, 21, 30, 21],
   );
 });
+
+for (const change of ['none', 'session', 'service', 'credentials'])
+  test(`interrupted history reads resume verified pages only on the same unchanged server (${change})`, async (t) => {
+    let interrupted = false;
+    const f = fixture(t, (r, f) => {
+      if (r.type === 'session.subscribe') {
+        if (r.afterSequence) f.reply(r, [], false, { mode: 'append', lastSequence: 30 });
+        else f.reply(r, range(21, 30), true);
+      } else if (!interrupted) {
+        interrupted = true;
+        f.client.update({ status: 'reconnecting' });
+        f.client.rejectPending();
+        queueMicrotask(() => {
+          if (change === 'credentials') f.client.credentials = { ...f.client.credentials };
+          f.client.update({
+            status: 'connected',
+            connectionId: randomUUID(),
+            ...(change === 'service' ? { service: '0.4.99' } : {}),
+            ...(change === 'session'
+              ? {
+                  sessions: [
+                    {
+                      ...f.session,
+                      updatedAt: new Date(Date.parse(f.session.updatedAt) + 1000).toISOString(),
+                    },
+                  ],
+                }
+              : {}),
+          });
+        });
+      } else f.reply(r, range(1, 20));
+    });
+    const progress = [];
+    const result = completeHistory(f.client, f.session.id, (count, detail) =>
+      progress.push([count, detail]),
+    );
+    if (change === 'none') {
+      assert.deepEqual(
+        (await result).map((e) => e.sequence),
+        range(1, 30),
+      );
+      assert.deepEqual(
+        f.requests.map((r) => r.afterSequence ?? r.beforeSequence),
+        [0, 21, 30, 21],
+      );
+      assert.ok(progress.some(([count, detail]) => count === 10 && detail?.includes('已恢复')));
+    } else await assert.rejects(result, change === 'credentials' ? /连接中断|已改变/ : /已改变/);
+    assert.ok(f.requests.every((r) => ['session.subscribe', 'session.history'].includes(r.type)));
+    assert.equal(f.client.state.events[f.session.id], f.visible);
+    assert.equal(f.client.pending.size, 0);
+  });
+
+test('repeated history disconnects stop after two reconnections without sending a mutation', async (t) => {
+  const f = fixture(t, (_r, f) => {
+    f.client.update({ status: 'reconnecting' });
+    f.client.rejectPending();
+    queueMicrotask(() => f.client.update({ status: 'connected', connectionId: randomUUID() }));
+  });
+  await assert.rejects(completeHistory(f.client, f.session.id), /连接中断/);
+  assert.equal(f.requests.length, 3);
+  assert.ok(f.requests.every((request) => request.type === 'session.subscribe'));
+  assert.equal(f.client.pending.size, 0);
+});
