@@ -715,3 +715,68 @@ test('Electron remembers the sign-in, connects on the next launch and stays in t
     await application.close();
   }
 });
+
+test('a running session forks completed history while its original approval keeps running', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await login(page);
+  const title = await createSession(page, '运行中分叉');
+  await send(page, '已完成的任务');
+  await settled(page);
+  await send(page, '等待审批的任务', 'tool');
+  await expect(page.getByRole('button', { name: '允许', exact: true })).toBeVisible();
+  await sessionAction(page, '分叉会话');
+  await expect(page.locator('.session-row.selected strong')).toHaveText(`${title}（分叉）`);
+  await expect(page.locator('.message.user .message-content')).toHaveText(['已完成的任务']);
+  await expect(page.locator('.message.assistant')).toContainText('离线模拟回复');
+  await expect(page.getByRole('button', { name: '允许', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('status').filter({ hasText: '分叉快照' })).toContainText(
+    '本轮进行中内容未复制',
+  );
+  await page.getByRole('button', { name: '关闭分叉提示', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: '分叉快照' })).toHaveCount(0);
+  await send(page, '分叉里的独立任务');
+  await settled(page);
+  await page
+    .locator('.session-select')
+    .filter({ has: page.getByText(title, { exact: true }) })
+    .click();
+  await expect(page.getByRole('button', { name: '允许', exact: true })).toBeVisible();
+  await expect(page.locator('.message.user .message-content')).toHaveText([
+    '已完成的任务',
+    '等待审批的任务',
+  ]);
+  await page.getByRole('button', { name: '拒绝', exact: true }).click();
+  await settled(page);
+});
+
+test('an older server keeps the running fork disabled with an upgrade hint', async ({ page }) => {
+  await page.routeWebSocket('**/ws', (route) => {
+    const remote = route.connectToServer();
+    remote.onMessage((raw) => {
+      const message = JSON.parse(String(raw));
+      if (message.type === 'ready')
+        message.features = message.features.filter(
+          (feature: string) => feature !== 'running-session-fork',
+        );
+      route.send(JSON.stringify(message));
+    });
+  });
+  await page.goto('/');
+  await login(page);
+  await createSession(page, '旧服务端分叉');
+  await send(page, '等待审批', 'tool');
+  await expect(page.getByRole('button', { name: '允许', exact: true })).toBeVisible();
+  await page.locator('.session-row.selected').hover();
+  await page
+    .locator('.session-row.selected')
+    .getByRole('button', { name: '会话操作', exact: true })
+    .click();
+  const item = page.getByRole('menuitem', { name: /分叉会话/ });
+  await expect(item).toBeDisabled();
+  await expect(item).toContainText('升级服务端');
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: '拒绝', exact: true }).click();
+  await settled(page);
+});

@@ -176,6 +176,7 @@ export function App({
   const [error, setError] = useState<string | RequestInterruptedError | null>(null);
   // One request at a time from this window; `refreshing` is the slower native status read.
   const [busy, setBusy] = useState(false);
+  const [dismissedFork, setDismissedFork] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [findRequest, setFindRequest] = useState(0);
   // Which of this computer's settings is open on the login page.
@@ -1090,7 +1091,18 @@ export function App({
             {
               label: '分叉会话',
               icon: <GitFork />,
-              disabled: !idle || !!session.activeRun,
+              detail:
+                session.activeRun?.surface === 'terminal'
+                  ? '请先关闭原生终端'
+                  : session.activeRun
+                    ? state.features.includes('running-session-fork')
+                      ? '从最近已完成的一轮分叉，原任务继续运行'
+                      : '升级服务端后可在运行中分叉'
+                    : undefined,
+              disabled:
+                !idle ||
+                session.activeRun?.surface === 'terminal' ||
+                (!!session.activeRun && !state.features.includes('running-session-fork')),
               run: () => {
                 void fork(session);
               },
@@ -1871,6 +1883,31 @@ export function App({
             projectMenu={(path, position) => setMenu({ kind: 'project', path, ...position })}
           />
           <main className="workspace">
+            {selected?.forkSnapshot && dismissedFork !== selected.id && (
+              <div className="session-account-strip" role="status">
+                <span>
+                  分叉快照：本轮进行中内容未复制，创建分叉不会停止原任务。项目文件夹仍共享。
+                  {selected.forkSnapshot.throughSequence === 0 &&
+                    '尚无已完成对话，请发送新消息开始。'}
+                  {!selected.forkSnapshot.native &&
+                    selected.forkSnapshot.throughSequence > 0 &&
+                    nativeMode &&
+                    '首次发送将携带最近对话摘录。'}
+                </span>
+                {state.sessions.some((item) => item.id === selected.forkSnapshot!.sourceId) && (
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={() => show(selected.forkSnapshot!.sourceId)}
+                  >
+                    查看原会话
+                  </button>
+                )}
+                <IconButton title="关闭分叉提示" onClick={() => setDismissedFork(selected.id)}>
+                  <X />
+                </IconButton>
+              </div>
+            )}
             {linkedHistory?.forward && (
               <div className="session-account-strip" role="status">
                 <span>此任务已在其他服务器续接</span>

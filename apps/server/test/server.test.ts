@@ -897,7 +897,28 @@ test('forking copies a session whole or up to a message, and leaves the original
   await client.request({ type: 'message.send', sessionId, text: '等待审批', scenario: 'tool' });
   await client.event('approval.requested');
   const busy = await client.request({ type: 'session.fork', sessionId });
-  assert.ok(busy.type === 'response' && !busy.ok && busy.code === 'run_active');
+  assert.ok(busy.type === 'response' && busy.ok && busy.sessionId);
+  assert.deepEqual(questions(busy.sessionId), texts);
+  assert.equal(f.server.store.get(busy.sessionId).session.activeRun, null);
+  assert.equal(f.server.store.get(sessionId).session.activeRun?.status, 'awaiting_approval');
+  assert.ok(
+    !f.server.store
+      .get(busy.sessionId)
+      .events.some((event) => event.payload.type === 'approval.requested'),
+  );
+  // The original still accepts control and completes independently.
+  const pending = f.server.store
+    .get(sessionId)
+    .events.findLast((event) => event.payload.type === 'approval.requested')!;
+  assert.ok(pending.payload.type === 'approval.requested');
+  await client.request({
+    type: 'approval.reply',
+    sessionId,
+    runId: pending.runId,
+    approvalId: pending.payload.approvalId,
+    allowed: false,
+  });
+  await completed(sessionId);
 });
 
 test('offline mode cannot open a native terminal or accept unauthenticated terminal controls', async (t) => {
@@ -1341,4 +1362,36 @@ test('mobile controller creates on an online project computer and disconnecting 
     title: '不应创建',
   });
   assert.ok(offline.type === 'response' && !offline.ok && offline.code === 'device_offline');
+});
+
+test('the first active turn forks an empty independent task without its goal or queue running', async (t) => {
+  const f = await fixture(t);
+  const client = await f.connect();
+  const sessionId = await f.create(client);
+  f.server.store.selectAccount(sessionId, 'default');
+  await client.request({ type: 'message.send', sessionId, text: '首轮等待', scenario: 'tool' });
+  await client.event('approval.requested');
+  const run = f.server.store.get(sessionId).session.activeRun!;
+  f.server.store.append(sessionId, run.id, {
+    type: 'native.goal',
+    goal: {
+      condition: 'finish',
+      status: 'active',
+      iterations: 1,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+  await client.request({ type: 'message.enqueue', sessionId, text: '排队任务' });
+  const response = await client.request({ type: 'session.fork', sessionId });
+  assert.ok(response.type === 'response' && response.ok && response.sessionId);
+  const copy = f.server.store.snapshot(response.sessionId);
+  assert.equal(copy.session.activeRun, null);
+  assert.equal(copy.session.messageQueue, undefined);
+  assert.equal(copy.session.goal?.status, 'paused');
+  assert.equal(copy.session.forkSnapshot?.throughSequence, 0);
+  assert.equal(copy.session.accountHandoff, false);
+  assert.equal(copy.events.filter((event) => event.payload.type === 'message.user').length, 0);
+  assert.equal(f.server.store.get(sessionId).session.activeRun?.id, run.id);
+  assert.equal(f.server.store.get(sessionId).session.messageQueue?.items.length, 1);
+  await client.request({ type: 'run.cancel', sessionId, runId: run.id });
 });

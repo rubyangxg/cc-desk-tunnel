@@ -585,6 +585,32 @@ export class SessionStore {
       throw new DomainError('fork_point', '运行途中追加的消息不能作为分叉点。');
     return event.sequence;
   }
+  // An active fork ends at a completed run, never at an in-flight tool, approval or queued input.
+  forkCheckpoint(sessionId: string, activeRunId: string) {
+    const events = this.events(sessionId, 0);
+    const started = events.find((event) => event.runId === activeRunId);
+    if (!started) throw new DomainError('fork_point', '运行记录尚未就绪，请稍后分叉。');
+    const completed = events.findLast(
+      (event) =>
+        event.sequence < started.sequence &&
+        event.payload.type === 'run.status' &&
+        event.payload.status === 'completed',
+    );
+    if (!completed) return { beforeSequence: 1 };
+    const boundary = events.find(
+      (event) => event.sequence > completed.sequence && event.payload.type === 'message.user',
+    );
+    const native = events.findLast(
+      (event) => event.sequence <= completed.sequence && event.payload.type === 'native.session',
+    );
+    return {
+      beforeSequence: completed.sequence + 1,
+      beforeMessageId:
+        boundary?.payload.type === 'message.user' ? boundary.payload.messageId : undefined,
+      nativeSessionId:
+        native?.payload.type === 'native.session' ? native.payload.nativeSessionId : undefined,
+    };
+  }
   // Copies a session and its events before `beforeSequence` under `id`, onto the computer that asked and
   // into its directory there. Without native history to resume, the copy also drops the events that would
   // claim there is one.
@@ -596,12 +622,16 @@ export class SessionStore {
     native: boolean,
     place: { device: Device; projectPath?: string },
     beforeSequence?: number,
+    snapshot?: { session: Session; continuation?: string },
   ): Session {
-    const { session: source } = this.get(sourceId);
+    const source = snapshot?.session ?? this.get(sourceId).session;
     const now = new Date().toISOString();
     const session: Session = {
       ...source,
       messageQueue: undefined,
+      forkSnapshot: snapshot
+        ? { sourceId, throughSequence: Math.max(0, (beforeSequence ?? 1) - 1), native }
+        : undefined,
       // Forks are independent tasks. A copied native hook is cleared before the next ordinary message.
       goal: source.goal ? { ...source.goal, status: 'paused' } : undefined,
       id,
@@ -614,7 +644,7 @@ export class SessionStore {
         ? (source.nativeRoot ?? source.id)
         : this.rootFor(place.device, place.projectPath ?? source.projectPath, source.accountId),
       nativeSessionId: native ? id : undefined,
-      accountHandoff: !native && !!source.accountId,
+      accountHandoff: !native && !!source.accountId && (!snapshot || (beforeSequence ?? 1) > 1),
       createdAt: now,
       updatedAt: now,
       activeRun: null,
@@ -628,7 +658,7 @@ export class SessionStore {
       this.database
         .prepare('INSERT INTO sessions VALUES (?, ?, ?)')
         .run(id, JSON.stringify(session), requestId);
-      const context = this.continuationContext(sourceId);
+      const context = snapshot ? snapshot.continuation : this.continuationContext(sourceId);
       if (native && context)
         this.database
           .prepare('INSERT INTO continuation_contexts VALUES (?, ?, ?)')

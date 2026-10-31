@@ -548,6 +548,13 @@ export const sessionSchema = z.object({
   accountHandoff: z.boolean().optional(),
   goal: goalSchema.optional(),
   messageQueue: messageQueueSchema.optional(),
+  forkSnapshot: z
+    .object({
+      sourceId: id,
+      throughSequence: z.number().int().nonnegative(),
+      native: z.boolean(),
+    })
+    .optional(),
   // What the system prompt of the session's native runs says. It is kept word for word until a compaction,
   // which loses the prompt cache anyway: a move to another project or another computer is told to Claude
   // with the user's next message instead, and `told` is what it was last told that way.

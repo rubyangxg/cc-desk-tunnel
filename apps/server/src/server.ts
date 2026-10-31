@@ -193,6 +193,8 @@ export function createProxyServer(options: ServerOptions) {
   // account change — waits until none is going.
   const runs = new Map<string, Run>();
   const mutations = new Set<string>();
+  // Read-only native prefix copies may coexist with active runs and their controls.
+  const forkReaders = new Set<string>();
   const terminals = new Map<string, Terminal>();
   const pool = options.claude
     ? new AccountPool(store.database, store.directory, options.claude)
@@ -435,7 +437,7 @@ export function createProxyServer(options: ServerOptions) {
   }
   function accountBusy(id: string) {
     if (pool?.locked.has(id)) return true;
-    return [...runs.keys(), ...terminals.keys(), ...mutations].some((sessionId) => {
+    return [...runs.keys(), ...terminals.keys(), ...mutations, ...forkReaders].some((sessionId) => {
       try {
         return (store.get(sessionId).session.accountId ?? 'default') === id;
       } catch {
@@ -1144,6 +1146,7 @@ export function createProxyServer(options: ServerOptions) {
       terminals.size ||
       runs.size ||
       mutations.size ||
+      forkReaders.size ||
       pool?.refreshing ||
       pool?.locked.has('default')
     )
@@ -1377,23 +1380,57 @@ export function createProxyServer(options: ServerOptions) {
   // a copy after a message and only knows the source's message IDs, so stopping before a message takes two
   // copies: one through that message, then one of it up to the entry before its last.
   async function fork(peer: Peer, command: CommandOf<'session.fork'>, session: Session) {
-    if (session.activeRun) throw new DomainError('run_active', '请先结束当前运行再分叉会话。');
-    const place = { device: deviceOf(peer), projectPath: command.projectPath };
     const existing = store.created(command.requestId);
     if (existing) return existing.id;
-    const before = command.beforeMessageId
+    const snapshot = {
+      session: structuredClone(session),
+      continuation: store.continuationContext(session.id),
+    };
+    const active = session.activeRun;
+    if (active && options.claude) snapshot.session.accountId ??= 'default';
+    const checkpoint = active ? store.forkCheckpoint(session.id, active.id) : undefined;
+    const place = { device: deviceOf(peer), projectPath: command.projectPath };
+    let before = command.beforeMessageId
       ? store.forkPoint(command.sessionId, command.beforeMessageId)
-      : undefined;
+      : checkpoint?.beforeSequence;
+    // An explicit older edit point must not reach beyond the completed snapshot.
+    if (checkpoint && before !== undefined) before = Math.min(before, checkpoint.beforeSequence);
+    const boundary =
+      checkpoint && before === checkpoint.beforeSequence
+        ? checkpoint.beforeMessageId
+        : command.beforeMessageId;
     const title = `${session.title.slice(0, 116)}（分叉）`;
     let id: string = randomUUID();
     let resumable = false;
-    mutations.add(command.sessionId);
+    const readers = active ? forkReaders : mutations;
+    readers.add(command.sessionId);
     try {
-      if (options.claude && store.hasNativeContext(command.sessionId)) {
+      if (
+        options.claude &&
+        store.hasNativeContext(command.sessionId) &&
+        (!checkpoint ||
+          (before! > 1 && checkpoint.nativeSessionId === (session.nativeSessionId ?? session.id)))
+      ) {
         const dir = nativeDirectory(store.directory, nativeRoot(command.sessionId));
         const claude = pool!.options(session.accountId ?? 'default');
         const nativeId = session.nativeSessionId ?? session.id;
-        if (!command.beforeMessageId) {
+        if (active) {
+          // Read a fixed, persisted prefix. Never fork the growing tail or alter the running native session.
+          const messages = await nativeStore(claude, 'messages', nativeId, { dir });
+          const index = messages.findIndex((message) => message.uuid === boundary);
+          if (index < 0)
+            throw new DomainError(
+              'fork_not_ready',
+              '原生分叉节点尚未保存，请稍后重试；原任务仍在运行。',
+            );
+          const kept = messages[index - 1];
+          if (kept) {
+            id = (
+              await nativeStore(claude, 'fork', nativeId, { dir, title, upToMessageId: kept.uuid })
+            ).sessionId;
+            resumable = true;
+          }
+        } else if (!command.beforeMessageId) {
           id = (await nativeStore(claude, 'fork', nativeId, { dir, title })).sessionId;
           resumable = true;
         } else {
@@ -1427,6 +1464,7 @@ export function createProxyServer(options: ServerOptions) {
         resumable,
         place,
         before,
+        active ? snapshot : undefined,
       );
       broadcast({ type: 'session.updated', session: created });
       return created.id;
@@ -1437,7 +1475,7 @@ export function createProxyServer(options: ServerOptions) {
         '原生会话分叉失败，未创建新会话。该位置可能不在原生记录中。',
       );
     } finally {
-      mutations.delete(command.sessionId);
+      readers.delete(command.sessionId);
     }
   }
   // Prefixing a slash command with a handoff or a move notice turns it into ordinary prompt text.
@@ -1851,6 +1889,7 @@ export function createProxyServer(options: ServerOptions) {
           terminals.size ||
           runs.size ||
           mutations.size ||
+          forkReaders.size ||
           login ||
           poolLogins.size ||
           pool?.refreshing
@@ -1887,7 +1926,11 @@ export function createProxyServer(options: ServerOptions) {
         if (
           store
             .list()
-            .some((session) => mutations.has(session.id) && pathKey(session.projectPath) === from)
+            .some(
+              (session) =>
+                (mutations.has(session.id) || forkReaders.has(session.id)) &&
+                pathKey(session.projectPath) === from,
+            )
         )
           throw new DomainError('session_busy', '会话正在更新，请稍后重试。');
         const device = deviceOf(peer);
@@ -1917,7 +1960,18 @@ export function createProxyServer(options: ServerOptions) {
       }
     }
     const { session } = store.get(command.sessionId);
-    if (mutations.has(command.sessionId))
+    if (
+      mutations.has(command.sessionId) ||
+      (forkReaders.has(command.sessionId) &&
+        [
+          'session.fork',
+          'session.rename',
+          'session.delete',
+          'session.move',
+          'session.configure',
+          'session.compact',
+        ].includes(command.type))
+    )
       throw new DomainError('session_busy', '会话正在更新，请稍后重试。');
     if (
       session.messageQueue?.handoff &&
@@ -2233,6 +2287,7 @@ export function createProxyServer(options: ServerOptions) {
       sessions: store.list(),
       features: [
         'remote-session-create',
+        'running-session-fork',
         'message-queue',
         'project-move',
         ...(pool

@@ -1121,7 +1121,7 @@ export default function Conversation({
                 </div>
                 {/* The run is still on, so the controls that need it over are greyed out; this says why. */}
                 <p className="background-hint">
-                  任务结束前不能更改模型、思考强度和审批模式，也不能改名、分叉或编辑重发
+                  任务结束前不能更改模型、思考强度和审批模式，也不能改名或编辑重发
                   {ownsRun && '；消息可以照常发送'}。
                 </p>
                 <ul>
