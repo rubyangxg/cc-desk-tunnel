@@ -78,6 +78,7 @@ import type { Page } from './Rail.tsx';
 import {
   AddProjectDialog,
   DeleteSessionDialog,
+  HandoffConfirmDialog,
   RenameProjectDialog,
   RenameSessionDialog,
 } from './SessionDialogs.tsx';
@@ -2376,6 +2377,12 @@ export function App({
               setCreateOpen(false);
             });
           }}
+        />
+      )}
+      {rotation.confirmation && (
+        <HandoffConfirmDialog
+          text={rotation.confirmation.text}
+          answer={rotation.confirmation.answer}
         />
       )}
       {deleteSession && (

@@ -4175,6 +4175,12 @@ dialog::backdrop {
   flex-direction: column;
   gap: 19px;
 }
+.handoff-confirm-text {
+  max-height: 50vh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
 .dialog-actions {
   display: flex;
   justify-content: flex-end;

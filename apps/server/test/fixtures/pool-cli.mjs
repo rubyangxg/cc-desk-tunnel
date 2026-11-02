@@ -209,6 +209,30 @@ if (process.argv.includes('auth')) {
           commands: config.changedCommands,
           session_id: sessionId,
         });
+      if (config.background) {
+        // A background shell is left running: the run stays open for it until it is cancelled or the CLI dies.
+        emit({
+          type: 'system',
+          subtype: 'background_tasks_changed',
+          tasks: [{ task_id: 'bg-1', task_type: 'local_bash', description: 'sleep 600' }],
+          uuid: randomUUID(),
+          session_id: sessionId,
+        });
+        emit({
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          result: 'started in background',
+          session_id: sessionId,
+          user_message_uuid: message.uuid,
+          modelUsage: {},
+          usage: { output_tokens: 0 },
+          num_turns: 1,
+        });
+        if (config.background === 'crash')
+          setTimeout(() => process.kill(process.pid, 'SIGKILL'), 200);
+        return;
+      }
       while (state().pauseBeforeQuota) await delay(10);
       if (['quota', 'quota-result', 'unknown'].includes(config.fail)) {
         save({ ...config, blocked: true });

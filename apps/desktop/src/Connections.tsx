@@ -66,7 +66,12 @@ export type ProfileControls = {
   handoffStartedAt?: number | null;
   completeHandoff: () => void;
   // Release the handoff slot after a failure, and surface the reason even in the background.
-  failHandoff?: (message: string) => void;
+  // `returnQueue` says the target never took a copy of the source queue, so the source may take it back.
+  failHandoff?: (message: string, returnQueue?: boolean) => void;
+  // A source session whose queue this workspace froze for a handoff that failed on the target. Give it back,
+  // still paused, then call completeReturnQueue.
+  returnQueue?: string | null;
+  completeReturnQueue?: () => void;
   // Why a handoff to this target cannot start now, checked before the source queue is frozen.
   handoffBusy?: (id: string) => string | null;
 };
@@ -81,6 +86,9 @@ export function App() {
     attempt: number;
     handoff: Handoff | null;
     handoffAt: number | null;
+    // The workspace that froze its queue for this handoff, and the session it froze it in.
+    handoffFrom: { id: string; sessionId: string } | null;
+    returnQueue: string | null;
     sessionId: string | null;
     account: boolean;
     managing: boolean;
@@ -90,6 +98,8 @@ export function App() {
     attempt: 0,
     handoff: null,
     handoffAt: null,
+    handoffFrom: null,
+    returnQueue: null,
     sessionId: null,
     account: false,
     managing: false,
@@ -275,8 +285,11 @@ export function App() {
             handoff: view.handoff,
             handoffStartedAt: view.handoffAt,
             handoffBusy: (id) => handoffBusy(id),
-            failHandoff: (message) => {
-              changeView(initial.id, { handoff: null, handoffAt: null });
+            failHandoff: (message, returnQueue) => {
+              const from = viewsRef.current[initial.id]?.handoffFrom;
+              changeView(initial.id, { handoff: null, handoffAt: null, handoffFrom: null });
+              if (returnQueue && from && viewsRef.current[from.id])
+                changeView(from.id, { returnQueue: from.sessionId });
               if (openingRef.current === initial.id) {
                 openingRef.current = null;
                 setOpening(null);
@@ -287,7 +300,10 @@ export function App() {
             focusAccount: view.account,
             completeAccountFocus: () => changeView(initial.id, { account: false }),
             completeFocus: () => changeView(initial.id, { sessionId: null }),
-            completeHandoff: () => changeView(initial.id, { handoff: null, handoffAt: null }),
+            completeHandoff: () =>
+              changeView(initial.id, { handoff: null, handoffAt: null, handoffFrom: null }),
+            returnQueue: view.returnQueue,
+            completeReturnQueue: () => changeView(initial.id, { returnQueue: null }),
             save: async (profile) => {
               await persist((value) => ({
                 ...value,
@@ -321,6 +337,15 @@ export function App() {
                 attempt: (viewsRef.current[id]?.attempt ?? 0) + 1,
                 handoff: handoff ?? null,
                 handoffAt: handoff ? Date.now() : null,
+                // A handoff passed on from a failed target keeps pointing at the workspace that froze it.
+                handoffFrom: !handoff
+                  ? null
+                  : handoff.history &&
+                      viewsRef.current[initial.id]?.handoff?.history === handoff.history
+                    ? (viewsRef.current[initial.id]?.handoffFrom ?? null)
+                    : handoff.queue?.items.length && handoff.history?.segments.at(-1)
+                      ? { id: initial.id, sessionId: handoff.history.segments.at(-1)!.session.id }
+                      : null,
                 sessionId: sessionId ?? null,
                 account: account ?? false,
                 managing: !connect && !sessionId,

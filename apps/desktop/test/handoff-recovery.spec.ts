@@ -13,6 +13,10 @@ async function harness(
     rejectFirstCreate?: boolean;
     clock?: boolean;
     hang?: boolean;
+    // The source run is still open, waiting for quota; the pool ends the wait with run.handoff.
+    waiting?: boolean;
+    // The source run's last task list still names a background task.
+    backgroundTask?: boolean;
   } = {},
 ) {
   const device = { id: randomUUID(), name: 'test computer', platform: 'linux' as const };
@@ -41,9 +45,15 @@ async function harness(
           paused: false,
         }
       : undefined,
-    activeRun: null,
+    activeRun: options.waiting ? { id: runId, status: 'running', connectionId } : null,
   };
-  const state = { target: undefined as Session | undefined, hang: !!options.hang, creates: 0 };
+  const state = {
+    target: undefined as Session | undefined,
+    hang: !!options.hang,
+    creates: 0,
+    // Sends a message from server 1 to the client, as the server would on its own.
+    push: (() => {}) as (value: unknown) => void,
+  };
   const sent: { server: number; type: string; text?: string }[] = [];
   const old: SessionEvent[] = [];
   const live: SessionEvent[] = [];
@@ -69,13 +79,23 @@ async function harness(
     old,
   );
   event(source, { type: 'text.delta', messageId: randomUUID(), text: '已经完成第一步' }, old);
+  if (options.backgroundTask)
+    event(
+      source,
+      {
+        type: 'native.tasks',
+        tasks: [{ id: 'bg-1', kind: 'local_bash', description: 'npm run watch' }],
+      },
+      old,
+    );
   event(source, { type: 'run.error', code: 'quota_five_hour', message: '旧账号额度耗尽' }, old);
-  event(source, { type: 'run.status', status: 'failed', connectionId }, old);
+  if (!options.waiting) event(source, { type: 'run.status', status: 'failed', connectionId }, old);
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
   for (const server of [1, 2])
     await page.routeWebSocket(`ws://127.0.0.1:1899${server}/ws`, (route) => {
       const send = (value: unknown) => route.send(JSON.stringify(value));
+      if (server === 1) state.push = send;
       route.onMessage((raw) => {
         const m = JSON.parse(String(raw));
         sent.push({ server, type: m.type, text: m.text });
@@ -131,7 +151,10 @@ async function harness(
                 },
               },
             ],
-            quotaWaits: [],
+            quotaWaits:
+              server === 1 && source.activeRun
+                ? [{ sessionId: source.id, accountId: 'default', at: Date.now() }]
+                : [],
           });
         if (['session.subscribe', 'session.history'].includes(m.type) && current) {
           const entries = server === 1 ? old : live;
@@ -154,6 +177,36 @@ async function harness(
             handoff: { paused: source.messageQueue!.paused },
             reason: '跨服队列备份，请到续接会话继续。',
           };
+          send({ type: 'session.updated', session: source });
+        }
+        if (m.type === 'run.handoff') {
+          expect(server).toBe(1);
+          // Ending the wait freezes the queue. The run had a tool in flight whose result stays unknown.
+          source.activeRun = null;
+          source.messageQueue = {
+            ...source.messageQueue!,
+            paused: true,
+            handoff: { paused: source.messageQueue!.paused },
+            reason: '跨服队列备份，请到续接会话继续。',
+          };
+          for (const payload of [
+            {
+              type: 'tool.requested',
+              toolId: 'tool-1',
+              name: 'Bash',
+              input: 'make',
+              target: 'Linux',
+            },
+            {
+              type: 'tool.result',
+              toolId: 'tool-1',
+              status: 'unknown',
+              output: '运行结束；该工具最终执行结果未确认。',
+              exitCode: null,
+            },
+            { type: 'run.status', status: 'cancelled', connectionId },
+          ] as EventPayload[])
+            send({ type: 'session.event', event: event(source, payload, old) });
           send({ type: 'session.updated', session: source });
         }
         if (m.type === 'session.handoff.cancel') {
@@ -295,7 +348,7 @@ async function harness(
     page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
   const continueSource = () =>
     page.getByRole('button', { name: '接着上一轮继续', exact: true }).click();
-  return { source, state, sent, errors, openSource, continueSource };
+  return { source, state, sent, errors, openSource, continueSource, runId };
 }
 
 test('a target that fails after taking the handoff releases it, so a retry is not refused', async ({
@@ -390,6 +443,91 @@ test('an account at 99.5% five-hour usage shows 0% left and is never chosen', as
   expect(
     sent.filter((m) => m.server === 2 && ['session.create', 'message.send'].includes(m.type)),
   ).toHaveLength(0);
+  await expect(page.getByLabel('当前服务器：服务器1', { exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('a quota wait that ends but cannot be handed over gives the queue back to the source', async ({
+  page,
+}) => {
+  const { source, sent, errors } = await harness(page, { queued: true, waiting: true });
+  const failure = page.getByRole('alert').filter({ hasText: /额度等待已结束，任务停在本服务器/ });
+  await expect(failure).toBeVisible({ timeout: 20000 });
+  await expect(failure).toContainText('工具结果未确认');
+  await expect(failure).toContainText('原排队消息已退回本会话并保持暂停');
+  expect(sent.filter((m) => m.type === 'run.handoff')).toHaveLength(1);
+  expect(sent.filter((m) => m.type === 'session.handoff.cancel')).toHaveLength(1);
+  expect(source.messageQueue?.handoff).toBeUndefined();
+  expect(source.messageQueue?.paused).toBe(true);
+  expect(
+    sent.filter((m) => m.server === 2 && ['session.create', 'message.send'].includes(m.type)),
+  ).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+test('a target that fails before copying the queue returns it to the source automatically', async ({
+  page,
+}) => {
+  const { source, sent, errors, openSource, continueSource } = await harness(page, {
+    queued: true,
+    rejectFirstCreate: true,
+  });
+  await openSource();
+  await continueSource();
+  const failure = page
+    .getByRole('alert')
+    .filter({ hasText: /自动续接已暂停：目标服务器暂时无法创建会话/ });
+  await expect(failure).toBeVisible();
+  await expect(failure).toContainText('原排队消息将自动退回原会话并保持暂停');
+  await expect.poll(() => sent.filter((m) => m.type === 'session.handoff.cancel').length).toBe(1);
+  await expect.poll(() => source.messageQueue?.handoff).toBeUndefined();
+  expect(source.messageQueue?.paused).toBe(true);
+  expect(source.messageQueue?.items.map((item) => item.text)).toEqual(['后续任务1', '后续任务2']);
+  expect(sent.filter((m) => m.server === 2 && m.type === 'message.enqueue')).toHaveLength(0);
+  expect(sent.filter((m) => m.server === 2 && m.type === 'message.send')).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+test('confirming a background task does not block the window or trip on unrelated updates', async ({
+  page,
+}) => {
+  const { source, state, sent, errors, openSource, continueSource } = await harness(page, {
+    backgroundTask: true,
+  });
+  await openSource();
+  await continueSource();
+  const dialog = page.getByRole('dialog').filter({ hasText: '核实后续接' });
+  await expect(dialog).toContainText('npm run watch');
+  // The window keeps processing server messages while the question is open: a rename arrives.
+  state.push({
+    type: 'session.updated',
+    session: {
+      ...source,
+      title: '同一个任务',
+      updatedAt: new Date(Date.now() + 5000).toISOString(),
+    },
+  });
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));
+  await dialog.getByRole('button', { name: '已核实，继续' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByText('服务器2继续完成第二步', { exact: true })).toBeVisible();
+  await expect(page.getByText(/任务状态已改变/)).toHaveCount(0);
+  expect(sent.filter((m) => m.server === 2 && m.type === 'message.send')).toHaveLength(1);
+  expect(errors).toEqual([]);
+});
+
+test('declining the background-task question leaves the task on the source', async ({ page }) => {
+  const { sent, errors, openSource, continueSource } = await harness(page, {
+    backgroundTask: true,
+  });
+  await openSource();
+  await continueSource();
+  const dialog = page.getByRole('dialog').filter({ hasText: '核实后续接' });
+  await dialog.getByRole('button', { name: '取消' }).click();
+  await expect(
+    page.getByRole('alert').filter({ hasText: /历史记录中仍有后台任务。请先核实/ }),
+  ).toBeVisible();
+  expect(sent.filter((m) => m.server === 2 && m.type === 'session.create')).toHaveLength(0);
   await expect(page.getByLabel('当前服务器：服务器1', { exact: true })).toBeVisible();
   expect(errors).toEqual([]);
 });

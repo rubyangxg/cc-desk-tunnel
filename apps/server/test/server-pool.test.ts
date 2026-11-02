@@ -1461,3 +1461,45 @@ nativeTest(
       });
   },
 );
+
+nativeTest(
+  'background tasks that end with the CLI stop blocking a handoff; ones a crash may have left keep asking',
+  { timeout: 60000 },
+  async (t) => {
+    for (const mode of ['cancel', 'crash'] as const) {
+      const f = await fixture(t, '');
+      for (const file of [
+        join(f.config, 'fixture.json'),
+        join(f.dir, 'accounts', f.id, 'config', 'fixture.json'),
+      ]) {
+        const config = JSON.parse(readFileSync(file, 'utf8'));
+        writeFixture(file, JSON.stringify({ ...config, background: mode }));
+      }
+      const created = await f.request({ type: 'session.create', title: mode, projectPath: '/p' });
+      const sessionId = created.sessionId!;
+      await f.request({ type: 'message.send', sessionId, text: 'start a background shell' });
+      const started = await f.wait(
+        (message) =>
+          message.type === 'session.event' &&
+          message.event.sessionId === sessionId &&
+          message.event.payload.type === 'native.tasks' &&
+          message.event.payload.tasks.length === 1,
+      );
+      assert.ok(started.type === 'session.event');
+      const runId = started.event.runId!;
+      if (mode === 'cancel') await f.request({ type: 'run.cancel', sessionId, runId });
+      await f.wait(
+        (message) =>
+          message.type === 'session.event' &&
+          message.event.sessionId === sessionId &&
+          message.event.payload.type === 'run.status' &&
+          ['cancelled', 'failed'].includes(message.event.payload.status),
+      );
+      const tasks = f.server.store
+        .snapshot(sessionId)
+        .events.filter((event) => event.runId === runId && event.payload.type === 'native.tasks')
+        .map(({ payload }) => (payload.type === 'native.tasks' ? payload.tasks.length : -1));
+      assert.deepEqual(tasks, mode === 'cancel' ? [1, 0] : [1], mode);
+    }
+  },
+);

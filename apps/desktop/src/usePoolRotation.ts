@@ -65,6 +65,27 @@ export function usePoolRotation(options: {
   const [working, setWorking] = useState(false);
   const [connectionRetry, setConnectionRetry] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
+  // An in-app question instead of window.confirm: the window keeps receiving the server's events while the user
+  // checks the task, and a closed or replaced workspace answers it as declined.
+  const [confirmation, setConfirmation] = useState<{
+    text: string;
+    answer: (confirmed: boolean) => void;
+  } | null>(null);
+  const pendingConfirmation = useRef<((confirmed: boolean) => void) | null>(null);
+  useEffect(() => () => pendingConfirmation.current?.(false), []);
+  function ask(text: string) {
+    pendingConfirmation.current?.(false);
+    return new Promise<boolean>((resolve) => {
+      const answer = (confirmed: boolean) => {
+        if (pendingConfirmation.current !== answer) return;
+        pendingConfirmation.current = null;
+        setConfirmation(null);
+        resolve(confirmed);
+      };
+      pendingConfirmation.current = answer;
+      setConfirmation({ text, answer });
+    });
+  }
 
   async function prepare(
     session: Session,
@@ -122,10 +143,14 @@ export function usePoolRotation(options: {
         ? `历史记录中仍有后台任务（重启不会证明它们已结束）：\n${tasks.map((task) => `• ${task.description.slice(0, 120)} [${task.id}]`).join('\n')}\n\n请在项目所在电脑确认这些任务已结束。`
         : '上一轮有消息未确认送达。';
       if (
-        window.confirm(
+        await ask(
           `${detail}\n请展开任务记录核实进度，并确认没有其他续接会话正在执行。已核实并继续？续接会携带已有进度，要求先检查已完成的操作。`,
         )
       ) {
+        // Events kept arriving while the user looked; only a change to what is being handed over matters.
+        const after = client.state.sessions.find((item) => item.id === session.id);
+        if (!after || handoffState(after) !== handoffState(live))
+          throw new Error('核实期间任务状态已改变，未交接，请重新点击“继续”。');
         confirmedMessageIds = [...new Set(ids)];
         confirmedTaskIds = [...new Set(taskIds)];
         blocked = null;
@@ -170,8 +195,10 @@ export function usePoolRotation(options: {
     };
     // Archive the transcript before transferring execution ownership.
     await saveSharedHistory(`pending:${key}`, handoff.history);
+    const saved = client.state.sessions.find((item) => item.id === session.id);
     if (
-      client.state.sessions.find((item) => item.id === session.id)?.updatedAt !== live.updatedAt ||
+      !saved ||
+      handoffState(saved) !== handoffState(live) ||
       (!profiles.persistent &&
         client.state.sessions.some((item) => item.activeRun && isHere(item, client.state.device)))
     )
@@ -267,11 +294,15 @@ export function usePoolRotation(options: {
     detail: string,
     sessionId: string | null,
     historyAttached: boolean,
+    queueCopied = true,
   ) {
     const target = current.current.profiles.initial.name;
+    // With no session and no copy here, the frozen source queue has no destination; the source takes it back,
+    // still paused. A created target session keeps the backup so the user picks one side deliberately.
+    const returnQueue = !queueCopied && !sessionId && !!handoff.queue?.items.length;
     const where = `（${handoff.source} → ${target}，任务「${handoff.session.title}」）`;
     const next = !sessionId
-      ? `${target} 上未创建续接会话，任务上下文仍保留在 ${handoff.source} 的原会话中，可回到原会话重新续接${handoff.queue?.items.length ? '；原排队消息仍在原会话备份，可在那里恢复原队列' : ''}。`
+      ? `${target} 上未创建续接会话，任务上下文仍保留在 ${handoff.source} 的原会话中，可回到原会话重新续接${handoff.queue?.items.length ? (returnQueue ? '；原排队消息将自动退回原会话并保持暂停' : '；原排队消息仍在原会话备份，可在那里恢复原队列') : ''}。`
       : !historyAttached
         ? '续接消息尚未发送，上下文已保留在当前会话草稿中。'
         : `续接会话已在 ${target} 创建，请检查会话和草稿后手动继续，客户端不会重发未确认请求。`;
@@ -279,7 +310,7 @@ export function usePoolRotation(options: {
     resuming.current = false;
     current.current.error(message);
     const live = current.current.profiles;
-    if (live.failHandoff) live.failHandoff(message);
+    if (live.failHandoff) live.failHandoff(message, returnQueue);
     else live.completeHandoff();
   }
 
@@ -514,6 +545,12 @@ export function usePoolRotation(options: {
             events,
           );
           if (blocked) throw handoffError(blocked);
+          // Refuse what would stop the switch before ending the wait: once run.handoff is accepted the task
+          // has left its wait and the queue is frozen, and only a completed switch or a release gives it back.
+          const busy = current.current.profiles.handoffBusy?.(next.id);
+          if (busy) throw new Error(busy);
+          if ((await sharedHistory(historyKey(profiles.initial, session.id)))?.forward)
+            throw new Error('此任务已在其他服务器续接，请前往当前会话。');
           await client.request({
             type: 'run.handoff',
             sessionId: session.id,
@@ -531,8 +568,28 @@ export function usePoolRotation(options: {
               throw new Error('尚未确认旧任务结束，未切换服务器。');
             await new Promise((resolve) => setTimeout(resolve, 50));
           }
-          const handoff = await prepare(session, [id], false, true);
-          if (!current.current.profiles.pool.config.enabled) return;
+          let handoff;
+          try {
+            handoff = await prepare(session, [id], false, true);
+            if (!current.current.profiles.pool.config.enabled) throw new Error('自动接力已关闭');
+          } catch (error) {
+            // The wait is over and the run gone, so nothing would ever move the frozen queue on.
+            const detail = (error instanceof Error ? error.message : '准备续接失败').replace(
+              /[。.!\s]+$/u,
+              '',
+            );
+            const queuedNow = claimedQueues.current.has(session.id);
+            const released = queuedNow && (await releaseQueue(session.id));
+            throw new Error(
+              `${detail}。额度等待已结束，任务停在本服务器${
+                !queuedNow
+                  ? ''
+                  : released
+                    ? '，原排队消息已退回本会话并保持暂停'
+                    : '，原排队消息仍处于跨服备份状态，请在本会话中恢复原队列'
+              }；可点击“继续”重新续接。`,
+            );
+          }
           // run.handoff already froze the queue, so a refused switch must give it back.
           await handOver(next.id, handoff, session, undefined, undefined, true);
         } catch (error) {
@@ -667,6 +724,7 @@ export function usePoolRotation(options: {
     setNotice(`已切换到 ${profiles.initial.name}，正在续接 ${handoff.session.title}…`);
     void (async () => {
       let historyAttached = false;
+      let queueCopied = false;
       try {
         if (handoff.session.goal && !client.state.features.includes('goal-continuation'))
           throw new Error('目标服务器不支持 /goal 续接，请先升级服务端；目标和原会话仍保留。');
@@ -699,6 +757,7 @@ export function usePoolRotation(options: {
         if (handoff.queue?.items.length) {
           // Restore while paused so no queued message can race ahead of continue.
           await client.request({ type: 'message.queue.pause', sessionId, paused: true });
+          queueCopied = true;
           for (const item of handoff.queue.items)
             await client.request({
               type: 'message.enqueue',
@@ -737,7 +796,7 @@ export function usePoolRotation(options: {
           /[。.!\s]+$/u,
           '',
         );
-        failHandoff(handoff, detail, resumedSession.current, historyAttached);
+        failHandoff(handoff, detail, resumedSession.current, historyAttached, queueCopied);
       } finally {
         setWorking(false);
       }
@@ -758,12 +817,33 @@ export function usePoolRotation(options: {
           `${handoffTimeoutMs / 1000} 秒内未连上 ${profiles.initial.name}，续接已超时取消`,
           null,
           false,
+          false,
         );
       },
       Math.max(0, startedAt + handoffTimeoutMs - Date.now()),
     );
     return () => clearTimeout(timer);
   }, [profiles.handoff, profiles.handoffStartedAt]);
+
+  // The target of a handoff failed before taking a copy of the queue this workspace froze for it.
+  useEffect(() => {
+    const sessionId = profiles.returnQueue;
+    if (!sessionId || state.status !== 'connected') return;
+    profiles.completeReturnQueue?.();
+    if (!claimedQueues.current.has(sessionId)) return;
+    const live = client.state.sessions.find((item) => item.id === sessionId);
+    if (!live?.messageQueue?.handoff) {
+      claimedQueues.current.delete(sessionId);
+      return;
+    }
+    void releaseQueue(sessionId).then((released) =>
+      setNotice(
+        released
+          ? `目标服务器未接手「${live.title}」，原排队消息已退回本会话并保持暂停，请检查后继续。`
+          : `目标服务器未接手「${live.title}」，原排队消息仍处于跨服备份状态，请在本会话中恢复原队列。`,
+      ),
+    );
+  }, [profiles.returnQueue, state.status]);
 
   useEffect(() => {
     const sessionId = resumedSession.current;
@@ -931,5 +1011,19 @@ export function usePoolRotation(options: {
         !resuming.current),
     notice,
     dismissNotice: () => setNotice(null),
+    confirmation,
   };
+}
+
+// What a handoff carries from the source: whether a run is active, and the queue it may take along. Titles,
+// usage and other updates that move `updatedAt` do not change it.
+function handoffState(session: Session) {
+  const queue = session.messageQueue;
+  return JSON.stringify([
+    session.activeRun?.id ?? null,
+    queue?.items.map((item) => [item.id, item.text]) ?? [],
+    !!queue?.paused,
+    !!queue?.dispatching,
+    queue?.handoff ?? null,
+  ]);
 }

@@ -213,3 +213,28 @@ export function RenameProjectDialog({
     </Modal>
   );
 }
+
+// Asked before handing over a task whose last run left receipts or background tasks unconfirmed. It does not block
+// the window, so the task's own record stays live and can be checked while the question is open.
+export function HandoffConfirmDialog({
+  text,
+  answer,
+}: {
+  text: string;
+  answer: (confirmed: boolean) => void;
+}) {
+  return (
+    <Modal title="核实后续接" onClose={() => answer(false)}>
+      <p className="handoff-confirm-text">{text}</p>
+      <div className="dialog-actions">
+        <button type="button" className="button secondary" onClick={() => answer(false)}>
+          取消
+        </button>
+        <button type="button" className="button primary" onClick={() => answer(true)}>
+          <Check />
+          已核实，继续
+        </button>
+      </div>
+    </Modal>
+  );
+}
