@@ -1,0 +1,14 @@
+# Installed only by `cc-desk-tunnel auto-upgrade enable`; off by default. The deployment's paths and repository
+# are in the drop-in cc-desk-tunnel-auto-upgrade.service.d/deployment.conf written beside it.
+[Unit]
+Description=Upgrade cc-desk-tunnel to a newer release (archive checked against the release's SHA256SUMS; no downgrade)
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cc-desk-tunnel-auto-upgrade
+TimeoutStartSec=30min
+UMask=0077
+PrivateTmp=true
+ProtectHome=read-only

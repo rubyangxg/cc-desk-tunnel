@@ -50,6 +50,24 @@ sudo bash deploy/manage.sh summary
 
 nginx 模式需按示例配置反代 `/client/installer`，客户端自升级才能下载。服务端只保留最近 3 个版本的安装包，更旧的自动删除。
 
+发布来源默认是 `github.com/rubyangxg/cc-desk-tunnel`。`install.sh`、`manage.sh upgrade` 和下面的自动升级都读 `CC_DESK_TUNNEL_REPO=OWNER/NAME`，要跟其他仓库的发布时设置它，例如 `sudo CC_DESK_TUNNEL_REPO=OWNER/NAME cc-desk-tunnel upgrade`。
+
+### 自动升级（默认关闭）
+
+安装和升级都不会开启自动升级，服务器只在你手动执行升级（或在客户端点“升级服务端”）时更新。需要无人值守升级时再开启：
+
+```sh
+sudo cc-desk-tunnel auto-upgrade enable    # 安装 deploy/auto-upgrade/ 下的脚本和 systemd 定时器并启用
+sudo cc-desk-tunnel auto-upgrade status    # 是否启用、下次检查时间、发布来源
+sudo cc-desk-tunnel auto-upgrade disable   # 停用并删除定时器、服务和脚本
+```
+
+开启后，`cc-desk-tunnel-auto-upgrade.timer` 开机 15 分钟后及之后每 12 小时（随机延后至多 30 分钟）运行一次 `/usr/local/sbin/cc-desk-tunnel-auto-upgrade`：
+
+- 读取发布来源的最新版本（开启时的 `CC_DESK_TUNNEL_REPO`，写在 `/etc/systemd/system/cc-desk-tunnel-auto-upgrade.service.d/deployment.conf`），与服务**实际运行的版本**比较（与一键安装命令显示的“运行版本”同一套判断，包括从客户端升级后的版本）。相同则记 `already current`；远端不比本地新则记 `skip remote=X is not newer than local=Y` 并退出，不下载、不备份，永不降级。
+- 更新时下载程序包并按发布的 `SHA256SUMS` 校验（只是校验和，不是签名），先备份数据到 `/var/backups/cc-desk-tunnel/`，再执行 `manage.sh upgrade --from` 换上新程序和镜像并等待健康检查。
+- 结果看 `journalctl -u cc-desk-tunnel-auto-upgrade.service`。
+
 ### 从客户端升级
 
 服务端每 6 小时查询一次项目的 GitHub 发布页，客户端连接菜单里的“检查更新”立即查询一次。有新版本时：
@@ -135,6 +153,7 @@ sudo bash deploy/manage.sh up
 sudo bash deploy/manage.sh restart
 sudo bash deploy/manage.sh upgrade
 sudo bash deploy/manage.sh backup /secure/backup.tar.gz
+sudo bash deploy/manage.sh auto-upgrade status
 sudo bash deploy/manage.sh uninstall
 ```
 

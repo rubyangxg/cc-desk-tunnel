@@ -1,0 +1,13 @@
+# Installed and enabled only by `cc-desk-tunnel auto-upgrade enable`; off by default.
+[Unit]
+Description=Periodic cc-desk-tunnel release check
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=12h
+Persistent=true
+RandomizedDelaySec=30min
+Unit=cc-desk-tunnel-auto-upgrade.service
+
+[Install]
+WantedBy=timers.target
