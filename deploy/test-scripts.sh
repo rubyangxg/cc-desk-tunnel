@@ -35,10 +35,11 @@ case "$1 $2" in
     exit ;;
   'image rm') exit 0 ;;
   'inspect '*) echo healthy; exit ;;
+  'exec '*) [[ -z "${MOCK_RUNNING:-}" ]] || echo "$MOCK_RUNNING"; exit ;;
 esac
 case " $* " in
   *' build '*) [[ "${FAIL_BUILD:-0}" != 1 ]]; exit ;;
-  *' ps '*) echo mock-container ;;
+  *' ps '*) [[ -n "${STOPPED:-}" ]] || echo mock-container ;;
 esac
 exit 0
 MOCK
@@ -180,6 +181,23 @@ release 1.4.0
 printf 'y\n' | bash "$TEMP/install.sh" > "$TEMP/reinstall.log"
 grep -q "PROXY_IMAGE='ghcr.io/rubyangxg/cc-desk-tunnel:1.4.0'" "$TEMP/installed/.local/docker.env"
 test "$(grep -c '^pull ' "$MOCK_LOG")" = 1
+grep -q '已有部署：.*（运行版本 1.3.0），最新版本 1.4.0' "$TEMP/reinstall.log"
+# The version shown is the one running, not the program here, which an upgrade from the client leaves behind.
+release 1.5.0
+printf "n\n" | MOCK_RUNNING=1.4.7 bash "$TEMP/install.sh" > "$TEMP/running.log"
+grep -q '（运行版本 1.4.7），最新版本 1.5.0' "$TEMP/running.log"
+# Stopped: the data directory's program where it is the newer one, as the container would start it.
+printf "n\n" | STOPPED=1 bash "$TEMP/install.sh" > "$TEMP/stopped.log"
+grep -q '（运行版本 1.4.0），' "$TEMP/stopped.log"
+mkdir -p "$TEMP/installed-data/program/1.4.8/apps/server/src"
+touch "$TEMP/installed-data/program/1.4.8/apps/server/src/main.ts"
+echo 1.4.8 > "$TEMP/installed-data/program/current"
+printf "n\n" | STOPPED=1 bash "$TEMP/install.sh" > "$TEMP/stopped.log"
+grep -q '（运行版本 1.4.8），' "$TEMP/stopped.log"
+echo 1.3.9 > "$TEMP/installed-data/program/current"
+mv "$TEMP/installed-data/program/1.4.8" "$TEMP/installed-data/program/1.3.9"
+printf "n\n" | STOPPED=1 bash "$TEMP/install.sh" > "$TEMP/stopped.log"
+grep -q '（运行版本 1.4.0），' "$TEMP/stopped.log"
 bash "$CC_DESK_TUNNEL_COMMAND" uninstall > /dev/null
 test ! -e "$CC_DESK_TUNNEL_COMMAND"
 echo 'PASS: image choice, failures, release upgrade, installer, management command.'

@@ -28,6 +28,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run format:check
       - run: npm test
+      - run: bash deploy/test-scripts.sh
   # The service's own tests on arm64, for what it compiles there; beside the image jobs rather than after them.
   linux-arm:
     runs-on: ubuntu-24.04-arm
@@ -63,6 +64,7 @@ jobs:
           cache-from: type=gha,scope=image-${{ runner.arch }}
           cache-to: type=gha,mode=min,scope=image-${{ runner.arch }}
       - run: sudo bash deploy/test.sh
+      - run: sudo bash deploy/test-image.sh
   # A Docker without buildx builds with the older builder, which gives the directories it makes to root whoever
   # the build runs as. The image is built that way too, so that it goes on working where BuildKit is missing.
   deploy-legacy:

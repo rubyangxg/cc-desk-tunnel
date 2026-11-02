@@ -19,6 +19,41 @@ confirm() {
   [[ -z "$answer" || "$answer" =~ ^[Yy] ]]
 }
 version_of() { sed -n 's/^ *"version": "\([0-9.]*\)",\{0,1\}$/\1/p' "$1/apps/desktop/package.json" 2>/dev/null | head -n 1; }
+# The version the service actually runs. An upgrade from the client ("更新服务器端") installs a newer program into
+# the data directory and the container starts that one (deploy/docker/entrypoint.sh), while the program directory
+# here stays at the version this script last unpacked. The running container is asked first: its main process
+# names the program it started. Stopped, it is the data directory's program where that is the newer one, as the
+# entrypoint would choose; then the program here; empty when there is nothing to go by.
+running_version() {
+  local here found kind version
+  here="$(version_of "$TARGET")"
+  found="$(
+    set +u
+    # The deployment's own private configuration, the one manage.sh reads.
+    # shellcheck source=/dev/null
+    source "$1" >/dev/null 2>&1 || exit 0
+    id="$(docker ps -q --filter "label=com.docker.compose.project=${PROJECT_NAME:-}" \
+      --filter label=com.docker.compose.service=proxy 2>/dev/null | head -n 1)"
+    if [[ -n "${PROJECT_NAME:-}" && -n "$id" ]]; then
+      printf 'running '
+      docker exec "$id" node -e '
+        const main = require("fs").readFileSync("/proc/1/cmdline", "utf8").split("\0")
+          .find((arg) => arg.endsWith("/apps/server/src/main.ts"));
+        if (main) console.log(require(main.replace(/apps\/server\/src\/main\.ts$/, "apps/desktop/package.json")).version);
+      ' 2>/dev/null | head -n 1
+    elif [[ "${DATA_DIR:-}" = /* ]]; then
+      stored="$(head -n 1 "$DATA_DIR/program/current" 2>/dev/null || true)"
+      [[ ! -f "$DATA_DIR/program/$stored/apps/server/src/main.ts" ]] || echo "stored $stored"
+    fi
+  )"
+  kind="${found%% *}" version="${found#* }"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || version=''
+  if [[ "$kind" = stored && -n "$here" && -n "$version" \
+    && "$(printf '%s\n' "$version" "$here" | sort -V | tail -n 1)" = "$here" ]]; then
+    version="$here"
+  fi
+  echo "${version:-$here}"
+}
 
 main() {
   # Without arguments the installer asks its questions, gets the image, starts and prints a summary.
@@ -76,8 +111,8 @@ main() {
     latest="${name#cc-desk-tunnel-server-}"; latest="${latest%.tar.gz}"
 
     if [[ -f "$TARGET/deploy/manage.sh" && -f "${PROXY_DEPLOY_CONFIG:-$TARGET/.local/docker.env}" ]]; then
-      installed="$(version_of "$TARGET")"
-      echo "检测到已有部署：$TARGET（程序包版本 ${installed:-未知}），最新版本 $latest。"
+      installed="$(running_version "${PROXY_DEPLOY_CONFIG:-$TARGET/.local/docker.env}")"
+      echo "检测到已有部署：$TARGET（运行版本 ${installed:-未知}），最新版本 $latest。"
       confirm "升级到 $latest 并替换容器？数据、账号和配置保留" || exit 0
       set -- upgrade
     elif [[ -e "$TARGET" && ! -f "$TARGET/deploy/manage.sh" && -n "$(ls -A "$TARGET" 2>/dev/null)" ]]; then
