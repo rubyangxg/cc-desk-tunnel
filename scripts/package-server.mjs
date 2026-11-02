@@ -36,6 +36,7 @@ export function packageServer(root, output) {
         'package-lock.json',
         'CHANGELOG.md',
         'apps/server/package.json',
+        'apps/cli/package.json',
         'apps/server/src',
         'apps/desktop/package.json',
         'apps/mobile/package.json',

@@ -18,7 +18,7 @@ export function nativeStore<A extends keyof Results>(
   claude: ClaudeOptions,
   action: A,
   id: string,
-  options: ForkSessionOptions = {},
+  options: ForkSessionOptions & { includeSystemMessages?: boolean } = {},
   title?: string,
 ): Promise<Results[A]> {
   return new Promise((resolve, reject) => {

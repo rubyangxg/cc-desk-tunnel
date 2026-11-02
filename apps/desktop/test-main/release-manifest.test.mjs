@@ -18,7 +18,7 @@ for (const { target, android } of [
     t.after(() => rmSync(directory, { recursive: true, force: true }));
     const version = JSON.parse(readFileSync(resolve('apps/desktop/package.json'), 'utf8')).version;
     const names = releaseFiles(version, target, android);
-    assert.equal(names.length, (target === 'all' ? 5 : 4) + (android ? 1 : 0));
+    assert.equal(names.length, (target === 'all' ? 6 : 5) + (android ? 1 : 0));
     assert.equal(
       names.some((name) => name.endsWith('.apk')),
       android,
@@ -72,6 +72,7 @@ test('default releases keep the server updater and reject unknown package target
     'cc-desk-tunnel-server-1.2.3.tar.gz',
     'cc-desk-tunnel-server-1.2.3-linux-x64.tar.gz',
     'cc-desk-tunnel-server-1.2.3-linux-arm64.tar.gz',
+    'ccdt-1.2.3-windows-x64.zip',
   ]);
   assert.throws(() => releaseFiles('1.2.3', 'unknown'), /Unknown release target/);
 });

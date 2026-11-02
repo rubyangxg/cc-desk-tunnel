@@ -30,6 +30,7 @@ ENV PATH=/home/ccdesktunnel/runtime/node/bin:$PATH
 WORKDIR /app
 COPY --chown=ccdesktunnel:ccdesktunnel package.json package-lock.json ./
 COPY --chown=ccdesktunnel:ccdesktunnel apps/server/package.json apps/server/package.json
+COPY --chown=ccdesktunnel:ccdesktunnel apps/cli/package.json apps/cli/package.json
 COPY --chown=ccdesktunnel:ccdesktunnel apps/desktop/package.json apps/desktop/package.json
 COPY --chown=ccdesktunnel:ccdesktunnel apps/mobile/package.json apps/mobile/package.json
 COPY --chown=ccdesktunnel:ccdesktunnel packages/protocol/package.json packages/protocol/package.json

@@ -58,7 +58,7 @@ export default function UnifiedAccountPool({
     const timer = setInterval(() => {
       setNow(Date.now());
     }, 1000);
-    const polling = setInterval(() => void pool.refresh(), 60_000);
+    const polling = setInterval(() => void pool.refresh(undefined, false), 60_000);
     return () => {
       clearInterval(timer);
       clearInterval(polling);

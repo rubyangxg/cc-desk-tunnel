@@ -20,6 +20,7 @@ export const releaseFiles = (version, target = 'windows-server', android = false
   // The same program with its dependencies installed, one per server architecture: a running server upgrades
   // from these without npm. Servers from before them read only the plain package above.
   files.push(...prebuiltServers(version));
+  files.push(`ccdt-${version}-windows-x64.zip`);
   if (target === 'all') files.push(`CC-Desk-Tunnel-${version}-linux-amd64.deb`);
   if (android) files.push(`CC-Desk-Tunnel-${version}-android.apk`);
   return files;

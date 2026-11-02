@@ -438,6 +438,7 @@ export function App({
     rotation.working ||
     busy ||
     !!history?.loading ||
+    selected?.activeRun?.surface === 'terminal' ||
     (!!selected?.activeRun && ((!nativeMode && !queueEnabled) || !ownsRun)) ||
     refreshing;
   const draft = selected ? (drafts[selected.id] ?? '') : '';
@@ -653,6 +654,10 @@ export function App({
       void client.request({ type: serverPool ? 'pool.status' : 'account.status' }).catch(() => {});
   }, [nativeMode, connected, accountOpen, serverPool]);
   useEffect(() => {
+    if (nativeMode && connected && state.features.includes('quota-watch'))
+      void client.request({ type: 'quota.watch', active: prefs.quotaReads }).catch(() => {});
+  }, [nativeMode, connected, prefs.quotaReads, state.features]);
+  useEffect(() => {
     if (
       !accountOpen ||
       !nativeMode ||
@@ -664,7 +669,7 @@ export function App({
       state.sessions.some((session) => session.activeRun)
     )
       return;
-    void refreshStatus();
+    void refreshStatus(undefined, true);
   }, [
     accountOpen,
     nativeMode,
@@ -834,11 +839,16 @@ export function App({
       section = 'general';
     visit({ page, section, sessionId: client.state.selectedId });
   };
-  async function refreshStatus(sessionId = selected?.id ?? sessions[0]?.id) {
+  // `quota`: asked for on the account page, which reads the plan quota anew.
+  async function refreshStatus(sessionId = selected?.id ?? sessions[0]?.id, quota = false) {
     if (!sessionId || refreshing) return;
     setRefreshing(true);
     try {
-      await client.request({ type: 'session.status', sessionId });
+      await client.request({
+        type: 'session.status',
+        sessionId,
+        ...(quota && client.state.features.includes('quota-watch') ? { quota } : {}),
+      });
     } catch (error) {
       setError(
         error instanceof RequestInterruptedError
@@ -1817,7 +1827,7 @@ export function App({
                 }
                 error={currentError}
                 refresh={() => {
-                  void refreshStatus();
+                  void refreshStatus(undefined, true);
                 }}
               />
             )
@@ -2289,7 +2299,7 @@ export function App({
                   void compact();
                 }}
                 refresh={() => {
-                  void refreshStatus();
+                  void refreshStatus(undefined, true);
                 }}
                 configure={configure}
                 stop={stopRun}

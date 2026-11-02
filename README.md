@@ -43,6 +43,7 @@ Android 手机端：支持统一查看多台服务器的会话、发消息和远
 | **项目与会话** | 按 Windows 文件夹分组；新建、改名、删除、搜索、分叉；从任意一条自己的消息“编辑重发” |
 | **对话过程** | 流式回复、思考摘要、工具调用的入参与结果；运行中追加消息、随时停止 |
 | **原生控制** | 模型、推理强度、审批模式、上下文占用与主动压缩、Claude Code 常用设置；需要时打开内嵌的原生终端 |
+| **终端客户端** | `ccdt` 在自己的终端里打开原版 Claude Code，与图形客户端共用会话、上下文和调用统计 |
 | **账号与用量** | 在客户端里登录 / 退出云端的 Claude 账号，查看额度、重置时间和调用统计 |
 | **定时任务** | 到点向指定会话或新会话发送预设提示词，也可以直接让 Claude 帮你设置 |
 | **省心** | 托盘后台、记住凭据与自动登录、未发送内容按会话保存 |
@@ -67,10 +68,21 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/rubyangxg/cc-desk-t
 
 1. 检查 Docker、Docker Compose 等依赖。缺少时只告诉你安装命令，不会替你安装系统软件。
 2. 从本仓库的发布页下载最新的服务端程序包并校验，解压到 `/opt/cc-desk-tunnel`。
-3. 询问公网地址、证书方式、端口和数据目录（都有默认值，一路回车即可），然后构建镜像并启动。
+3. 询问公网地址、证书方式、端口和数据目录（都有默认值，一路回车即可），然后拉取这个版本的镜像并启动。
 4. 打印客户端要填的**服务地址、证书指纹、服务凭据**，以及需要在防火墙放行的 TCP 端口（默认 8787，只有这一个）。
 
-目前不提供现成镜像，镜像在你的服务器上从源码构建，首次需要几分钟。脚本不会修改防火墙、nginx 或 SSH 配置。再次运行同一条命令可以升级已有部署。手动安装、三种证书方式、备份恢复等见[部署操作手册](deploy/README.md)；已有 nginx 和域名时见[用 nginx 反代](deploy/nginx.md)。
+镜像是 GitHub 上预先构建好的（`ghcr.io/rubyangxg/cc-desk-tunnel`，x86_64 和 arm64 自动选择），几分钟内就能装好。服务器连不上 ghcr.io 时，脚本会改为在服务器上构建，首次需要多等几分钟。脚本不会修改防火墙、nginx 或 SSH 配置。
+
+装好后，日常管理用 `cc-desk-tunnel` 命令，在任何目录下都能运行：
+
+```sh
+sudo cc-desk-tunnel status    # 运行状态
+sudo cc-desk-tunnel logs      # 查看日志（Ctrl+C 退出）
+sudo cc-desk-tunnel upgrade   # 升级到最新版本；数据、账号和配置保留
+sudo cc-desk-tunnel help      # 全部命令：更换凭据、备份恢复、证书等
+```
+
+一般不需要上服务器升级：客户端的“设置 → 关于与更新”里可以直接升级服务端。手动安装、三种证书方式、备份恢复等见[部署操作手册](deploy/README.md)；已有 nginx 和域名时见[用 nginx 反代](deploy/nginx.md)。
 
 ### 2. 安装 Windows 客户端
 
@@ -79,6 +91,8 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/rubyangxg/cc-desk-t
 首次运行会遇到 SmartScreen 提示，处理方法见[杀毒软件与 SmartScreen](#杀毒软件与-smartscreen)。
 
 个人版后续发布不再构建 macOS（Intel / Apple Silicon）安装包。默认发布 Windows 和服务端；`npm run release -- --publish --all-platforms` 额外包含 Linux，不包含 macOS。Linux 安装方法见 [Linux 客户端](docs/linux.md)；macOS 可参考 [macOS 客户端](docs/macos.md)自行构建。它们是实验性支持，没有签名。
+
+更习惯终端时，同一个发布页还有终端客户端 `ccdt` 的包（Windows、macOS、Linux），可以单独安装使用，见[终端客户端](docs/cli.md)。
 
 ### 3. 登录 Claude
 
@@ -179,6 +193,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/rubyangxg/cc-desk-t
 | [Claude 账号池](docs/account-pool.md) | 单服务器多账号、额度调度、统一历史与试用包升级 |
 | [Windows 客户端](apps/desktop/README.md) · [Linux 服务](apps/server/README.md) · [消息契约](packages/protocol/README.md) | 各模块的实现说明 |
 | [macOS 客户端（实验性）](docs/macos.md) · [Linux 客户端（实验性）](docs/linux.md) | 安装、与 Windows 的不同、已验证与未验证 |
+| [终端客户端 `ccdt`](docs/cli.md) | 安装、登录、命令、与图形客户端共用会话 |
 | [路线与现状](docs/roadmap.md) · [变更记录](CHANGELOG.md) | 已完成、待验证、计划；各版本的变化 |
 | [开发约定](docs/development.md) | 分支、提交、检查、发布 |
 

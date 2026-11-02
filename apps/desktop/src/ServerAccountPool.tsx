@@ -1,3 +1,4 @@
+import { usePrefs, setPrefs } from './prefs.ts';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -140,6 +141,7 @@ export default function ServerAccountPool({
     refresh: () => void;
   };
 }) {
+  const { quotaReads } = usePrefs();
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [edit, setEdit] = useState<{ id?: string; name: string } | null>(null);
@@ -213,6 +215,19 @@ export default function ServerAccountPool({
     );
   return (
     <section className="server-pool-page" aria-label="Claude 账号池">
+      {client.state.features.includes('quota-watch') && (
+        <div className="quota-live">
+          <span>
+            运行中每分钟读取一次额度
+            <small>关闭后记录回复自带的额度；手动检测和额度等待中的恢复检测仍保留。</small>
+          </span>
+          <Switch
+            label="运行中每分钟读取一次额度"
+            checked={quotaReads}
+            onChange={(value) => setPrefs((prefs) => ({ ...prefs, quotaReads: value }))}
+          />
+        </div>
+      )}
       <header className="server-pool-hero">
         <div className="pool-service-tag">
           <Server />

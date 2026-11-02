@@ -6,7 +6,7 @@ Drive Claude Code in the cloud from a desktop client, and let it work on your Wi
 
 Claude Code (CC for short) runs on a Linux server; your code, compilers and tools stay on Windows. CC Desk Tunnel connects the two: a container on the server, a desktop client on Windows, and an encrypted reverse SSH channel through which Claude reads and writes files and runs commands on your computer.
 
-[Download](https://github.com/sun168567/cc-desk-tunnel/releases/latest) · [Quick start](#quick-start) · [Security](#security) · [Documentation](#documentation) · License: [Apache-2.0](LICENSE)
+[Download](https://github.com/rubyangxg/cc-desk-tunnel/releases/latest) · [Quick start](#quick-start) · [Security](#security) · [Documentation](#documentation) · License: [Apache-2.0](LICENSE)
 
 > [!WARNING]
 > **This project is mostly written by AI**, maintained by one person, and has not had a professional security audit. It may contain undiscovered defects. It gives a server the ability to run commands on your computer: read [Security](#security) and [Your account](#your-account) first and judge the risk for yourself.
@@ -51,6 +51,7 @@ This repository publishes all of its own client, server, build and deployment so
 | **Projects and sessions** | Grouped by Windows folder; create, rename, delete, search, fork; edit and resend any of your own messages |
 | **The conversation** | Streaming replies, thinking summaries, tool calls with their input and results; add messages during a run, stop at any time |
 | **Native controls** | Model, reasoning effort, approval mode, context usage and manual compaction, common Claude Code settings; an embedded native terminal when you need it |
+| **Terminal client** | `ccdt` opens the official Claude Code in your own terminal, sharing sessions, context and usage statistics with the desktop client |
 | **Account and usage** | Sign the server's Claude account in or out from the client; see quota, reset times and usage statistics |
 | **Scheduled tasks** | Send a prepared prompt to a session, or a new one, at a set time; Claude can set these up for you |
 | **Convenience** | Runs in the tray, remembers the sign-in, keeps unsent text per session |
@@ -67,25 +68,38 @@ You need a Linux server with a public IP or domain name (x86_64, or arm64 as exp
 On the server:
 
 ```sh
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/sun168567/cc-desk-tunnel/main/deploy/install.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/rubyangxg/cc-desk-tunnel/personal/deploy/install.sh)"
 ```
 
 The script:
 
 1. Checks for Docker, Docker Compose and a few tools. If something is missing it tells you the command to install it; it does not install system software itself.
 2. Downloads the newest server archive from this repository's releases, verifies it and unpacks it to `/opt/cc-desk-tunnel`.
-3. Asks for the public address, certificate mode, ports and data directory (every question has a default), then builds the image and starts it.
+3. Asks for the public address, certificate mode, ports and data directory (every question has a default), then pulls the image of that version and starts it.
 4. Prints what the client needs — **service address, certificate fingerprint, service token** — and the TCP port to open in the firewall (8787 by default, the only one).
 
-There is no prebuilt image yet: the image is built from source on your server, which takes a few minutes the first time. The script does not touch the firewall, nginx or SSH. Running the same command again upgrades an existing deployment. Manual installation, the three certificate modes, backup and restore are covered in the [deployment manual](deploy/README.md); if you already run nginx with a domain, see [reverse proxying with nginx](deploy/nginx.md).
+The image is prebuilt on GitHub (`ghcr.io/rubyangxg/cc-desk-tunnel`, x86_64 or arm64 as your server needs), so installing takes a few minutes. If the server cannot reach ghcr.io, the script builds the image on the server instead, which takes a few minutes more the first time. The script does not touch the firewall, nginx or SSH.
+
+Once installed, manage the service with the `cc-desk-tunnel` command, from any directory:
+
+```sh
+sudo cc-desk-tunnel status    # is it running
+sudo cc-desk-tunnel logs      # follow the log (Ctrl+C to stop)
+sudo cc-desk-tunnel upgrade   # upgrade to the newest release; data, accounts and settings stay
+sudo cc-desk-tunnel help      # every command: new token, backup and restore, certificates
+```
+
+Usually you do not need the server for upgrades: the client's Settings → About and updates upgrades the service too. Manual installation, the three certificate modes, backup and restore are covered in the [deployment manual](deploy/README.md); if you already run nginx with a domain, see [reverse proxying with nginx](deploy/nginx.md).
 
 ### 2. Install the Windows client
 
-Download `CC-Desk-Tunnel-Setup-<version>-x64.exe` from the [releases page](https://github.com/sun168567/cc-desk-tunnel/releases/latest) and install it. It bundles PowerShell 7 and OpenSSH; nothing else is needed. Start it, enter the three values from step 1 and connect.
+Download `CC-Desk-Tunnel-Setup-<version>-x64.exe` from the [releases page](https://github.com/rubyangxg/cc-desk-tunnel/releases/latest) and install it. It bundles PowerShell 7 and OpenSSH; nothing else is needed. Start it, enter the three values from step 1 and connect.
 
 Expect a SmartScreen prompt on first run; see [Antivirus and SmartScreen](#antivirus-and-smartscreen).
 
 Packages for macOS and Linux are on the same releases page; see [macOS client](docs/macos.md) and [Linux client](docs/linux.md) (in Chinese). They are experimental, unsigned, and upgraded by downloading and installing the new package.
+
+If you prefer the terminal, the same page has packages of the terminal client `ccdt` for Windows, macOS and Linux, which can be installed and used on their own; see [Terminal client](docs/cli.md) (in Chinese).
 
 ### 3. Sign in to Claude
 
@@ -132,7 +146,7 @@ That describes the structure. **It is not a guarantee about your account.** Keep
 ## Antivirus and SmartScreen
 
 - **frpc is no longer bundled.** Clients up to 0.2.9 shipped `frpc.exe` from the tunnelling tool frp, which Windows Defender and other antivirus products often quarantine as "hack tool / riskware". From 0.2.10 the client sets up the execution channel itself through the service address; neither the installer nor the server image contains frp, and the installer removes the old `frpc.exe` on upgrade.
-- **Verify before allowing a bundled component.** The client still bundles the official releases of OpenSSH and PowerShell 7, verifies their SHA256 when packaging, runs them only while connected and has them listen on this machine only. They are rarely blocked; if it happens, check that the installer comes from this repository's [releases page](https://github.com/sun168567/cc-desk-tunnel/releases/latest), verify it against `SHA256SUMS`, and identify the file that was blocked. After checking the source, make only the necessary exception for the verified component file; do not disable antivirus or exclude a whole drive. Restore quarantined files or reinstall only after verification.
+- **Verify before allowing a bundled component.** The client still bundles the official releases of OpenSSH and PowerShell 7, verifies their SHA256 when packaging, runs them only while connected and has them listen on this machine only. They are rarely blocked; if it happens, check that the installer comes from this repository's [releases page](https://github.com/rubyangxg/cc-desk-tunnel/releases/latest), verify it against `SHA256SUMS`, and identify the file that was blocked. After checking the source, make only the necessary exception for the verified component file; do not disable antivirus or exclude a whole drive. Restore quarantined files or reinstall only after verification.
 - **SmartScreen.** The installer is not code-signed. On first run Windows shows "Windows protected your PC": choose "More info → Run anyway".
 - The project never changes the settings of any security software. If in doubt, build from source.
 
@@ -166,6 +180,7 @@ When connecting through a proxy or a reverse proxy, make sure it does not cut co
 | [Architecture](docs/architecture.md) | Components, how a connection is established, key design decisions |
 | [Native runtime and session storage](docs/native-runtime.md) | How the official CLI is driven, who owns context, approvals, retention |
 | [Windows client](apps/desktop/README.md) · [Linux service](apps/server/README.md) · [Message contract](packages/protocol/README.md) | Implementation notes per module |
+| [Terminal client `ccdt`](docs/cli.md) | Installation, sign-in, commands, sessions shared with the desktop client |
 | [Roadmap and status](docs/roadmap.md) · [Changelog](CHANGELOG.md) | Done, unverified and planned; changes per version |
 | [Development conventions](docs/development.md) | Branches, commits, checks, releases |
 

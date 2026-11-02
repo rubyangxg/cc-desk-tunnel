@@ -91,6 +91,7 @@ export class RequestInterruptedError extends Error {
       'pool.status',
       'usage.summary',
       'usage.query',
+      'quota.watch',
       'session.stats',
       'settings.get',
       'instructions.get',

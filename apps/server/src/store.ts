@@ -503,6 +503,30 @@ export class SessionStore {
     session.accountHandoff = false;
     this.save(session);
   }
+  // The session's last reading of its native state.
+  lastMetrics(sessionId: string) {
+    const row = this.database
+      .prepare(
+        "SELECT data FROM events WHERE session_id = ? AND json_extract(data, '$.payload.type') = 'native.metrics' ORDER BY sequence DESC LIMIT 1",
+      )
+      .get(sessionId);
+    if (!row) return null;
+    const event = JSON.parse(String(row.data)) as SessionEvent;
+    const native = this.database
+      .prepare(
+        "SELECT data FROM events WHERE session_id = ? AND sequence <= ? AND json_extract(data, '$.payload.type') = 'native.session' ORDER BY sequence DESC LIMIT 1",
+      )
+      .get(sessionId, event.sequence);
+    const recorded = native ? (JSON.parse(String(native.data)) as SessionEvent).payload : undefined;
+    const session = this.get(sessionId).session;
+    if (
+      recorded?.type === 'native.session' &&
+      recorded.nativeSessionId !== (session.nativeSessionId ?? session.id)
+    )
+      return null;
+    if (!recorded && session.accountId && session.accountId !== 'default') return null;
+    return event.payload.type === 'native.metrics' ? event.payload : null;
+  }
   userMessage(sessionId: string, messageId: string) {
     const row = this.database
       .prepare(
@@ -769,13 +793,19 @@ export class SessionStore {
     };
   }
 
-  append(sessionId: string, runId: string, payload: EventPayload): SessionEvent {
+  // `createdAt` is given for what happened before it is recorded, such as a terminal's turns.
+  append(
+    sessionId: string,
+    runId: string,
+    payload: EventPayload,
+    createdAt = new Date().toISOString(),
+  ): SessionEvent {
     const { session } = this.get(sessionId);
     const event: SessionEvent = {
       sessionId,
       runId,
       sequence: this.lastSequence(sessionId) + 1,
-      createdAt: new Date().toISOString(),
+      createdAt,
       payload,
     };
     if (!stateReadings.has(payload.type)) session.updatedAt = event.createdAt;
@@ -789,6 +819,7 @@ export class SessionStore {
             connectionId: payload.connectionId,
             ...(payload.surface ? { surface: payload.surface } : {}),
             ...(payload.waiting ? { waiting: payload.waiting } : {}),
+            ...(payload.activity ? { activity: payload.activity } : {}),
           };
     this.database.exec('BEGIN');
     try {

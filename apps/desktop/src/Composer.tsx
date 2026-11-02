@@ -403,7 +403,11 @@ export default function Composer({
           aria-expanded={menuShown}
           aria-autocomplete="list"
           aria-activedescendant={menuShown ? `slash-command-${at}` : undefined}
-          placeholder="随心输入…"
+          placeholder={
+            session.activeRun?.surface === 'terminal'
+              ? '会话在终端中打开，关闭终端后可以在这里接着聊'
+              : '随心输入…'
+          }
           value={draft}
           disabled={inputDisabled}
           maxLength={16000}
@@ -501,16 +505,18 @@ export default function Composer({
               canRefreshModels={canRefreshModels}
             />
           )}
-          {session.activeRun && session.activeRun.waiting !== 'background' && (
-            <IconButton
-              title="停止运行"
-              className="stop-button"
-              disabled={!connected || !ownsRun || busy}
-              onClick={stop}
-            >
-              <Square />
-            </IconButton>
-          )}
+          {session.activeRun &&
+            session.activeRun.waiting !== 'background' &&
+            session.activeRun.surface !== 'terminal' && (
+              <IconButton
+                title="停止运行"
+                className="stop-button"
+                disabled={!connected || !ownsRun || busy}
+                onClick={stop}
+              >
+                <Square />
+              </IconButton>
+            )}
           {resume && !draft.trim() ? (
             <IconButton title="接着上一轮继续" className="send-button" onClick={resume}>
               <Play />

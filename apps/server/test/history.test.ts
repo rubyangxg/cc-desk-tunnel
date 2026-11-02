@@ -278,3 +278,27 @@ test('one huge run is paged by UTF-8 bytes without dropping or repeating events'
   assert.equal(delta.mode, 'replace', 'a large incremental gap also uses bounded tail pages');
   assert.ok(delta.events.length < expected.length);
 });
+
+test('cached session totals never carry across native account rotation', (t) => {
+  const { store, session } = fixture(t);
+  const runId = randomUUID();
+  const metric = { type: 'native.metrics' as const, context: null, usage: null, rateLimits: null };
+  store.append(session.id, runId, {
+    type: 'native.session',
+    nativeSessionId: session.id,
+    model: '',
+    version: '',
+  });
+  store.append(session.id, runId, metric);
+  assert.deepEqual(store.lastMetrics(session.id), metric);
+  const selected = store.selectAccount(session.id, randomUUID());
+  assert.equal(store.lastMetrics(session.id), null);
+  store.append(session.id, runId, {
+    type: 'native.session',
+    nativeSessionId: selected.nativeSessionId!,
+    model: '',
+    version: '',
+  });
+  store.append(session.id, runId, metric);
+  assert.deepEqual(store.lastMetrics(session.id), metric);
+});

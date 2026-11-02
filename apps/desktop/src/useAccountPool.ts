@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { NativeMetrics, ServerPoolState } from '@cc-desk-tunnel/protocol';
 import type { ConnectionProfile } from './connections.ts';
 import type { PoolSettings, Quotas } from './accountPool.ts';
+import { usePrefs } from './prefs.ts';
 
 const key = 'proxy-account-pool';
 const connectionKey = (profile: ConnectionProfile) =>
@@ -32,6 +33,9 @@ function settings(): PoolSettings {
 }
 
 export function useAccountPool(profiles: ConnectionProfile[]) {
+  const { quotaReads } = usePrefs();
+  const wanted = useRef(quotaReads);
+  wanted.current = quotaReads;
   const [config, setConfig] = useState(settings);
   const currentConfig = useRef(config);
   currentConfig.current = config;
@@ -80,7 +84,7 @@ export function useAccountPool(profiles: ConnectionProfile[]) {
     setConfig(next);
   }, []);
   const refresh = useCallback(
-    (accounts = current.current): Promise<Quotas> => {
+    (accounts = current.current, force = true): Promise<Quotas> => {
       if (pending.current) return pending.current;
       if (!window.desktop?.probeQuota) return Promise.resolve(latest.current);
       setRefreshing(true);
@@ -97,7 +101,10 @@ export function useAccountPool(profiles: ConnectionProfile[]) {
                 let details:
                   Awaited<ReturnType<NonNullable<Window['desktop']>['profilePool']>> | undefined;
                 try {
-                  details = await window.desktop?.profilePool?.(profile.id);
+                  details = await window.desktop?.profilePool?.(profile.id, {
+                    type: 'pool.status',
+                    refresh: force || wanted.current,
+                  });
                 } catch (error) {
                   if (!(error instanceof Error) || !error.message.includes('不支持账号池'))
                     throw error;
@@ -169,10 +176,10 @@ export function useAccountPool(profiles: ConnectionProfile[]) {
     let cancelled = false;
     if (pending.current)
       void pending.current.then(() => {
-        if (!cancelled) void refresh();
+        if (!cancelled) void refresh(undefined, false);
       });
-    else void refresh();
-    const timer = setInterval(() => void refresh(), 60_000);
+    else void refresh(undefined, false);
+    const timer = setInterval(() => void refresh(undefined, false), 60_000);
     return () => {
       cancelled = true;
       clearInterval(timer);

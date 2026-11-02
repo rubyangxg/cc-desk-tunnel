@@ -30,18 +30,27 @@ concurrency:
 # The steps that download Electron and the packaging tools are tried a second time after a minute: those
 # downloads now and then time out.
 jobs:
+  # The server image of the release, for amd64 and arm64 (see images.yml).
+  images:
+    if: inputs.release != ''
+    uses: ./.github/workflows/images.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      tag: ${{ inputs.release }}
   windows:
     runs-on: windows-2022
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
       # Electron and the packaging tools, kept from one run to the next: they are fetched from release pages
       # that now and then time out, and change only with the versions the lock file names.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/AppData/Local/electron/Cache
@@ -63,10 +72,26 @@ jobs:
       # Ends with the packaged program started offline; a package that does not start fails here.
       - run: npm run package:windows || (sleep 60 && npm run package:windows)
         shell: bash
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-x64
           path: artifacts/windows/*.exe
+          if-no-files-found: error
+          retention-days: 30
+      - run: npm run package:cli
+        shell: bash
+      - run: |
+          $folder = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\ccdt"
+          tar -xf (Get-Item artifacts/cli/*.zip).FullName -C $folder
+          & "$folder\ccdt\install.ps1"
+          $env:Path = [Environment]::GetEnvironmentVariable('Path', 'User') + ';' + $env:Path
+          ccdt --version
+          if ($LASTEXITCODE) { throw 'The installed ccdt did not start.' }
+        shell: pwsh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cli-windows-x64
+          path: artifacts/cli/*.zip
           if-no-files-found: error
           retention-days: 30
   # The .deb, built and then installed the way a user installs it, and started from where it was installed:
@@ -76,15 +101,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb imagemagick
       # Electron and the packaging tools, kept from one run to the next: they are fetched from release pages
       # that now and then time out, and change only with the versions the lock file names.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/AppData/Local/electron/Cache
@@ -104,13 +129,13 @@ jobs:
       - run: xvfb-run -a -s "-screen 0 1280x900x24" node scripts/smoke-posix-package.mjs "/opt/CC Desk Tunnel/cc-desk-tunnel"
         env:
           SMOKE_SCREENSHOT: artifacts/linux/window-x64.png
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-x64
           path: artifacts/linux/*.deb
           if-no-files-found: error
           retention-days: 30
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-x64-window
           path: artifacts/linux/*.png
@@ -120,8 +145,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - run: npm ci --include=dev --workspace=@cc-desk-tunnel/desktop --workspace=@cc-desk-tunnel/protocol
@@ -131,7 +156,7 @@ jobs:
           version="$(node -p "require('./apps/desktop/package.json').version")"
           mkdir -p artifacts/server
           node scripts/package-server.mjs "artifacts/server/cc-desk-tunnel-server-$version.tar.gz"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: server
           path: artifacts/server/*.tar.gz
@@ -152,20 +177,20 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: server
           path: artifacts/server
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/docker/Dockerfile
           target: node
           load: true
           tags: cc-desk-tunnel-node:local
-          cache-from: type=gha,scope=image-${{ runner.arch }}
+          cache-from: type=gha,scope=image-${{ matrix.arch }}
       - run: |
           plain="$(cd artifacts/server && ls cc-desk-tunnel-server-*.tar.gz)"
           mkdir -p artifacts/prebuilt && chmod 777 artifacts/prebuilt
@@ -174,7 +199,7 @@ jobs:
             -v "$PWD/artifacts/server:/tmp/in:ro" -v "$PWD/artifacts/prebuilt:/tmp/out" \
             cc-desk-tunnel-node:local \
             bash /tmp/prebuild-server.sh "/tmp/in/$plain" "/tmp/out/${plain%.tar.gz}-linux-${{ matrix.arch }}.tar.gz"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: server-prebuilt-${{ matrix.arch }}
           path: artifacts/prebuilt/*.tar.gz
@@ -185,8 +210,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -214,13 +239,13 @@ jobs:
           target: default
           disable-animations: true
           script: gradle -p apps/mobile/android connectedDebugAndroidTest
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: android-unsigned
           path: apps/mobile/android/app/build/outputs/apk/release/app-release-unsigned.apk
           if-no-files-found: error
           retention-days: 30
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: android-test-reports
@@ -235,28 +260,29 @@ jobs:
       needs.windows.result == 'success' &&
       needs.server.result == 'success' &&
       needs.server-prebuilt.result == 'success' &&
+      needs.images.result == 'success' &&
       ((inputs.android == true && needs.android.result == 'success') ||
        (inputs.android != true && needs.android.result == 'skipped')) &&
       ((inputs.target == 'all' && needs.linux.result == 'success') ||
        (inputs.target != 'all' && needs.linux.result == 'skipped'))
-    needs: [windows, linux, server, server-prebuilt, android]
+    needs: [windows, linux, server, server-prebuilt, android, images]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
-          pattern: '{windows-x64,linux-x64,server,server-prebuilt-*}'
+          pattern: '{windows-x64,cli-windows-x64,linux-x64,server,server-prebuilt-*}'
           merge-multiple: true
           path: downloaded
       - run: |
           mkdir release
-          find downloaded -maxdepth 1 -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.deb' -o -name '*.tar.gz' \) -exec mv {} release/ \;
+          find downloaded -maxdepth 1 -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.deb' -o -name '*.tar.gz' -o -name 'ccdt-*.zip' \) -exec mv {} release/ \;
           node scripts/release-manifest.mjs release
           test "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish --jq '[.isDraft, .targetCommitish] | @tsv')" = "$(printf 'true\t%s' "$GITHUB_SHA")"
           gh release upload "$TAG" release/* --repo "$GITHUB_REPOSITORY" --clobber

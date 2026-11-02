@@ -21,17 +21,21 @@ import { ago, folderName, isInside, pathKey } from './paths.ts';
 import { setPrefs, toggled, usePrefs } from './prefs.ts';
 import { useConnectionName } from './shared.ts';
 import { IconButton } from './ui.tsx';
+import { terminalState } from './RunStatus.tsx';
 import type { MenuPosition } from './ui.tsx';
 
 function activity(session: Session, connected: boolean, quotaWaiting = false) {
   if (!session.activeRun) return ago(Date.parse(session.updatedAt));
   if (!connected) return '状态待确认';
   if (quotaWaiting) return '等待额度';
-  if (session.activeRun.surface === 'terminal') return '原生终端';
+  if (session.activeRun.surface === 'terminal') return terminalState(session.activeRun.activity);
   if (session.activeRun.waiting === 'background') return '后台任务';
   if (session.activeRun.status !== 'awaiting_approval') return '运行中';
   return session.activeRun.waiting === 'question' ? '等待回答' : '等待审批';
 }
+
+const breathing = (run: NonNullable<Session['activeRun']>) =>
+  run.activity ? run.activity === 'working' : run.status !== 'awaiting_approval';
 
 // A list of sessions shows its latest few until it is listed in full.
 const PAGE = 5;
@@ -291,7 +295,7 @@ export default function Sidebar({
           <strong>{session.title}</strong>
           {session.activeRun && (
             <span
-              className={`running-dot${connected && !quotaWaits.includes(session.id) && session.activeRun.status !== 'awaiting_approval' ? ' breathing' : ''}`}
+              className={`running-dot${connected && !quotaWaits.includes(session.id) && breathing(session.activeRun) ? ' breathing' : ''}`}
             />
           )}
           <small title={sources[session.id]}>
