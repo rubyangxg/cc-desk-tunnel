@@ -13,6 +13,7 @@ mkdir -p "$TEMP/bin" "$MOCK_RELEASE"
 program() {
   mkdir -p "$1/deploy/docker" "$1/apps/desktop"
   for file in manage.sh install.sh; do tr -d '\r' < "$ROOT/deploy/$file" > "$1/deploy/$file"; done
+  cp -r "$ROOT/deploy/auto-upgrade" "$1/deploy/"
   cp "$ROOT/deploy/compose.yml" "$1/deploy/"
   cp "$ROOT/deploy/docker/compose.yaml" "$1/deploy/docker/"
   printf '{\n  "version": "%s",\n}\n' "$2" > "$1/apps/desktop/package.json"
@@ -51,10 +52,15 @@ while (($#)); do
   shift
 done
 file="$MOCK_RELEASE/${url##*/}"
-[[ "$url" == https://github.com/rubyangxg/cc-desk-tunnel/releases/* && -f "$file" ]] || exit 22
+[[ "$url" == "https://github.com/${MOCK_REPO:-rubyangxg/cc-desk-tunnel}/releases/"* && -f "$file" ]] || exit 22
 version="$(ls "$MOCK_RELEASE" | sed -n 's/^cc-desk-tunnel-server-\(.*\)\.tar\.gz$/\1/p')"
 [[ "$url" == */latest/download/* || "$url" == */download/v$version/* ]] || exit 22
 if [[ -n "$output" ]]; then cp "$file" "$output"; else cat "$file"; fi
+MOCK
+cat > "$TEMP/bin/systemctl" <<'MOCK'
+#!/usr/bin/env bash
+echo "systemctl $*" >> "$MOCK_LOG"
+case "$1" in is-enabled) echo enabled ;; is-active) echo active ;; esac
 MOCK
 chmod +x "$TEMP/bin/"*
 
@@ -181,6 +187,9 @@ release 1.4.0
 printf 'y\n' | bash "$TEMP/install.sh" > "$TEMP/reinstall.log"
 grep -q "PROXY_IMAGE='ghcr.io/rubyangxg/cc-desk-tunnel:1.4.0'" "$TEMP/installed/.local/docker.env"
 test "$(grep -c '^pull ' "$MOCK_LOG")" = 1
+# Automatic upgrades stay off: neither installing nor upgrading touches systemd.
+if grep -q systemctl "$MOCK_LOG"; then echo 'systemd was touched.' >&2; exit 1; fi
+test ! -e "$TEMP/units"
 grep -q '已有部署：.*（运行版本 1.3.0），最新版本 1.4.0' "$TEMP/reinstall.log"
 # The version shown is the one running, not the program here, which an upgrade from the client leaves behind.
 release 1.5.0
@@ -200,4 +209,84 @@ printf "n\n" | STOPPED=1 bash "$TEMP/install.sh" > "$TEMP/stopped.log"
 grep -q '（运行版本 1.4.0），' "$TEMP/stopped.log"
 bash "$CC_DESK_TUNNEL_COMMAND" uninstall > /dev/null
 test ! -e "$CC_DESK_TUNNEL_COMMAND"
-echo 'PASS: image choice, failures, release upgrade, installer, management command.'
+
+# A fork's releases: CC_DESK_TUNNEL_REPO is where manage.sh looks, and only there.
+export PROXY_DEPLOY_CONFIG="$TEMP/config.env"
+release 1.3.0
+deployment 1.2.3
+CC_DESK_TUNNEL_REPO=someone/fork manage upgrade > /dev/null 2>&1
+grep -q '"version": "1.2.3"' "$DEPLOYED/apps/desktop/package.json"
+CC_DESK_TUNNEL_REPO=someone/fork MOCK_REPO=someone/fork manage upgrade > /dev/null
+grep -q '"version": "1.3.0"' "$DEPLOYED/apps/desktop/package.json"
+
+# The opt-in automatic upgrade (deploy/auto-upgrade): forward only, from the version that actually runs.
+export CC_DESK_TUNNEL_DIR="$DEPLOYED" CC_DESK_TUNNEL_AUTO_UPGRADE_STATE="$TEMP/auto"
+auto() {
+  rm -rf "$TEMP/auto"
+  bash "$ROOT/deploy/auto-upgrade/cc-desk-tunnel-auto-upgrade" > "$TEMP/auto.log" 2>&1
+}
+nothing_fetched() {
+  grep -q "\"version\": \"$1\"" "$DEPLOYED/apps/desktop/package.json"
+  test -z "$(ls -A "$TEMP/auto/backups")"
+  if grep -qE '^compose .* (stop|up)( |$)' "$MOCK_LOG"; then echo 'The service was touched.' >&2; exit 1; fi
+}
+# An older release (the upstream 0.3.9 against a running 0.4.45) is skipped before any download or backup.
+release 1.2.0
+deployment 1.2.3
+auto
+grep -qx 'skip remote=1.2.0 is not newer than local=1.2.3' "$TEMP/auto.log"
+nothing_fetched 1.2.3
+# The program here is older than what runs (upgraded from the client): the running version counts.
+release 1.4.0
+deployment 1.2.3
+MOCK_RUNNING=1.4.7 auto
+grep -qx 'skip remote=1.4.0 is not newer than local=1.4.7' "$TEMP/auto.log"
+nothing_fetched 1.2.3
+release 1.4.7
+deployment 1.2.3
+MOCK_RUNNING=1.4.7 auto
+grep -qx 'already current version=1.4.7' "$TEMP/auto.log"
+nothing_fetched 1.2.3
+# Newer: backed up, unpacked and the container replaced.
+release 1.5.0
+deployment 1.2.3
+MOCK_RUNNING=1.4.7 auto
+grep -q '^upgrade-success from=1.4.7 to=1.5.0 ' "$TEMP/auto.log"
+grep -q '"version": "1.5.0"' "$DEPLOYED/apps/desktop/package.json"
+test "$(image)" = ghcr.io/rubyangxg/cc-desk-tunnel:1.5.0
+ls "$TEMP/auto/backups/"*-1.5.0.tar.gz "$TEMP/auto/backups/"*-docker.env > /dev/null
+grep -qE '^compose .* stop$' "$MOCK_LOG"
+# A tampered archive goes no further than its checksum.
+echo tampered >> "$MOCK_RELEASE/cc-desk-tunnel-server-1.5.0.tar.gz"
+deployment 1.2.3
+if auto; then echo 'The automatic upgrade took a tampered archive.' >&2; exit 1; fi
+nothing_fetched 1.2.3
+# The repository is configurable and defaults to rubyangxg/cc-desk-tunnel.
+release 1.5.0
+deployment 1.2.3
+if CC_DESK_TUNNEL_REPO=someone/fork auto; then echo 'The automatic upgrade ignored CC_DESK_TUNNEL_REPO.' >&2; exit 1; fi
+nothing_fetched 1.2.3
+CC_DESK_TUNNEL_REPO=someone/fork MOCK_REPO=someone/fork auto
+grep -q '^upgrade-success from=1.2.3 to=1.5.0 ' "$TEMP/auto.log"
+
+# manage.sh auto-upgrade: off until enabled, and disable takes it away again.
+export CC_DESK_TUNNEL_SYSTEMD_DIR="$TEMP/units" CC_DESK_TUNNEL_SBIN="$TEMP/sbin"
+deployment 1.2.3
+manage auto-upgrade status | grep -q '未安装（默认关闭）'
+if grep -q systemctl "$MOCK_LOG"; then echo 'systemd was touched.' >&2; exit 1; fi
+CC_DESK_TUNNEL_REPO=someone/fork manage auto-upgrade enable > /dev/null
+test -x "$TEMP/sbin/cc-desk-tunnel-auto-upgrade"
+test -f "$TEMP/units/cc-desk-tunnel-auto-upgrade.service" -a -f "$TEMP/units/cc-desk-tunnel-auto-upgrade.timer"
+dropin="$TEMP/units/cc-desk-tunnel-auto-upgrade.service.d/deployment.conf"
+grep -qx "Environment=\"CC_DESK_TUNNEL_DIR=$DEPLOYED\"" "$dropin"
+grep -qx 'Environment="CC_DESK_TUNNEL_REPO=someone/fork"' "$dropin"
+grep -qx "Environment=\"PROXY_DEPLOY_CONFIG=$PROXY_DEPLOY_CONFIG\"" "$dropin"
+grep -qx 'systemctl enable --now cc-desk-tunnel-auto-upgrade.timer' "$MOCK_LOG"
+grep -q 'Description=.*SHA256SUMS' "$TEMP/units/cc-desk-tunnel-auto-upgrade.service"
+manage auto-upgrade status | grep -q 'enabled / active（来源 someone/fork）'
+if manage auto-upgrade sometimes > /dev/null 2>&1; then echo 'auto-upgrade took an unknown action.' >&2; exit 1; fi
+manage auto-upgrade disable > /dev/null
+grep -qx 'systemctl disable --now cc-desk-tunnel-auto-upgrade.timer' "$MOCK_LOG"
+test -z "$(ls -A "$TEMP/units")" -a -z "$(ls -A "$TEMP/sbin")"
+manage auto-upgrade status | grep -q '未安装'
+echo 'PASS: image choice, failures, release upgrade, installer, management command, repository, automatic upgrade.'

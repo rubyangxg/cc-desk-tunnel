@@ -154,4 +154,5 @@ NOTICE
   fi
   echo "本脚本没有修改防火墙、nginx 或 SSH 配置，也没有安装系统软件。"
 }
-main "$@"
+# Sourced with CC_DESK_TUNNEL_LIBRARY=1 (deploy/auto-upgrade), only the definitions above are wanted.
+[[ -n "${CC_DESK_TUNNEL_LIBRARY:-}" ]] || main "$@"
