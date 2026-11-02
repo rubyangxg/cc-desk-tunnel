@@ -34,7 +34,9 @@ for (const {
   confirmedContinue = false,
   taskConfirmation = false,
   legacyTaskConfirmation = false,
+  targetExhausted = false,
 } of [
+  { manual: true, loseAck: false, targetExhausted: true },
   { manual: false, loseAck: false, queued: true, continueQuota: true, taskConfirmation: true },
   {
     manual: false,
@@ -92,7 +94,7 @@ for (const {
   { manual: false, loseAck: false, away: true },
   { manual: false, loseAck: false, queued: true, loseQueueAck: true },
 ])
-  test(`cross-server ${manual ? 'manual' : 'quota'}${goal ? ' goal' : ''}${legacyGoal ? ' legacy goal' : ''}${loseAck ? ' lost acknowledgement' : ''}${paginated ? ' paginated' : ''}${localAvailable ? ' available local account' : ''}${queued ? ' queued' : ''}${paused ? ' paused' : ''}${stoppedSend ? ' stopped resend' : ''}${away ? ' other device' : ''}${loseQueueAck ? ' lost queue acknowledgement' : ''}${quotaQueue ? ' idle quota queue' : ''}${legacyQueue ? ' legacy' : ''}${userPaused ? ' user paused' : ''}${prioritySend ? ' weekly priority send' : ''}${priorityBlocked ? ' unresolved tool' : ''}${manualPriority ? ' manual preference' : ''}${overnight ? ' overnight weekly recovery' : ''}${otherRunning ? ' other active task' : ''}${storageAbort ? ' storage abort' : ''}${storageFull ? ' storage full' : ''}${continueQuota ? ' continue button' : ''}${continueUnconfirmed ? ' unconfirmed receipt' : ''}${continueTimeout ? ' timeout' : ''}${continueLocal ? ' local success' : ''}${frozenQueue ? ' frozen recovery' : ''}${legacyRecovery ? ' old server' : ''}${confirmedContinue ? ' user verified' : ''}${taskConfirmation ? ' historical tasks' : ''}${legacyTaskConfirmation ? ' legacy confirmation' : ''} handoff retains history, submits once and survives reload`, async ({
+  test(`cross-server ${manual ? 'manual' : 'quota'}${goal ? ' goal' : ''}${legacyGoal ? ' legacy goal' : ''}${loseAck ? ' lost acknowledgement' : ''}${paginated ? ' paginated' : ''}${localAvailable ? ' available local account' : ''}${queued ? ' queued' : ''}${paused ? ' paused' : ''}${stoppedSend ? ' stopped resend' : ''}${away ? ' other device' : ''}${loseQueueAck ? ' lost queue acknowledgement' : ''}${quotaQueue ? ' idle quota queue' : ''}${legacyQueue ? ' legacy' : ''}${userPaused ? ' user paused' : ''}${prioritySend ? ' weekly priority send' : ''}${priorityBlocked ? ' unresolved tool' : ''}${manualPriority ? ' manual preference' : ''}${overnight ? ' overnight weekly recovery' : ''}${otherRunning ? ' other active task' : ''}${storageAbort ? ' storage abort' : ''}${storageFull ? ' storage full' : ''}${continueQuota ? ' continue button' : ''}${continueUnconfirmed ? ' unconfirmed receipt' : ''}${continueTimeout ? ' timeout' : ''}${continueLocal ? ' local success' : ''}${frozenQueue ? ' frozen recovery' : ''}${legacyRecovery ? ' old server' : ''}${confirmedContinue ? ' user verified' : ''}${taskConfirmation ? ' historical tasks' : ''}${legacyTaskConfirmation ? ' legacy confirmation' : ''}${targetExhausted ? ' exhausted target' : ''} handoff retains history, submits once and survives reload`, async ({
     page,
   }) => {
     const device = { id: randomUUID(), name: 'test computer', platform: 'linux' as const };
@@ -494,7 +496,7 @@ for (const {
         });
       });
     await page.addInitScript(
-      ({ device, manual, prioritySend, manualPriority, overnight }) => {
+      ({ device, manual, prioritySend, manualPriority, overnight, targetExhausted }) => {
         const profiles = [1, 2].map((n) => ({
           id: n === 1 ? 'default' : 'second',
           name: `服务器${n}`,
@@ -549,6 +551,55 @@ for (const {
             onNotifyClicked: subscription,
             onUpdateProgress: subscription,
             notify: noop,
+            // A pool service whose every account is at 100% reports no schedulable limits.
+            ...(targetExhausted
+              ? {
+                  profilePool: async (id: string, command: { refresh?: boolean }) => {
+                    const calls = ((window as unknown as { poolCalls?: string[] }).poolCalls ??=
+                      []);
+                    calls.push(`${id}:${!!command.refresh}`);
+                    const serverTime = Date.now();
+                    const utilization = id === 'second' ? 100 : 10;
+                    const limits = {
+                      available: true,
+                      measuredAt: new Date(serverTime).toISOString(),
+                      windows: [
+                        {
+                          name: 'five_hour',
+                          utilization,
+                          resetsAt: new Date(serverTime + 3600000).toISOString(),
+                        },
+                      ],
+                    };
+                    return {
+                      state: {
+                        serverTime,
+                        refreshing: false,
+                        settings: {
+                          enabled: true,
+                          strategy: 'reset',
+                          order: [],
+                          preferredId: 'default',
+                        },
+                        accounts: [
+                          {
+                            id: 'default',
+                            name: '主账号',
+                            enabled: true,
+                            loggedIn: true,
+                            login: null,
+                            busy: false,
+                            checkedAt: serverTime - 5000,
+                            blockedUntil: null,
+                            limits,
+                          },
+                        ],
+                      },
+                      limits: id === 'second' ? null : limits,
+                    };
+                  },
+                }
+              : {}),
             probeQuota: async (id: string) => {
               const initial = firstProbe;
               if (id === 'default') firstProbe = false;
@@ -589,7 +640,7 @@ for (const {
           },
         });
       },
-      { device, manual, prioritySend, manualPriority, overnight },
+      { device, manual, prioritySend, manualPriority, overnight, targetExhausted },
     );
     if (overnight) await page.clock.install();
     await page.goto('/');
@@ -798,8 +849,43 @@ for (const {
       expect(errors).toEqual([]);
       return;
     }
+    if (manual && targetExhausted) {
+      await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
+      const picker = page.getByLabel('续接到服务器', { exact: true });
+      await picker.focus();
+      const option = picker.locator('option[value="second"]');
+      await expect(option).toHaveText('服务器2（5 小时额度已耗尽）');
+      await expect(option).toBeDisabled();
+      // The picker uses the server's cached snapshot and rechecks only when nothing is schedulable there.
+      const calls = await page.evaluate(
+        () => (window as unknown as { poolCalls: string[] }).poolCalls,
+      );
+      expect(calls.indexOf('second:false')).toBeGreaterThanOrEqual(0);
+      expect(calls.indexOf('second:false')).toBeLessThan(calls.indexOf('second:true'));
+      // A picker opened before the quota arrived can still submit that server; the switch checks again.
+      await picker.evaluate((element: HTMLSelectElement) => {
+        element.value = 'second';
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await expect(
+        page.getByText('服务器2 5 小时额度已耗尽，未切换服务器；请选择其他服务器或等待额度重置。'),
+      ).toBeVisible();
+      await expect(page.getByLabel('当前服务器：服务器1', { exact: true })).toBeVisible();
+      expect(
+        sent.filter((m) =>
+          ['session.create', 'session.handoff', 'run.handoff', 'message.send'].includes(m.type),
+        ),
+      ).toHaveLength(0);
+      expect(source.messageQueue).toBeUndefined();
+      expect(errors).toEqual([]);
+      return;
+    }
     if (manual) {
       await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
+      const option = page
+        .getByLabel('续接到服务器', { exact: true })
+        .locator('option[value="second"]');
+      await expect(option).toBeEnabled();
       await page.getByLabel('续接到服务器', { exact: true }).selectOption('second');
     }
     await expect(page.getByLabel('当前服务器：服务器2', { exact: true })).toBeVisible();

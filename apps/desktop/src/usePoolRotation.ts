@@ -7,6 +7,7 @@ import {
   handoffFor,
   handoffTimeoutMs,
   poolCandidates,
+  quotaBlock,
   quotaFailure,
   quotaPausedQueue,
 } from './accountPool.ts';
@@ -345,7 +346,7 @@ export function usePoolRotation(options: {
     rotating.current = true;
     setWorking(true);
     try {
-      const quotas = await pool.refresh();
+      const quotas = await pool.refresh(undefined, true, true);
       const next = poolCandidates(
         current.current.profiles.profiles,
         quotas,
@@ -399,6 +400,13 @@ export function usePoolRotation(options: {
     try {
       const target = profiles.profiles.find((profile) => profile.id === targetId);
       if (!target || target.id === id) throw new Error('请选择另一台服务器。');
+      // Check the target before anything is frozen: a manual pick of an exhausted server would only stall the task.
+      const quotas = await pool.refresh([target], true, true);
+      const blocked = quotaBlock(quotas[targetId]);
+      if (blocked)
+        throw new Error(
+          `${target.name} ${blocked}，未切换服务器；请选择其他服务器或等待额度重置。`,
+        );
       const handoff = await prepare(session, [id], true, true);
       if (
         client.state.status !== 'connected' ||
@@ -440,13 +448,15 @@ export function usePoolRotation(options: {
     );
     if (!session || Date.now() < nextAttempt.current) return;
     const timer = setTimeout(() => {
+      // Another rotation path may have started inside this 150 ms window; only one may own the switch.
+      if (rotating.current) return;
       nextAttempt.current = Date.now() + 55_000;
       rotating.current = true;
       setWorking(true);
       setNotice('正在选择可用账号，稍后自动发送…');
       void (async () => {
         try {
-          const quotas = await pool.refresh();
+          const quotas = await pool.refresh(undefined, true, true);
           const live = current.current;
           const latest = client.state.sessions.find((item) => item.id === session.id);
           if (
@@ -505,6 +515,7 @@ export function usePoolRotation(options: {
       !pool.config.enabled ||
       state.status !== 'connected' ||
       working ||
+      rotating.current ||
       options.busy ||
       options.terminalOpen
     )
@@ -519,11 +530,16 @@ export function usePoolRotation(options: {
     const runId = session.activeRun!.id;
     if (cancelledRuns.current.has(runId) || Date.now() < nextAttempt.current) return;
     const timer = setTimeout(() => {
+      // Another rotation path may have started inside this 150 ms window; only one may own the switch.
+      if (rotating.current || current.current.busy || current.current.terminalOpen) return;
       nextAttempt.current = Date.now() + 55_000;
+      // Hold the same lock as the queued-send, manual-transfer and send-after-quota paths, so a second path
+      // cannot freeze or hand over this session while run.handoff is in flight.
+      rotating.current = true;
       setWorking(true);
       void (async () => {
         try {
-          const quotas = await pool.refresh();
+          const quotas = await pool.refresh(undefined, true, true);
           const next = poolCandidates(
             current.current.profiles.profiles,
             quotas,
@@ -597,12 +613,13 @@ export function usePoolRotation(options: {
             `跨服务器接力已暂停：${error instanceof Error ? error.message : '请求失败'}`,
           );
         } finally {
+          rotating.current = false;
           setWorking(false);
         }
       })();
     }, 150);
     return () => clearTimeout(timer);
-  }, [state, pool.quotas, pool.config.enabled, options.busy, options.terminalOpen]);
+  }, [state, pool.quotas, pool.config.enabled, options.busy, options.terminalOpen, working]);
 
   useEffect(() => {
     if (state.status === 'connected') {
@@ -645,7 +662,7 @@ export function usePoolRotation(options: {
     setNotice(`${profiles.initial.name} 连接失败，已禁用调度，正在查找其他代理服务…`);
     void (async () => {
       try {
-        const quotas = await pool.refresh();
+        const quotas = await pool.refresh(undefined, true, true);
         const live = current.current;
         if (cancelled || !live.profiles.pool.config.enabled) return;
         const attempted = [...new Set([...(live.profiles.handoff?.attempted ?? []), id])];
@@ -936,6 +953,8 @@ export function usePoolRotation(options: {
     if (!failed && !exhausted(pool.quotas[id])) return;
     if (Date.now() < nextAttempt.current) return;
     const timer = setTimeout(() => {
+      // Another rotation path may have started inside this 150 ms window; only one may own the switch.
+      if (rotating.current) return;
       nextAttempt.current = Date.now() + 55_000;
       rotating.current = true;
       setWorking(true);

@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { exhausted, handoffFor, poolCandidates, quotaFailure } from '../src/accountPool.ts';
+import {
+  exhausted,
+  exhaustedPoolLimits,
+  handoffFor,
+  poolCandidates,
+  quotaBlock,
+  quotaFailure,
+} from '../src/accountPool.ts';
 
 const now = Date.now();
 const profiles = ['a', 'b', 'c'].map((id) => ({
@@ -186,4 +193,70 @@ test('global reset priority spends the soonest weekly allowance across services 
     poolCandidates(profiles, quotas, settings, [], now).map((p) => p.id),
     ['a', 'c'],
   );
+});
+
+test('a manual target is refused only on a known exhausted quota', () => {
+  assert.equal(quotaBlock(undefined, now), null);
+  assert.equal(quotaBlock(quota(40, 1), now), null);
+  assert.equal(quotaBlock(quota(100, 1), now), '5 小时额度已耗尽');
+  assert.equal(quotaBlock(quota(10, 1, { blockedUntil: now + 60_000 }), now), '额度已耗尽');
+  const weekly = quota(10, 1);
+  weekly.limits.windows.push({
+    name: 'seven_day',
+    utilization: 100,
+    resetsAt: new Date(now + 86_400_000).toISOString(),
+  });
+  assert.equal(quotaBlock(weekly, now), '每周额度已耗尽');
+  // An old or failed reading is unknown, not proof of exhaustion.
+  assert.equal(quotaBlock({ ...quota(100, 0), checkedAt: now - 600_000 }, now), null);
+  assert.equal(quotaBlock({ ...quota(20, 1), error: '额度查询超时。' }, now), null);
+});
+
+test('a pool service with every fresh account at 100% reports exhausted limits, not unknown', () => {
+  const account = (id, utilization, extra = {}) => ({
+    id,
+    name: id,
+    enabled: true,
+    loggedIn: true,
+    login: null,
+    busy: false,
+    checkedAt: now - 10_000,
+    blockedUntil: null,
+    limits: {
+      available: true,
+      windows: [
+        {
+          name: 'five_hour',
+          utilization,
+          resetsAt: new Date(now + (id === 'default' ? 3 : 1) * 3600_000).toISOString(),
+        },
+      ],
+    },
+    ...extra,
+  });
+  const state = (accounts) => ({
+    serverTime: now,
+    refreshing: false,
+    settings: { enabled: true, strategy: 'reset', order: [], preferredId: 'default' },
+    accounts,
+  });
+  const limits = exhaustedPoolLimits(
+    state([account('default', 100), account('00000000-0000-4000-8000-000000000001', 100)]),
+  );
+  assert.ok(limits);
+  assert.equal(limits.windows[0].resetsAt, new Date(now + 3600_000).toISOString());
+  assert.ok(exhausted({ limits, checkedAt: Date.parse(limits.measuredAt) }, now));
+  // One schedulable account, a stale reading, or no reading at all keeps the server unknown.
+  assert.equal(
+    exhaustedPoolLimits(
+      state([account('default', 100), account('00000000-0000-4000-8000-000000000001', 30)]),
+    ),
+    null,
+  );
+  assert.equal(
+    exhaustedPoolLimits(state([account('default', 100, { checkedAt: now - 600_000 })])),
+    null,
+  );
+  assert.equal(exhaustedPoolLimits(state([])), null);
+  assert.equal(exhaustedPoolLimits(null), null);
 });

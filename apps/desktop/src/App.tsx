@@ -64,6 +64,7 @@ import { loadProjects, saveProjects } from './projects.ts';
 import type { ConnectionProfile } from './connections.ts';
 import AccountPoolPanel from './AccountPoolPanel.tsx';
 import { usePoolRotation } from './usePoolRotation.ts';
+import { fiveHour, quotaBlock } from './accountPool.ts';
 import { exportSession } from './exportSession.ts';
 import { historyKey, joinedHistory, sharedHistory } from './sharedHistory.ts';
 import type { SharedHistory } from './sharedHistory.ts';
@@ -1952,6 +1953,8 @@ export function App({
                     disabled={
                       controlsDisabled || away || sessions.some((session) => !!session.activeRun)
                     }
+                    // Polling is off without the pool, so read the targets' cached quotas when the picker opens.
+                    onFocus={() => void profiles.pool.refresh(undefined, true, true)}
                     onChange={(event) => {
                       if (draft.trim()) {
                         setError('请先发送或清空草稿，再切换服务器。');
@@ -1965,11 +1968,22 @@ export function App({
                     </option>
                     {profiles.profiles
                       .filter((profile) => profile.id !== profileId)
-                      .map((profile) => (
-                        <option key={profile.id} value={profile.id}>
-                          {profile.name}
-                        </option>
-                      ))}
+                      .map((profile) => {
+                        const quota = profiles.pool.quotas[profile.id];
+                        const blocked = quotaBlock(quota);
+                        const used = fiveHour(quota)?.utilization;
+                        const note = blocked
+                          ? `（${blocked}）`
+                          : quota?.limits?.available && !quota.error && typeof used === 'number'
+                            ? `（5 小时剩余 ${Math.max(0, Math.round(100 - used))}%）`
+                            : '';
+                        return (
+                          <option key={profile.id} value={profile.id} disabled={!!blocked}>
+                            {profile.name}
+                            {note}
+                          </option>
+                        );
+                      })}
                   </select>
                 </div>
               )}

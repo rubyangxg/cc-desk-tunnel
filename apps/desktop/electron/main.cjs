@@ -485,10 +485,13 @@ handle('profiles:pool', async (_event, id, command) => {
   const { probePool, poolQuota } = await import(
     pathToFileURL(path.join(__dirname, 'quota-probe.mjs')).href
   );
+  // A full recheck runs `claude auth status` and an SDK probe per account; give it time to finish so a slow
+  // but healthy server is not reported as failed.
   const state = await probePool(
     profile,
     (url) => session.defaultSession.resolveProxy(url),
     command,
+    command?.type === 'pool.status' && command.refresh ? 60_000 : 25_000,
   );
   return { state, limits: poolQuota(state) };
 });
