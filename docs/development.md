@@ -37,7 +37,7 @@ Windows 上的 shell 命令与脚本使用 `pwsh.exe`（PowerShell 7）。终端
 
 发布的文件只来自 GitHub 的机器：谁来发布、在哪台电脑上发布，得到的都是同一提交按同一流程构建的文件，构建记录留在该次运行里。
 
-服务端镜像也在这一步发布，不需要另外操作：`package` 调用 `images.yml`，在 GitHub 的 x86_64 和 arm64 机器上各自构建、跑完部署测试（`deploy/test.sh`、`deploy/test-image.sh`）后推送，合成一个双架构标签 `ghcr.io/sun168567/cc-desk-tunnel:X.Y.Z`。镜像没有打出或测试没过，草稿同样不会挂上文件。已经存在的版本标签不会被覆盖：重跑时只核对它属于同一提交。正式发布（或把预发布转正）后，`image-latest.yml` 把 `latest` 指向 GitHub 显示为 Latest 的版本；部署脚本只按版本号拉取，不依赖 `latest`。
+服务端镜像也在这一步发布，不需要另外操作：`package` 调用 `images.yml`，在 GitHub 的 x86_64 和 arm64 机器上各自构建、跑完部署测试（`deploy/test.sh`、`deploy/test-image.sh`）后推送，合成一个双架构标签 `ghcr.io/rubyangxg/cc-desk-tunnel:X.Y.Z`。镜像没有打出或测试没过，草稿同样不会挂上文件。已经存在的版本标签不会被覆盖：重跑时只核对它属于同一提交。正式发布（或把预发布转正）后，`image-latest.yml` 把 `latest` 指向 GitHub 显示为 Latest 的版本；部署脚本只按版本号拉取，不依赖 `latest`。
 
 GHCR 上的包已设为公开，部署时不需要登录；`images` 推送后会匿名检查一次，万一哪天变成私有会在这里失败。手动运行 `images` 时，标签留空只构建和测试，填 `verify-名称` 会推送一个测试用的镜像，不影响正式版本。
 
