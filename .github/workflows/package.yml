@@ -87,6 +87,18 @@ jobs:
           $env:Path = [Environment]::GetEnvironmentVariable('Path', 'User') + ';' + $env:Path
           ccdt --version
           if ($LASTEXITCODE) { throw 'The installed ccdt did not start.' }
+          # Exercise the upgrade while the installed Node executable is still in use.
+          $running = Start-Process -FilePath "$env:LOCALAPPDATA\Programs\ccdt\node.exe" -ArgumentList '-e', 'setInterval(function(){},1000)' -PassThru -WindowStyle Hidden
+          try {
+            Start-Sleep -Milliseconds 500
+            if ($running.HasExited) { throw 'The old runtime exited before the upgrade check.' }
+            & "$folder\ccdt\install.ps1"
+            if ($running.HasExited) { throw 'Updating ccdt stopped the running old runtime.' }
+            ccdt --version
+            if ($LASTEXITCODE) { throw 'The upgraded ccdt did not start.' }
+          } finally {
+            Stop-Process -Id $running.Id -Force -ErrorAction SilentlyContinue
+          }
         shell: pwsh
       - uses: actions/upload-artifact@v7
         with:

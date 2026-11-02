@@ -8,6 +8,7 @@ import {
   observedQuota,
   ObservedQuotas,
   Quotas,
+  statusLineQuota,
   unexpired,
   resultUsage,
 } from '../src/native-controls.ts';
@@ -571,4 +572,71 @@ test('token logins without email cannot share quota between isolated pool accoun
   );
   assert.equal(quotas.of(first)?.windows[0]?.utilization, 2);
   assert.equal(quotas.of(second)?.windows[0]?.utilization, 80);
+});
+
+test("a terminal's status line carries the session and weekly windows of its replies", () => {
+  assert.deepEqual(
+    statusLineQuota({
+      rate_limits: {
+        five_hour: { used_percentage: 23.5, resets_at: 1793325600 },
+        seven_day: { used_percentage: 41 },
+        spend_limit: { used_percentage: 90, resets_at: 1793325600 },
+      },
+    }),
+    [{ name: 'five_hour', utilization: 23.5, resetsAt: new Date(1793325600 * 1000).toISOString() }],
+  );
+  assert.deepEqual(statusLineQuota({ model: {} }), []);
+  assert.deepEqual(statusLineQuota(null), []);
+});
+
+test('what a terminal shows goes to the login last seen, or to the first one seen after it', async () => {
+  const now = Date.now();
+  const later = new Date(now + 3600_000).toISOString();
+  const window = (utilization: number) => [{ name: 'five_hour', utilization, resetsAt: later }];
+  const query = {
+    async usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET() {
+      return { rate_limits_available: false, rate_limits: null };
+    },
+  } as unknown as Query;
+  // Heard before any run or read: it becomes the first login's.
+  const early = new Quotas();
+  assert.deepEqual(early.observeTerminal(window(5), now)?.windows, window(5));
+  assert.deepEqual((await early.through('a', query, { now })).rateLimits?.windows, window(5));
+  // Heard after: the login seen last, whose replies' windows it brings up to date.
+  const known = new Quotas();
+  known.wanted = () => false;
+  known.observe(
+    'a',
+    rateLimitEvent({
+      status: 'allowed',
+      unifiedWindows: { five_hour: { utilization: 0.02, resetsAt: Date.parse(later) / 1000 } },
+    }),
+    now - 1000,
+  );
+  known.observeTerminal(window(9), now);
+  assert.deepEqual((await known.through('a', query, { now })).rateLimits?.windows, window(9));
+});
+
+test('terminal quotas remain within their isolated account even after another login is observed', async () => {
+  const now = Date.now();
+  const window = (utilization: number) => [
+    { name: 'five_hour', utilization, resetsAt: new Date(now + 3600000).toISOString() },
+  ];
+  const account = { apiProvider: 'firstParty', tokenSource: 'CLAUDE_CODE_OAUTH_TOKEN' } as const;
+  const a = '/accounts/a/settings.json',
+    b = '/accounts/b/settings.json';
+  const first = loginOf(account, a),
+    second = loginOf(account, b);
+  const quota = new Quotas();
+  quota.wanted = () => false;
+  const query = {} as Query;
+  quota.observeTerminal(window(12), now, a);
+  assert.deepEqual((await quota.through(first, query, { now })).rateLimits?.windows, window(12));
+  assert.equal((await quota.through(second, query, { now })).rateLimits, null);
+  quota.observeTerminal(window(73), now + 1, b);
+  quota.observeTerminal(window(25), now + 2, a);
+  assert.deepEqual(quota.of(first, now + 2)?.windows, window(25));
+  assert.deepEqual(quota.of(second, now + 2)?.windows, window(73));
+  quota.observeTerminal(window(90), now + 3, '/accounts/c/settings.json');
+  assert.deepEqual(quota.of(second, now + 3)?.windows, window(73));
 });

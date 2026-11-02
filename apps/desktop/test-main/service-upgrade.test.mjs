@@ -4,7 +4,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { upgradeService } from '../electron/service-upgrade.mjs';
 
 // A 0.3.2 service: signs in only a client of protocol 17, and answers an update check with `found`.
-async function upgrade(found, service = '0.3.2', protocol = 17) {
+async function upgrade(found, service = '0.3.2', protocol = 17, confirm, duplicate = false) {
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
   await new Promise((resolve) => server.once('listening', resolve));
   const received = [];
@@ -16,9 +16,10 @@ async function upgrade(found, service = '0.3.2', protocol = 17) {
       if (message.type === 'auth' && message.protocolVersion !== protocol)
         send({ type: 'connection.error', code: 'version_mismatch', message: '版本不一致' });
       else if (message.type === 'auth') send({ type: 'ready', update: { state: 'idle' } });
-      else if (message.type === 'service.update.check')
+      else if (message.type === 'service.update.check') {
         send({ type: 'service.update', state: found, latest: '0.3.4' });
-      else if (message.type === 'service.update.install') {
+        if (duplicate) send({ type: 'service.update', state: found, latest: '0.3.4' });
+      } else if (message.type === 'service.update.install') {
         send({ type: 'service.update', state: 'installing', latest: '0.3.4', detail: '安装依赖' });
         send({ type: 'service.update', state: 'restarting', latest: '0.3.4' });
       }
@@ -29,7 +30,7 @@ async function upgrade(found, service = '0.3.2', protocol = 17) {
   try {
     const result = await upgradeService(
       { url, fingerprint: '', token: 'a'.repeat(32), deviceName: '这台电脑', service },
-      { open: () => new WebSocket(url), onUpdate: (update) => updates.push(update.state) },
+      { open: () => new WebSocket(url), onUpdate: (update) => updates.push(update.state), confirm },
     ).catch((error) => error);
     return { result, received, updates };
   } finally {
@@ -52,8 +53,12 @@ test('a newer client signs in to an older service with its protocol version and 
 });
 
 test('a service that cannot upgrade from here says why', async () => {
-  assert.match((await upgrade('manual')).result.message, /cc-desk-tunnel upgrade/);
-  assert.match((await upgrade('idle')).result.message, /没有找到/);
+  const manual = (await upgrade('manual')).result;
+  assert.match(manual.message, /cc-desk-tunnel upgrade/);
+  assert.equal(manual.code, 'manual');
+  const idle = (await upgrade('idle')).result;
+  assert.match(idle.message, /没有找到/);
+  assert.equal(idle.code, 'current');
   assert.match((await upgrade('available', '0.1.0')).result.message, /太旧/);
 });
 
@@ -69,4 +74,34 @@ test('the personal 0.4.10 service upgrades using protocol 18', async () => {
   assert.equal(result, '0.3.4');
   assert.equal(received[0].protocolVersion, 18);
   assert.equal(received.at(-1).type, 'service.update.install');
+});
+
+test('the install waits for a yes, and a no leaves the service as it is', async () => {
+  const asked = [];
+  const yes = await upgrade('available', '0.3.2', 17, async (latest) => (asked.push(latest), true));
+  assert.equal(yes.result, '0.3.4');
+  assert.deepEqual(asked, ['0.3.4']);
+  const no = await upgrade('available', '0.3.2', 17, async () => false);
+  assert.equal(no.result.code, 'declined');
+  assert.ok(!no.received.some((message) => message.type === 'service.update.install'));
+});
+
+test('repeated available frames ask once and install once', async () => {
+  let confirmations = 0;
+  const result = await upgrade(
+    'available',
+    '0.3.2',
+    17,
+    async () => {
+      confirmations++;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return true;
+    },
+    true,
+  );
+  assert.equal(confirmations, 1);
+  assert.equal(
+    result.received.filter((message) => message.type === 'service.update.install').length,
+    1,
+  );
 });

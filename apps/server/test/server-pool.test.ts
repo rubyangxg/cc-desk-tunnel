@@ -31,7 +31,7 @@ function writeFixture(file: string, data: string) {
   renameSync(temporary, file);
 }
 
-async function fixture(t: TestContext, fail = 'quota') {
+async function fixture(t: TestContext, fail = 'quota', graceMs?: number) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cc-pool-integration-')));
   const config = join(dir, 'original');
   mkdirSync(config);
@@ -45,6 +45,7 @@ async function fixture(t: TestContext, fail = 'quota') {
     token,
     dataDir: dir,
     reverseProxy: true,
+    graceMs,
     tunnel: { probe: async () => {} },
     claude: {
       executable: resolve('apps/server/test/fixtures/pool-cli.mjs'),
@@ -1501,5 +1502,92 @@ nativeTest(
         .map(({ payload }) => (payload.type === 'native.tasks' ? payload.tasks.length : -1));
       assert.deepEqual(tasks, mode === 'cancel' ? [1, 0] : [1], mode);
     }
+  },
+);
+
+nativeTest(
+  'two live terminals update only their own pool accounts and preserve other session metrics',
+  { timeout: 30000 },
+  async (t) => {
+    const f = await fixture(t, 'none', 100);
+    const a = (
+      await f.request({ type: 'session.create', title: 'terminal A', projectPath: '/project' })
+    ).sessionId!;
+    const b = (
+      await f.request({ type: 'session.create', title: 'terminal B', projectPath: '/project' })
+    ).sessionId!;
+    f.server.store.selectAccount(a, 'default');
+    f.server.store.selectAccount(b, f.id);
+    await f.request({ type: 'session.subscribe', sessionId: a, afterSequence: 0 });
+    await f.request({
+      type: 'terminal.open',
+      sessionId: a,
+      cols: 80,
+      rows: 24,
+      continueSession: true,
+    });
+    const openedA = await f.wait((m) => m.type === 'terminal.opened' && m.sessionId === a);
+    await f.request({
+      type: 'terminal.open',
+      sessionId: b,
+      cols: 80,
+      rows: 24,
+      continueSession: true,
+    });
+    const openedB = await f.wait((m) => m.type === 'terminal.opened' && m.sessionId === b);
+    assert.ok(openedA.type === 'terminal.opened' && openedB.type === 'terminal.opened');
+    const status = (used: number) =>
+      JSON.stringify({
+        rate_limits: {
+          five_hour: { used_percentage: used, resets_at: Math.floor(Date.now() / 1000) + 3600 },
+        },
+      });
+    writeFixture(join(f.dir, 'terminals', `${openedA.terminalId}.status`), status(33));
+    writeFixture(join(f.dir, 'terminals', `${openedB.terminalId}.status`), status(78));
+    await f.wait(
+      (m) =>
+        m.type === 'pool.state' &&
+        m.accounts.some(
+          (a) =>
+            a.id === 'default' &&
+            a.limits?.windows.some((w) => w.name === 'five_hour' && w.utilization === 33),
+        ) &&
+        m.accounts.some(
+          (a) =>
+            a.id === f.id &&
+            a.limits?.windows.some((w) => w.name === 'five_hour' && w.utilization === 78),
+        ),
+    );
+    const metricsA = f.server.store.lastMetrics(a);
+    const latestB = f.server.store
+      .snapshot(b)
+      .events.findLast((event) => event.payload.type === 'native.metrics')?.payload;
+    const metricsB = latestB?.type === 'native.metrics' ? latestB : null;
+    assert.equal(
+      metricsA?.rateLimits?.windows.find((w) => w.name === 'five_hour')?.utilization,
+      33,
+    );
+    assert.equal(
+      metricsB?.rateLimits?.windows.find((w) => w.name === 'five_hour')?.utilization,
+      78,
+    );
+    assert.ok(
+      !f.messages.some(
+        (m) =>
+          m.type === 'session.event' &&
+          m.event.sessionId === b &&
+          m.event.payload.type === 'native.metrics',
+      ),
+      'an unrelated terminal cannot replace the selected conversation metrics',
+    );
+    const activeA = f.server.store.get(a).session.activeRun?.id;
+    await f.request({ type: 'session.status', sessionId: a, quota: true });
+    assert.equal(
+      f.server.store.get(a).session.activeRun?.id,
+      activeA,
+      'manual quota refresh leaves the terminal running',
+    );
+    await f.request({ type: 'terminal.close', sessionId: a, terminalId: openedA.terminalId });
+    await f.request({ type: 'terminal.close', sessionId: b, terminalId: openedB.terminalId });
   },
 );
