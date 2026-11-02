@@ -187,6 +187,9 @@ export async function runClaude(
   let settle: ReturnType<typeof setTimeout> | undefined;
   let settled = false;
   let quotaStopped = false;
+  // Background tasks the CLI last reported. They are this process's children: they end with it when the CLI is shut
+  // down (stdin closed, then a termination signal), and outlive it only when it is killed outright or crashes.
+  let liveTasks = 0;
   const goals = new NativeGoal(run.goal, (event) => {
     if (!run.signal.aborted) run.emit(event);
   });
@@ -432,6 +435,7 @@ export async function runClaude(
       if (message.type === 'system' && message.subtype === 'background_tasks_changed') {
         const tasks = message.tasks.filter((task) => !task.ambient);
         background = tasks.length;
+        liveTasks = tasks.length;
         for (const id of progress.keys())
           if (!tasks.some((task) => task.task_id === id)) progress.delete(id);
         if (!run.signal.aborted)
@@ -564,6 +568,16 @@ export async function runClaude(
     run.input.close();
     session?.close();
     run.signal.removeEventListener('abort', stop);
+  }
+  // An aborted run reported no more task changes, so its last list still names tasks that the shutdown above ended.
+  // Clearing it lets a handoff go ahead without asking about processes that no longer exist. A CLI that failed on
+  // its own may have been killed outright and left them running, so its list stands and stays to be confirmed.
+  if (liveTasks && (run.signal.aborted || !failure || failure instanceof DomainError)) {
+    run.emit({ type: 'native.tasks', tasks: [] });
+    run.emit({
+      type: 'native.notice',
+      text: `Claude Code 已退出，${liveTasks} 个后台任务已随之结束。`,
+    });
   }
   const context = await nativeStore(options, 'info', nativeId, { dir: cwd });
   run.emit({

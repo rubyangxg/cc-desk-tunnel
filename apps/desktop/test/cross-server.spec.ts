@@ -719,20 +719,23 @@ for (const {
     if (continueQuota) {
       await page.getByRole('button', { name: '同一个任务 · 服务器1', exact: true }).click();
       if (taskConfirmation && !legacyTaskConfirmation) {
-        page.once('dialog', (dialog) => {
-          expect(dialog.message()).toContain('旧后台构建');
-          dialog.dismiss();
-        });
         await page.getByRole('button', { name: '接着上一轮继续', exact: true }).click();
+        const question = page.getByRole('dialog').filter({ hasText: '核实后续接' });
+        await expect(question).toContainText('旧后台构建');
+        await question.getByRole('button', { name: '取消', exact: true }).click();
         await expect(
           page.getByRole('alert').filter({ hasText: /历史记录中仍有后台任务/ }),
         ).toBeVisible();
         expect(source.messageQueue?.handoff).toBeUndefined();
         expect(sent.filter((m) => m.type === 'session.handoff')).toHaveLength(0);
-        page.once('dialog', (dialog) => dialog.accept());
       }
-      if (confirmedContinue) page.once('dialog', (dialog) => dialog.accept());
       await page.getByRole('button', { name: '接着上一轮继续', exact: true }).click();
+      if ((taskConfirmation && !legacyTaskConfirmation) || confirmedContinue)
+        await page
+          .getByRole('dialog')
+          .filter({ hasText: '核实后续接' })
+          .getByRole('button', { name: '已核实，继续' })
+          .click();
       if (legacyTaskConfirmation) {
         await expect(
           page.getByRole('alert').filter({ hasText: /请先升级来源服务端和客户端/ }),
@@ -744,6 +747,12 @@ for (const {
         return;
       }
       if ((continueUnconfirmed && !confirmedContinue) || continueTimeout || continueLocal) {
+        if (continueUnconfirmed && !confirmedContinue)
+          await page
+            .getByRole('dialog')
+            .filter({ hasText: '核实后续接' })
+            .getByRole('button', { name: '取消', exact: true })
+            .click();
         if (!continueLocal)
           await expect(
             page
