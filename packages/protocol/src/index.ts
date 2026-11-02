@@ -469,6 +469,12 @@ export function compareQuotaReset(
   return 0;
 }
 
+// Remaining five-hour allowance in whole percent, rounded down. An account shown as 0% is never
+// scheduled: switching to an almost exhausted account would fail again within moments.
+export const quotaRemaining = (utilization: number) =>
+  Math.max(0, Math.min(100, Math.floor(100 - utilization)));
+export const quotaUsable = (utilization: number) => quotaRemaining(utilization) >= 1;
+
 // Output that arrives in pieces. While it arrives, each piece goes to those watching as a `session.fragment`,
 // which is neither stored nor numbered; once the stretch is over it is recorded as one event of the same
 // type holding all of its text.

@@ -1,8 +1,12 @@
-import { compareQuotaReset } from '@cc-desk-tunnel/protocol';
+import { compareQuotaReset, quotaUsable } from '@cc-desk-tunnel/protocol';
 import type { NativeMetrics, Session, SessionEvent } from '@cc-desk-tunnel/protocol';
 import type { ConnectionProfile } from './connections.ts';
 import { transcript } from './transcript.ts';
 import type { SharedHistory } from './sharedHistory.ts';
+
+// A handoff target that cannot finish within this time releases its slot and reports why,
+// instead of blocking every later handoff with "already in progress".
+export const handoffTimeoutMs = 90_000;
 
 export type PoolSettings = {
   enabled: boolean;
@@ -70,7 +74,7 @@ export function poolCandidates(
         !settings.disabled?.includes(profile.id) &&
         !!quota?.limits?.available &&
         typeof fiveHour(quota)?.utilization === 'number' &&
-        fiveHour(quota)!.utilization! < 100 &&
+        quotaUsable(fiveHour(quota)!.utilization!) &&
         !quota.error &&
         quota.checkedAt + quotaFreshMs > now &&
         !exhausted(quota, now)
