@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { NativeMetrics, ServerPoolState } from '@cc-desk-tunnel/protocol';
 import type { ConnectionProfile } from './connections.ts';
-import type { PoolSettings, Quotas } from './accountPool.ts';
+import {
+  exhaustedPoolLimits,
+  quotaFreshMs,
+  type PoolSettings,
+  type Quotas,
+} from './accountPool.ts';
 import { usePrefs } from './prefs.ts';
 
 const key = 'proxy-account-pool';
@@ -84,7 +89,9 @@ export function useAccountPool(profiles: ConnectionProfile[]) {
     setConfig(next);
   }, []);
   const refresh = useCallback(
-    (accounts = current.current, force = true): Promise<Quotas> => {
+    // `cached` is for a relay: the server's own minute-by-minute snapshot is enough to pick a target, and a full
+    // recheck of every account can outlast the probe timeout and drop a healthy target.
+    (accounts = current.current, force = true, cached = false): Promise<Quotas> => {
       if (pending.current) return pending.current;
       if (!window.desktop?.probeQuota) return Promise.resolve(latest.current);
       setRefreshing(true);
@@ -103,14 +110,21 @@ export function useAccountPool(profiles: ConnectionProfile[]) {
                 try {
                   details = await window.desktop?.profilePool?.(profile.id, {
                     type: 'pool.status',
-                    refresh: force || wanted.current,
+                    refresh: !cached && (force || wanted.current),
                   });
+                  // A cached snapshot with nothing schedulable is rechecked once; if that recheck is slow
+                  // or fails, the server's own answer still stands rather than becoming an error.
+                  if (cached && details && !details.limits?.available)
+                    details =
+                      (await window.desktop
+                        ?.profilePool?.(profile.id, { type: 'pool.status', refresh: true })
+                        .catch(() => details)) ?? details;
                 } catch (error) {
                   if (!(error instanceof Error) || !error.message.includes('不支持账号池'))
                     throw error;
                 }
                 const limits = details
-                  ? details.limits
+                  ? (details.limits ?? exhaustedPoolLimits(details.state))
                   : await window.desktop!.probeQuota(profile.id);
                 if (!unchanged() || (latest.current[profile.id]?.checkedAt ?? 0) > checkedAt)
                   return;
@@ -130,6 +144,16 @@ export function useAccountPool(profiles: ConnectionProfile[]) {
                 });
               } catch (error) {
                 if (!unchanged() || (latest.current[profile.id]?.checkedAt ?? 0) > checkedAt)
+                  return;
+                // A slow recheck is not evidence the server is down: during a relay, or when the full recheck
+                // only timed out, a recent good snapshot stays instead of pausing a healthy target.
+                const previous = latest.current[profile.id];
+                if (
+                  (cached || (error instanceof Error && error.message.includes('超时'))) &&
+                  previous?.limits?.available &&
+                  !previous.error &&
+                  previous.checkedAt + quotaFreshMs > Date.now()
+                )
                   return;
                 update({
                   ...latest.current,

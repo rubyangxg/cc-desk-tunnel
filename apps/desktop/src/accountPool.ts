@@ -1,5 +1,11 @@
 import { compareQuotaReset, quotaUsable } from '@cc-desk-tunnel/protocol';
-import type { NativeMetrics, Session, SessionEvent } from '@cc-desk-tunnel/protocol';
+import type {
+  NativeMetrics,
+  ServerPoolAccount,
+  ServerPoolState,
+  Session,
+  SessionEvent,
+} from '@cc-desk-tunnel/protocol';
 import type { ConnectionProfile } from './connections.ts';
 import { transcript } from './transcript.ts';
 import type { SharedHistory } from './sharedHistory.ts';
@@ -54,6 +60,58 @@ export function exhausted(snapshot: QuotaSnapshot | undefined, now = Date.now())
       );
     }) ?? false
   );
+}
+// A pool service reports no limits when none of its accounts can be scheduled. When that is because every
+// fresh, signed-in account is at a 100% window, return one of those limits (soonest reset) so the client sees an
+// exhausted server instead of an unknown one. Anything less certain stays unknown (null).
+export function exhaustedPoolLimits(state: ServerPoolState | null | undefined) {
+  if (!state) return null;
+  const now = state.serverTime ?? Date.now();
+  const eligible = state.accounts.filter(
+    (account) =>
+      account.enabled &&
+      account.loggedIn === true &&
+      !account.login &&
+      !account.error &&
+      account.checkedAt !== null &&
+      now - account.checkedAt < quotaFreshMs &&
+      account.limits?.available &&
+      (state.settings.enabled || account.id === state.settings.preferredId),
+  );
+  const full = (account: ServerPoolAccount) =>
+    account.limits!.windows.some(
+      (window) =>
+        ['five_hour', 'seven_day'].includes(window.name) && (window.utilization ?? 0) >= 100,
+    );
+  if (!eligible.length || !eligible.every(full)) return null;
+  const limits = eligible
+    .map((account) => account.limits!)
+    .sort((a, b) => compareQuotaReset(a, b, now))[0]!;
+  // Server and client clocks can differ; the snapshot age is what the client compares.
+  const age = now - Math.max(...eligible.map((account) => account.checkedAt!));
+  return { ...limits, measuredAt: new Date(Date.now() - age).toISOString() };
+}
+// Why a known snapshot rules a server out as a target, or null when it may be chosen (an unknown quota is
+// not proof of exhaustion). Shared by the manual server picker and its switch.
+export function quotaBlock(snapshot: QuotaSnapshot | undefined, now = Date.now()) {
+  if (!snapshot) return null;
+  if (snapshot.blockedUntil && snapshot.blockedUntil > now) return '额度已耗尽';
+  if (exhausted(snapshot, now)) {
+    const week = snapshot.limits?.windows.some(
+      (window) => window.name === 'seven_day' && (window.utilization ?? 0) >= 100,
+    );
+    return week ? '每周额度已耗尽' : '5 小时额度已耗尽';
+  }
+  const five = fiveHour(snapshot)?.utilization;
+  if (
+    snapshot.limits?.available &&
+    !snapshot.error &&
+    snapshot.checkedAt + quotaFreshMs > now &&
+    typeof five === 'number' &&
+    !quotaUsable(five)
+  )
+    return '5 小时剩余 0%';
+  return null;
 }
 export function poolCandidates(
   profiles: ConnectionProfile[],

@@ -45,6 +45,7 @@ test('all servers share one account page with scoped controls, costs and honest 
       );
       const log: string[] = [];
       let fail = false;
+      let slow = false;
       let saved = {
         activeId: 'a',
         profiles: ['a', 'b'].map((id) => ({
@@ -63,6 +64,9 @@ test('all servers share one account page with scoped controls, costs and honest 
         testLog: log,
         failRemote: () => {
           fail = true;
+        },
+        slowRemote: (value: boolean) => {
+          slow = value;
         },
         exhaustRemote: () => {
           fail = false;
@@ -105,6 +109,12 @@ test('all servers share one account page with scoped controls, costs and honest 
             command?: { type: string; accountId?: string; enabled?: boolean; values?: object },
           ) => {
             if (id === 'b' && fail) throw new Error('服务器离线（测试）');
+            if (id === 'b' && slow && command?.type === 'pool.status') {
+              log.push('b:timeout');
+              throw new Error(
+                "Error invoking remote method 'profiles:pool': Error: 额度查询超时。",
+              );
+            }
             const state = states[id];
             if (command) {
               log.push(`${id}:${command.type}:${command.accountId ?? ''}`);
@@ -194,6 +204,24 @@ test('all servers share one account page with scoped controls, costs and honest 
   ).toEqual(['a', 'b']);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.screenshot({ path: join(screenshots, 'unified-accounts-desktop.png') });
+  // A full recheck that only times out keeps the recent good snapshot schedulable.
+  await page.evaluate(() =>
+    (window as unknown as { slowRemote: (value: boolean) => void }).slowRemote(true),
+  );
+  await page.getByRole('button', { name: '检测全部账号', exact: true }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as unknown as { testLog: string[] }).testLog.filter((line) => line === 'b:timeout'),
+      ),
+    )
+    .not.toHaveLength(0);
+  await expect(page.getByRole('button', { name: '检测全部账号', exact: true })).toBeEnabled();
+  await expect(page.getByText(/额度查询超时/)).toHaveCount(0);
+  await expect(backupCard).not.toContainText('离线 · 上次数据');
+  await page.evaluate(() =>
+    (window as unknown as { slowRemote: (value: boolean) => void }).slowRemote(false),
+  );
   await page.evaluate(() => (window as unknown as { failRemote: () => void }).failRemote());
   await page.getByRole('button', { name: '检测全部账号', exact: true }).click();
   await expect(page.getByText(/服务器 2：.*服务器离线/)).toBeVisible();
