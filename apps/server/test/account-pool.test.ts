@@ -9,6 +9,7 @@ import { AccountPool, availableAccount, orderedAccounts } from '../src/account-p
 import { SessionStore } from '../src/store.ts';
 import { poolHandoff, canHandoff, handoffBlockReason } from '../src/pool-handoff.ts';
 import { nativeStore } from '../src/native-store.ts';
+import { quotaRemaining } from '@cc-desk-tunnel/protocol';
 import type { ServerPoolAccount, SessionEvent } from '@cc-desk-tunnel/protocol';
 
 function fixture(t: TestContext) {
@@ -109,6 +110,24 @@ test('scheduler respects reset priority, custom order, weekly caps, stale readin
   quota(pool, second, 1);
   pool.update(second, { enabled: false });
   assert.deepEqual(orderedAccounts(pool.snapshot()), []);
+});
+
+test('an account shown with 0% five-hour allowance left is never scheduled', (t) => {
+  const { pool } = fixture(t);
+  const second = randomUUID();
+  pool.add(second, 'second');
+  quota(pool, 'default', 4, 50);
+  quota(pool, second, 1, 99.5);
+  pool.configure({ enabled: true });
+  assert.equal(quotaRemaining(99.5), 0);
+  assert.equal(availableAccount(pool.get(second)), false);
+  assert.equal(pool.choose().id, 'default');
+  quota(pool, second, 1, 99);
+  assert.equal(quotaRemaining(99), 1);
+  assert.equal(availableAccount(pool.get(second)), true);
+  quota(pool, 'default', 4, 99.9);
+  quota(pool, second, 1, 99.5);
+  assert.throws(() => pool.choose(), /暂无可用/);
 });
 
 test('an account switch keeps the proxy session, project and history, and never resumes another account native segment', (t) => {

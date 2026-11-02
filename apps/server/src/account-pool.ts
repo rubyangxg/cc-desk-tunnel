@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   compareQuotaReset,
+  quotaUsable,
   serverPoolAccountSchema,
   serverPoolSettingsSchema,
 } from '@cc-desk-tunnel/protocol';
@@ -28,7 +29,7 @@ export function availableAccount(account: ServerPoolAccount, now = Date.now()) {
     fresh(account, now) &&
     account.limits?.available === true &&
     typeof five?.utilization === 'number' &&
-    five.utilization < 100 &&
+    quotaUsable(five.utilization) &&
     !(account.blockedUntil && account.blockedUntil > now) &&
     !account.limits.windows.some(
       (window) => window.name === 'seven_day' && (window.utilization ?? 0) >= 100,

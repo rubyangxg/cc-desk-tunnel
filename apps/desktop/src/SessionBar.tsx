@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Activity, Clock3, Database } from 'lucide-react';
+import { quotaRemaining } from '@cc-desk-tunnel/protocol';
 import type { NativeMetrics } from '@cc-desk-tunnel/protocol';
 import ContextMeter from './ContextMeter.tsx';
 import { usePrefs } from './prefs.ts';
@@ -21,7 +22,7 @@ function QuotaPart({ quota, openAccount }: { quota: AccountQuota; openAccount: (
     const window = quota.limits?.windows.find((item) => item.name === name);
     const remaining =
       !quota.error && quota.limits?.available && typeof window?.utilization === 'number'
-        ? Math.round(Math.max(0, Math.min(100, 100 - window.utilization)))
+        ? quotaRemaining(window.utilization)
         : null;
     return { label, remaining, resetsAt: window?.resetsAt };
   });

@@ -1,4 +1,5 @@
 import { ArrowDown, ArrowUp, RefreshCw } from 'lucide-react';
+import { quotaRemaining, quotaUsable } from '@cc-desk-tunnel/protocol';
 import type { ConnectionProfile } from './connections.ts';
 import type { AccountPool } from './useAccountPool.ts';
 import { exhausted, fiveHour, poolCandidates } from './accountPool.ts';
@@ -94,8 +95,11 @@ export default function AccountPoolPanel({
                         : exhausted(quota)
                           ? '额度已用完'
                           : available.has(id)
-                            ? `可调度 · 5 小时剩余 ${Math.max(0, 100 - window!.utilization!)}%`
-                            : '待检测 · 暂不参与调度'}
+                            ? `可调度 · 5 小时剩余 ${quotaRemaining(window!.utilization!)}%`
+                            : typeof window?.utilization === 'number' &&
+                                !quotaUsable(window.utilization)
+                              ? '5 小时剩余不足 1% · 暂不参与调度'
+                              : '待检测 · 暂不参与调度'}
                 </small>
                 {disabled && <small>正在后台检测，连接恢复后自动参与调度。</small>}
                 {quota?.error && <small>{quota.error}</small>}

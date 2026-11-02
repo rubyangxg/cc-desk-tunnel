@@ -5,10 +5,12 @@ import {
   exhausted,
   fiveHour,
   handoffFor,
+  handoffTimeoutMs,
   poolCandidates,
   quotaFailure,
   quotaPausedQueue,
 } from './accountPool.ts';
+import type { Handoff } from './accountPool.ts';
 import { isHere } from './device.ts';
 import { transcript } from './transcript.ts';
 import type { Session } from '@cc-desk-tunnel/protocol';
@@ -208,6 +210,79 @@ export function usePoolRotation(options: {
     claimedQueues.current.add(session.id);
   }
 
+  // Give a queue frozen by this attempt back to the source. The server keeps it paused, so
+  // nothing runs twice; without this it would stay a cross-server backup with no destination.
+  async function releaseQueue(sessionId: string) {
+    claimedQueues.current.delete(sessionId);
+    const queueIds = client.state.sessions
+      .find((item) => item.id === sessionId)
+      ?.messageQueue?.items.map((item) => item.id);
+    if (!queueIds?.length || !client.state.features.includes('cross-server-queue-recovery'))
+      return false;
+    try {
+      await client.request({ type: 'session.handoff.cancel', sessionId, queueIds });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Check the destination before freezing the source queue, and undo the freeze if switching
+  // fails before the destination took the handoff.
+  async function handOver(
+    targetId: string,
+    handoff: Handoff,
+    frozen: Session,
+    confirmedMessageIds?: string[],
+    confirmedTaskIds?: string[],
+    frozenHere = false,
+  ) {
+    const claimed = !frozenHere && claimedQueues.current.has(frozen.id);
+    const busy = current.current.profiles.handoffBusy?.(targetId);
+    if (busy) {
+      if (frozenHere && claimedQueues.current.has(frozen.id)) await releaseQueue(frozen.id);
+      throw new Error(busy);
+    }
+    if (!frozenHere) await freezeQueue(frozen, confirmedMessageIds, confirmedTaskIds);
+    try {
+      await current.current.close();
+      await current.current.profiles.select(targetId, true, handoff);
+    } catch (error) {
+      if (claimed || !claimedQueues.current.has(frozen.id)) throw error;
+      const detail = (error instanceof Error ? error.message : '切换失败').replace(
+        /[。.!\s]+$/u,
+        '',
+      );
+      throw new Error(
+        (await releaseQueue(frozen.id))
+          ? `${detail}。原排队消息已退回本会话并保持暂停，请检查后继续。`
+          : `${detail}。原排队消息仍处于跨服备份状态，请在本会话中恢复原队列。`,
+      );
+    }
+  }
+
+  // Release the handoff slot so a later attempt is not refused, and say where the work is.
+  function failHandoff(
+    handoff: Handoff,
+    detail: string,
+    sessionId: string | null,
+    historyAttached: boolean,
+  ) {
+    const target = current.current.profiles.initial.name;
+    const where = `（${handoff.source} → ${target}，任务「${handoff.session.title}」）`;
+    const next = !sessionId
+      ? `${target} 上未创建续接会话，任务上下文仍保留在 ${handoff.source} 的原会话中，可回到原会话重新续接${handoff.queue?.items.length ? '；原排队消息仍在原会话备份，可在那里恢复原队列' : ''}。`
+      : !historyAttached
+        ? '续接消息尚未发送，上下文已保留在当前会话草稿中。'
+        : `续接会话已在 ${target} 创建，请检查会话和草稿后手动继续，客户端不会重发未确认请求。`;
+    const message = `自动续接已暂停：${detail}。${where}${next}`;
+    resuming.current = false;
+    current.current.error(message);
+    const live = current.current.profiles;
+    if (live.failHandoff) live.failHandoff(message);
+    else live.completeHandoff();
+  }
+
   async function sendAfterQuota(
     session: Session,
     text: string,
@@ -261,13 +336,13 @@ export function usePoolRotation(options: {
           handoff.history,
         );
       }
-      await freezeQueue(
+      await handOver(
+        next.id,
+        handoff,
         handoff.history!.segments.at(-1)!.session,
         handoff.confirmedMessageIds,
         handoff.confirmedTaskIds,
       );
-      await current.current.close();
-      await current.current.profiles.select(next.id, true, handoff);
       return true;
     } catch (error) {
       // Priority is an optimization. If preparation fails before leaving the source, the caller
@@ -299,13 +374,13 @@ export function usePoolRotation(options: {
         client.state.sessions.some((item) => item.activeRun && isHere(item, client.state.device))
       )
         throw new Error('任务状态已改变，未切换服务器。');
-      await freezeQueue(
+      await handOver(
+        targetId,
+        handoff,
         handoff.history!.segments.at(-1)!.session,
         handoff.confirmedMessageIds,
         handoff.confirmedTaskIds,
       );
-      await current.current.close();
-      await current.current.profiles.select(targetId, true, handoff);
     } catch (error) {
       current.current.error(error instanceof Error ? error.message : '交接失败。');
     } finally {
@@ -378,9 +453,7 @@ export function usePoolRotation(options: {
           // This pause was created by a rejected dispatch, not by the user.
           if (handoff.queue) handoff.queue.paused = false;
           if (!current.current.profiles.pool.config.enabled) return;
-          await freezeQueue(handoff.history!.segments.at(-1)!.session);
-          await current.current.close();
-          await current.current.profiles.select(next.id, true, handoff);
+          await handOver(next.id, handoff, handoff.history!.segments.at(-1)!.session);
         } catch (error) {
           current.current.error(
             `自动接力暂未完成：${error instanceof Error ? error.message : '请求失败'}`,
@@ -460,8 +533,8 @@ export function usePoolRotation(options: {
           }
           const handoff = await prepare(session, [id], false, true);
           if (!current.current.profiles.pool.config.enabled) return;
-          await current.current.close();
-          await current.current.profiles.select(next.id, true, handoff);
+          // run.handoff already froze the queue, so a refused switch must give it back.
+          await handOver(next.id, handoff, session, undefined, undefined, true);
         } catch (error) {
           current.current.error(
             `跨服务器接力已暂停：${error instanceof Error ? error.message : '请求失败'}`,
@@ -535,7 +608,10 @@ export function usePoolRotation(options: {
         }
         const handoff = live.profiles.handoff ? { ...live.profiles.handoff, attempted } : undefined;
         await live.close();
-        if (!cancelled) await live.profiles.select(next.id, true, handoff);
+        if (cancelled) return;
+        await live.profiles.select(next.id, true, handoff);
+        // The next server owns the handoff now; this one must not resume it after reconnecting.
+        if (handoff) live.profiles.completeHandoff();
       } catch (error) {
         if (!cancelled)
           setNotice(
@@ -655,18 +731,39 @@ export function usePoolRotation(options: {
         );
       } catch (error) {
         setNotice(null);
+        // A run that already completed confirmed the handoff; a late timeout is not a failure.
+        if (currentHandoff.current !== handoff) return;
         const detail = (error instanceof Error ? error.message : '请求失败').replace(
           /[。.!\s]+$/u,
           '',
         );
-        current.current.error(
-          `自动续接已暂停：${detail}。${resumedSession.current && !historyAttached ? '续接消息尚未发送，上下文已保留在当前会话草稿中。' : '请检查会话和草稿后手动继续，客户端不会重发未确认请求。'}`,
-        );
+        failHandoff(handoff, detail, resumedSession.current, historyAttached);
       } finally {
         setWorking(false);
       }
     })();
   }, [state.status, profiles.handoff, pool.config.enabled, client]);
+
+  // A handoff that never starts resuming here (background target, refused connection, no other
+  // server) releases its slot after a bounded wait. Requests already in flight time out on their own.
+  useEffect(() => {
+    const handoff = profiles.handoff;
+    const startedAt = profiles.handoffStartedAt;
+    if (!handoff || !startedAt) return;
+    const timer = setTimeout(
+      () => {
+        if (resuming.current || currentHandoff.current !== handoff) return;
+        failHandoff(
+          handoff,
+          `${handoffTimeoutMs / 1000} 秒内未连上 ${profiles.initial.name}，续接已超时取消`,
+          null,
+          false,
+        );
+      },
+      Math.max(0, startedAt + handoffTimeoutMs - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [profiles.handoff, profiles.handoffStartedAt]);
 
   useEffect(() => {
     const sessionId = resumedSession.current;

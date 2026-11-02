@@ -6,7 +6,7 @@ import { useAccountPool } from './useAccountPool.ts';
 import type { AccountPool } from './useAccountPool.ts';
 import type { Handoff } from './accountPool.ts';
 import type { ClientState } from './client.ts';
-import { poolCandidates } from './accountPool.ts';
+import { handoffTimeoutMs, poolCandidates } from './accountPool.ts';
 
 const storageKey = 'proxy-connection-profiles';
 function blankProfile(id: string, name: string): ConnectionProfile {
@@ -62,7 +62,13 @@ export type ProfileControls = {
   remove: () => Promise<void>;
   pool: AccountPool;
   handoff: Handoff | null;
+  // When this workspace was asked to take over the handoff; drives the handoff timeout.
+  handoffStartedAt?: number | null;
   completeHandoff: () => void;
+  // Release the handoff slot after a failure, and surface the reason even in the background.
+  failHandoff?: (message: string) => void;
+  // Why a handoff to this target cannot start now, checked before the source queue is frozen.
+  handoffBusy?: (id: string) => string | null;
 };
 
 // Workspaces remain mounted: each service retains its socket, SSH execution channel and history.
@@ -74,6 +80,7 @@ export function App() {
     connect: boolean;
     attempt: number;
     handoff: Handoff | null;
+    handoffAt: number | null;
     sessionId: string | null;
     account: boolean;
     managing: boolean;
@@ -82,6 +89,7 @@ export function App() {
     connect,
     attempt: 0,
     handoff: null,
+    handoffAt: null,
     sessionId: null,
     account: false,
     managing: false,
@@ -179,6 +187,29 @@ export function App() {
         <p role={error ? 'alert' : 'status'}>{error ?? '读取代理服务配置…'}</p>
       </main>
     );
+  // A remote destination already open in another workspace is reused for the same peer.
+  function targetOf(id: string, connect: boolean) {
+    const requested = latest.current?.profiles.find((profile) => profile.id === id);
+    if (requested && connect) {
+      const peer = connectionPeer(requested);
+      const warm = latest.current?.profiles.find(
+        (profile) =>
+          viewsRef.current[profile.id] && peer !== null && connectionPeer(profile) === peer,
+      );
+      if (warm) return warm.id;
+    }
+    return id;
+  }
+  function handoffBusy(id: string, connect = true) {
+    const target = targetOf(id, connect);
+    const view = viewsRef.current[target];
+    if (!view?.handoff) return null;
+    const elapsed = Date.now() - (view.handoffAt ?? 0);
+    // The target's own timer releases the slot; this only guards against a missed timer.
+    if (view.handoffAt !== null && elapsed > handoffTimeoutMs + 15_000) return null;
+    const name = latest.current?.profiles.find((profile) => profile.id === target)?.name ?? target;
+    return `已有续接正在处理：${name} 正在接手「${view.handoff.session.title}」（已 ${Math.max(0, Math.round(elapsed / 1000))} 秒）。请稍后重试，超过 ${handoffTimeoutMs / 1000} 秒未完成会自动取消。`;
+  }
   function changeView(id: string, values: Partial<View>) {
     const next = {
       ...viewsRef.current,
@@ -242,11 +273,21 @@ export function App() {
             },
             pool,
             handoff: view.handoff,
+            handoffStartedAt: view.handoffAt,
+            handoffBusy: (id) => handoffBusy(id),
+            failHandoff: (message) => {
+              changeView(initial.id, { handoff: null, handoffAt: null });
+              if (openingRef.current === initial.id) {
+                openingRef.current = null;
+                setOpening(null);
+              }
+              if (latest.current?.activeId !== initial.id) setOpenError(message);
+            },
             focusSession: view.sessionId,
             focusAccount: view.account,
             completeAccountFocus: () => changeView(initial.id, { account: false }),
             completeFocus: () => changeView(initial.id, { sessionId: null }),
-            completeHandoff: () => changeView(initial.id, { handoff: null }),
+            completeHandoff: () => changeView(initial.id, { handoff: null, handoffAt: null }),
             save: async (profile) => {
               await persist((value) => ({
                 ...value,
@@ -256,18 +297,9 @@ export function App() {
             },
             select: async (id, connect, handoff, sessionId, account) => {
               const requested = latest.current?.profiles.find((profile) => profile.id === id);
-              if (requested && connect) {
-                const peer = connectionPeer(requested);
-                const warm = latest.current?.profiles.find(
-                  (profile) =>
-                    viewsRef.current[profile.id] &&
-                    peer !== null &&
-                    connectionPeer(profile) === peer,
-                );
-                if (warm) id = warm.id;
-              }
-              if (handoff && viewsRef.current[id]?.handoff)
-                throw new Error('已有续接正在处理，请稍后重试。');
+              const busy = handoff ? handoffBusy(id, connect) : null;
+              if (busy) throw new Error(busy);
+              id = targetOf(id, connect);
               // Navigation waits in the existing workspace until the destination is ready.
               // Background handoffs never steal the foreground conversation.
               if (!handoff || latest.current?.activeId === initial.id) {
@@ -288,6 +320,7 @@ export function App() {
                 connect,
                 attempt: (viewsRef.current[id]?.attempt ?? 0) + 1,
                 handoff: handoff ?? null,
+                handoffAt: handoff ? Date.now() : null,
                 sessionId: sessionId ?? null,
                 account: account ?? false,
                 managing: !connect && !sessionId,
