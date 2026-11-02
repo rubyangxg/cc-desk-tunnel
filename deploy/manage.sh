@@ -4,6 +4,8 @@ umask 077
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="${PROXY_DEPLOY_CONFIG:-$ROOT/.local/docker.env}"
 COMPOSE="${PROXY_COMPOSE_FILE:-$ROOT/deploy/compose.yml}"
+# Where releases come from, as in install.sh.
+REPO="${CC_DESK_TUNNEL_REPO:-rubyangxg/cc-desk-tunnel}"
 
 usage() {
   cat <<'HELP'
@@ -21,6 +23,7 @@ Usage:
   manage.sh restore ABSOLUTE_ARCHIVE_PATH
   manage.sh certificate FULLCHAIN PRIVATE_KEY
   manage.sh renew
+  manage.sh auto-upgrade enable|disable|status  unattended upgrades every 12h (systemd timer); off by default
 
 Requires Docker Engine + Compose v2+, Bash, OpenSSL, curl, tar.
 Use sudo if your user cannot access Docker. Config defaults to .local/docker.env;
@@ -29,6 +32,7 @@ Set PROXY_COMPOSE_FILE when managing an image-only standalone compose.yml.
 The image is the prebuilt one of this program's version (ghcr.io/rubyangxg/cc-desk-tunnel:X.Y.Z), built here
 when it cannot be pulled. CC_DESK_TUNNEL_BUILD=1 always builds here, CC_DESK_TUNNEL_BUILD=0 never does.
 upgrade fetches the newest release; CC_DESK_TUNNEL_VERSION=X.Y.Z picks another.
+Releases come from github.com/rubyangxg/cc-desk-tunnel; CC_DESK_TUNNEL_REPO=OWNER/NAME picks another.
 After an install with sudo, `sudo cc-desk-tunnel COMMAND` runs this script from anywhere.
 Uninstall keeps all data; backup/restore pause the service.
 HELP
@@ -126,7 +130,7 @@ prepare_image() {
 }
 # The newest release's server archive (or CC_DESK_TUNNEL_VERSION's), checked against its SHA256SUMS.
 fetch_release() {
-  local releases=https://github.com/rubyangxg/cc-desk-tunnel/releases name version current
+  local releases="https://github.com/$REPO/releases" name version current
   local listed="$releases/latest/download"
   if [[ -n "${CC_DESK_TUNNEL_VERSION:-}" ]]; then
     [[ "$CC_DESK_TUNNEL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "CC_DESK_TUNNEL_VERSION must be X.Y.Z."
@@ -371,6 +375,51 @@ case "$command" in
     fi
     summary ;;
   summary) summary ;;
+  auto-upgrade)
+    # Unattended upgrades are off unless asked for here: nothing else installs the timer. enable installs the script
+    # and its units from this program and starts the timer; disable stops it and removes them again.
+    [[ $# = 1 && "$1" =~ ^(enable|disable|status)$ ]] || fail "Usage: manage.sh auto-upgrade enable|disable|status"
+    name=cc-desk-tunnel-auto-upgrade
+    units="${CC_DESK_TUNNEL_SYSTEMD_DIR:-/etc/systemd/system}"
+    sbin="${CC_DESK_TUNNEL_SBIN:-/usr/local/sbin}"
+    if [[ "$1" = status ]]; then
+      if [[ -f "$units/$name.timer" ]]; then
+        echo "自动升级：$(systemctl is-enabled "$name.timer" 2>/dev/null || true) / $(systemctl is-active "$name.timer" 2>/dev/null || true)（来源 $(sed -n 's/^Environment="CC_DESK_TUNNEL_REPO=\(.*\)"$/\1/p' "$units/$name.service.d/deployment.conf" 2>/dev/null)）"
+        systemctl list-timers "$name.timer" --no-pager 2>/dev/null || true
+      else
+        echo "自动升级：未安装（默认关闭）。开启：sudo $(self) auto-upgrade enable"
+      fi
+      exit
+    fi
+    [[ "$(id -u)" = 0 ]] || fail "Run auto-upgrade $1 with sudo."
+    command -v systemctl >/dev/null || fail "Automatic upgrades need systemd."
+    if [[ "$1" = disable ]]; then
+      if [[ -f "$units/$name.timer" ]]; then systemctl disable --now "$name.timer"; fi
+      rm -rf -- "${units:?}/$name.timer" "${units:?}/$name.service" "${units:?}/$name.service.d" "${sbin:?}/$name"
+      systemctl daemon-reload
+      echo "自动升级已关闭，定时器和脚本已删除。"
+      exit
+    fi
+    [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "CC_DESK_TUNNEL_REPO must be OWNER/NAME."
+    for path in "$ROOT" "$CONFIG"; do
+      [[ "$path" =~ ^/[A-Za-z0-9_./-]+$ ]] || fail "Unsupported characters in $path for a systemd unit."
+    done
+    mkdir -p "$sbin" "$units/$name.service.d"
+    install -m 0755 "$ROOT/deploy/auto-upgrade/$name" "$sbin/$name"
+    install -m 0644 "$ROOT/deploy/auto-upgrade/$name.service" "$ROOT/deploy/auto-upgrade/$name.timer" "$units/"
+    {
+      echo '# Written by "cc-desk-tunnel auto-upgrade enable" for this deployment.'
+      echo '[Service]'
+      echo "Environment=\"CC_DESK_TUNNEL_DIR=$ROOT\""
+      echo "Environment=\"CC_DESK_TUNNEL_REPO=$REPO\""
+      # Only a configuration of its own; the default one is the script's default too.
+      [[ -z "${PROXY_DEPLOY_CONFIG:-}" ]] || echo "Environment=\"PROXY_DEPLOY_CONFIG=$CONFIG\""
+    } > "$units/$name.service.d/deployment.conf"
+    chmod 644 "$units/$name.service.d/deployment.conf"
+    systemctl daemon-reload
+    systemctl enable --now "$name.timer"
+    echo "自动升级已开启：每 12 小时检查 github.com/$REPO 的新版本，只升不降。关闭：sudo $(self) auto-upgrade disable"
+    ;;
   client)
     [[ $# = 1 && -f "$1" && "$(basename -- "$1")" =~ ^CC-Desk-Tunnel-Setup-[0-9]+\.[0-9]+\.[0-9]+-x64\.exe$ ]] \
       || fail "Specify the installer as built: CC-Desk-Tunnel-Setup-X.Y.Z-x64.exe"

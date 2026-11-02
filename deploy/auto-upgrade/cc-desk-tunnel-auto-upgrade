@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Unattended upgrade to the newest release. OFF by default: nothing installs or enables it except
+# `sudo cc-desk-tunnel auto-upgrade enable` (deploy/manage.sh), which also writes the settings below into a drop-in of
+# cc-desk-tunnel-auto-upgrade.service; `auto-upgrade disable` stops and removes it again.
+#   CC_DESK_TUNNEL_DIR    the program directory (default /opt/cc-desk-tunnel)
+#   CC_DESK_TUNNEL_REPO   the GitHub repository releases come from (default rubyangxg/cc-desk-tunnel, as install.sh)
+#   PROXY_DEPLOY_CONFIG   the deployment configuration (default .local/docker.env in the program directory)
+# It only ever moves forward: the version compared is the one the service actually runs (install.sh's
+# running_version, which also sees an upgrade made from the client), and a release that is not newer is skipped
+# before anything is downloaded or backed up. The archive is checked against the release's SHA256SUMS (a checksum,
+# not a signature), the data is backed up, and `manage.sh upgrade --from` replaces the container and waits until it
+# is healthy.
+set -euo pipefail
+umask 077
+
+root="${CC_DESK_TUNNEL_DIR:-/opt/cc-desk-tunnel}"
+# One directory for cache, backups and lock instead of the system ones; for tests.
+state="${CC_DESK_TUNNEL_AUTO_UPGRADE_STATE:-}"
+cache="${state:+$state/cache}"; cache="${cache:-/var/cache/cc-desk-tunnel-auto-upgrade}"
+backup_root="${state:+$state/backups}"; backup_root="${backup_root:-/var/backups/cc-desk-tunnel}"
+lock="${state:+$state/lock}"; lock="${lock:-/run/lock/cc-desk-tunnel-auto-upgrade.lock}"
+config="${PROXY_DEPLOY_CONFIG:-$root/.local/docker.env}"
+
+[[ "$(id -u)" = 0 ]] || { echo "needs root" >&2; exit 1; }
+for file in "$root/deploy/manage.sh" "$root/deploy/install.sh" "$root/apps/desktop/package.json" "$config"; do
+  [[ -f "$file" ]] || { echo "missing $file" >&2; exit 1; }
+done
+install -d -m 0700 "$cache" "$backup_root" "$(dirname -- "$lock")"
+
+exec 9>"$lock"
+flock -n 9 || { echo "another upgrade check is already running"; exit 0; }
+
+# The repository and the running version exactly as the installer has them.
+export CC_DESK_TUNNEL_DIR="$root" CC_DESK_TUNNEL_LIBRARY=1
+# shellcheck source=SCRIPTDIR/../install.sh
+source "$root/deploy/install.sh"
+repo="${REPO:?}"
+current="$(running_version "$config")"
+[[ "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cannot tell the local version" >&2; exit 1; }
+
+work="$(mktemp -d "$cache/run.XXXXXX")"
+trap 'rm -rf -- "$work"' EXIT
+
+curl -fLsS --connect-timeout 20 --max-time 60 \
+  "https://github.com/$repo/releases/latest/download/SHA256SUMS" -o "$work/SHA256SUMS"
+archive="$(awk '$2 ~ /^cc-desk-tunnel-server-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz$/ { print $2 }' "$work/SHA256SUMS" | head -n 1)"
+[[ -n "$archive" ]] || { echo "the latest release of $repo has no server archive" >&2; exit 1; }
+latest="${archive#cc-desk-tunnel-server-}"; latest="${latest%.tar.gz}"
+
+if [[ "$current" == "$latest" ]]; then
+  echo "already current version=$current"
+  exit 0
+fi
+# Downgrade guard: never install a release that is not strictly newer than what runs.
+if [[ "$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -n 1)" != "$latest" ]]; then
+  echo "skip remote=$latest is not newer than local=$current"
+  exit 0
+fi
+
+# The version found is fetched by its own address, even if the newest release changes meanwhile.
+curl -fLsS --connect-timeout 20 --max-time 600 \
+  "https://github.com/$repo/releases/download/v$latest/$archive" -o "$work/$archive"
+(cd "$work" && grep -F "  $archive" SHA256SUMS | sha256sum -c - >/dev/null) \
+  || { echo "checksum mismatch target=$latest" >&2; exit 1; }
+tar -tzf "$work/$archive" | grep -Fx deploy/manage.sh >/dev/null
+if tar -tzf "$work/$archive" | grep -E '(^/|(^|/)\.\.(/|$))' >/dev/null; then
+  echo "unsafe archive paths" >&2
+  exit 1
+fi
+
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+backup="$backup_root/$stamp-$latest.tar.gz"
+bash "$root/deploy/manage.sh" backup "$backup" >/dev/null 2>&1
+cp -p "$config" "$backup_root/$stamp-docker.env"
+
+# manage.sh prints connection credentials in its normal summary; suppress it entirely. It fails unless the new
+# container becomes healthy.
+if ! bash "$root/deploy/manage.sh" upgrade --from "$work/$archive" >/dev/null 2>&1; then
+  echo "upgrade failed target=$latest backup=$backup" >&2
+  exit 1
+fi
+echo "upgrade-success from=$current to=$latest backup=$backup"
