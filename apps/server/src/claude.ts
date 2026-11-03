@@ -20,6 +20,7 @@ import { loginOf, nativeCapabilities, nativeMetrics, Quotas } from './native-con
 import type { NativeInput } from './native-input.ts';
 import { readNativeSettings, settingsPath } from './native-settings.ts';
 import { questionTally } from './question.ts';
+import { RUN_MARKER } from './process-tree.ts';
 
 // Whether reasoning summaries are asked for. A settings file that cannot be read leaves them on.
 function thinkingShown(options: ClaudeOptions) {
@@ -44,6 +45,8 @@ export type ClaudeOptions = {
 };
 export type ClaudeRun = {
   sessionId: string;
+  // Marks the CLI and every process it starts, so the run manager can find and kill them.
+  runId?: string;
   nativeSessionId?: string;
   // Read the current policy, including changes made after this run started.
   stopAtQuota?: () => boolean;
@@ -99,6 +102,21 @@ const quotaOf =
   (login: string, asked = false) =>
   (query: Query) =>
     quotas.through(login, query, { asked });
+// The CLI's environment: the service's own with what the options add, and the run's marker.
+export function cliEnvironment(
+  environment: Record<string, string | undefined> | undefined,
+  runId?: string,
+  base: NodeJS.ProcessEnv = process.env,
+): Record<string, string | undefined> {
+  return {
+    ...base,
+    // The longest a single command may be given before it goes to the background instead of holding the turn:
+    // five minutes, unless set otherwise.
+    BASH_MAX_TIMEOUT_MS: base.BASH_MAX_TIMEOUT_MS ?? '300000',
+    ...environment,
+    ...(runId ? { [RUN_MARKER]: runId } : {}),
+  };
+}
 // `sessionId` is the proxy's name for the session, which a scheduled task needs to continue it.
 export function remotePrompt(
   projectPath: string,
@@ -255,7 +273,7 @@ export async function runClaude(
           ],
         },
         maxTurns: options.maxTurns,
-        env: { ...process.env, ...options.environment },
+        env: cliEnvironment(options.environment, run.runId),
         stderr: (text) => {
           stderr = (stderr + text).slice(-8192);
         },

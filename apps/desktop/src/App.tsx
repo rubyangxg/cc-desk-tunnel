@@ -51,6 +51,7 @@ import SessionBar from './SessionBar.tsx';
 import { isHere, thisDevice } from './device.ts';
 import { isMac, selfUpdating } from './platform.ts';
 import { useDrafts } from './drafts.ts';
+import RunsPanel from './RunsPanel.tsx';
 import SchedulePanel from './SchedulePanel.tsx';
 import { taskMessage, useSchedules } from './schedules.ts';
 import type { Scenario } from './Composer.tsx';
@@ -1490,6 +1491,9 @@ export function App({
               },
             ]
           : []),
+        ...(state.features.includes('run-manager')
+          ? [{ label: '运行管理', checked: place.page === 'runs', run: () => open('runs') }]
+          : []),
         {
           label: '设置',
           hint: hint('settings'),
@@ -1734,7 +1738,9 @@ export function App({
             ? (selected?.title ?? 'CC Desk Tunnel')
             : place.page === 'schedules'
               ? '定时任务'
-              : sectionNames[place.section]
+              : place.page === 'runs'
+                ? '运行管理'
+                : sectionNames[place.section]
         }
         back={!terminalSessionId && stepAvailable(-1) ? () => step(-1) : undefined}
         forward={!terminalSessionId && stepAvailable(1) ? () => step(1) : undefined}
@@ -1750,6 +1756,7 @@ export function App({
         page={place.page}
         go={(page) => open(page)}
         schedules={host.schedules}
+        runs={state.features.includes('run-manager')}
         update={host.serviceManagement ? pendingUpdate : null}
         openUpdate={(position) => setMenu({ kind: 'update', ...position })}
         openSettings={(position) => setMenu({ kind: 'settings', ...position })}
@@ -1835,6 +1842,13 @@ export function App({
               />
             )
           }
+        />
+      ) : place.page === 'runs' ? (
+        <RunsPanel
+          client={client}
+          connected={connected}
+          supported={state.features.includes('run-manager')}
+          open={show}
         />
       ) : place.page === 'schedules' ? (
         <SchedulePanel

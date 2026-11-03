@@ -86,10 +86,20 @@ export function describe(tool: Tool, active: boolean) {
 }
 
 // The folded line for a run of tool calls: what is happening now, or what was done.
-export function summarize(work: Work, active: boolean, latest: boolean) {
+// `ongoing`: a call its run still waits on, though a later question closed the turn it is in.
+export function summarize(
+  work: Work,
+  active: boolean,
+  latest: boolean,
+  ongoing?: (tool: Tool) => boolean,
+) {
   const tools = work.items.filter((item): item is Tool => item.kind === 'tool');
   const waiting = tools.find((tool) => tool.state === 'approval');
-  const running = active ? tools.filter(isRunning) : [];
+  const running = active
+    ? tools.filter(isRunning)
+    : ongoing
+      ? tools.filter((tool) => isRunning(tool) && ongoing(tool))
+      : [];
   const started = work.items[0].at;
   const last = work.items.at(-1)!;
   const ended = running.length

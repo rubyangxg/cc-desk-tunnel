@@ -1440,3 +1440,54 @@ test('large history is negotiated into bounded frames and legacy readers get an 
   );
   assert.ok(await f.create(client), 'the same connection still accepts a normal request');
 });
+
+test('the run manager lists every run with its pending tool and force-stops one', async (t) => {
+  const f = await fixture(t);
+  const client = await f.connect();
+  const sessionId = await f.create(client);
+  await client.request({ type: 'message.send', sessionId, text: '运行管理', scenario: 'tool' });
+  await client.event('approval.requested');
+  const requestId = randomUUID();
+  client.send({ type: 'runs.list', requestId });
+  const state = await client.wait(
+    (message) => message.type === 'runs.state' && message.requestId === requestId,
+  );
+  assert.ok(state.type === 'runs.state');
+  assert.equal(state.runs.length, 1);
+  const [run] = state.runs;
+  assert.equal(run.sessionId, sessionId);
+  assert.equal(run.title, '中文会话');
+  assert.equal(run.device.name, '测试设备');
+  assert.equal(run.status, 'awaiting_approval');
+  assert.equal(run.processes, null);
+  assert.deepEqual(
+    run.tools.map((tool) => [tool.name, tool.summary, tool.remote]),
+    [['PowerShell', 'Get-Location', false]],
+  );
+  // A command alone can only be killed where its processes can be found.
+  const one = await client.request({
+    type: 'run.kill',
+    sessionId,
+    runId: run.runId,
+    toolId: run.tools[0].toolId,
+  });
+  assert.ok(one.type === 'response' && !one.ok && one.code === 'process_not_found');
+  const killed = await client.request({ type: 'run.kill', sessionId, runId: run.runId });
+  assert.ok(killed.type === 'response' && killed.ok);
+  assert.equal(f.server.store.get(sessionId).session.activeRun, null);
+  const status = f.server.store
+    .snapshot(sessionId)
+    .events.findLast((event) => event.payload.type === 'run.status');
+  assert.ok(status?.payload.type === 'run.status');
+  assert.equal(status.payload.status, 'cancelled');
+  assert.equal(status.payload.reason, '已强制停止');
+  // What is gone already is nothing.
+  const late = await client.request({ type: 'run.kill', sessionId, runId: run.runId });
+  assert.ok(late.type === 'response' && late.ok);
+  const empty = randomUUID();
+  client.send({ type: 'runs.list', requestId: empty });
+  const after = await client.wait(
+    (message) => message.type === 'runs.state' && message.requestId === empty,
+  );
+  assert.ok(after.type === 'runs.state' && after.runs.length === 0);
+});

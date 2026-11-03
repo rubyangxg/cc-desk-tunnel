@@ -1,13 +1,21 @@
-import { CalendarClock, Download, MessagesSquare, Settings, UsersRound } from 'lucide-react';
+import {
+  Activity,
+  CalendarClock,
+  Download,
+  MessagesSquare,
+  Settings,
+  UsersRound,
+} from 'lucide-react';
 import type { MenuPosition } from './ui.tsx';
 
-export type Page = 'chat' | 'schedules' | 'settings';
+export type Page = 'chat' | 'schedules' | 'runs' | 'settings';
 
 // The narrow column of pages at the window's left edge. The update button is there only when there is
 // something to install.
 export default function Rail({
   page,
   schedules = true,
+  runs = false,
   go,
   update,
   openUpdate,
@@ -16,6 +24,8 @@ export default function Rail({
 }: {
   page: Page;
   schedules?: boolean;
+  // The service lists its runs.
+  runs?: boolean;
   go: (page: Page) => void;
   update: string | null;
   openUpdate: (position: MenuPosition) => void;
@@ -46,6 +56,17 @@ export default function Rail({
           onClick={() => go('schedules')}
         >
           <CalendarClock />
+        </button>
+      )}
+      {runs && (
+        <button
+          type="button"
+          title="运行管理"
+          aria-label="运行管理"
+          aria-current={page === 'runs' ? 'page' : undefined}
+          onClick={() => go('runs')}
+        >
+          <Activity />
         </button>
       )}
       <span className="rail-space" />

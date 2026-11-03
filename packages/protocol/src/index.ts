@@ -950,6 +950,19 @@ export const commandSchema = z.discriminatedUnion('type', [
       toolId: z.string().min(1).max(200),
     })
     .strict(),
+  // Every run going on in this service, whichever session and computer it belongs to: for the run manager.
+  z.object({ type: z.literal('runs.list'), ...request }).strict(),
+  // Ends a run at once, without the graceful stop: the CLI and every process it started are killed. With a tool,
+  // only the processes of that command are killed and the run goes on.
+  z
+    .object({
+      type: z.literal('run.kill'),
+      ...request,
+      sessionId: id,
+      runId: id,
+      toolId: z.string().min(1).max(200).optional(),
+    })
+    .strict(),
   z
     .object({
       type: z.literal('approval.reply'),
@@ -1027,6 +1040,34 @@ const readyMessageSchema = z.object({
   features: z.array(z.string()).optional(),
   browser: z.object({ sessionId: id, serverDeviceId: id, selfSigned: z.boolean() }).optional(),
 });
+// A run as the run manager shows it: where it is, what it waits on, and the commands and tasks it has going.
+export const runInfoSchema = z.object({
+  sessionId: id,
+  runId: id,
+  title: z.string(),
+  projectPath: z.string(),
+  device: z.object({ id: z.string(), name: z.string() }),
+  startedAt: z.string(),
+  status: z.enum(['running', 'awaiting_approval', 'background', 'quota']),
+  // Messages the CLI has been handed but not taken in yet, and those still waiting in the session's queue.
+  queued: z.number().int().nonnegative(),
+  queue: z.number().int().nonnegative(),
+  // Processes of the run on the service (the CLI and what it started); null where they cannot be read.
+  processes: z.number().int().nonnegative().nullable(),
+  tools: z.array(
+    z.object({
+      toolId: z.string().min(1),
+      taskId: z.string().optional(),
+      name: z.string(),
+      summary: z.string(),
+      startedAt: z.string(),
+      // Run on the session's computer over SSH rather than on the service.
+      remote: z.boolean(),
+    }),
+  ),
+  tasks: z.array(z.object({ id: z.string().min(1), kind: z.string(), description: z.string() })),
+});
+export type RunInfo = z.infer<typeof runInfoSchema>;
 export const serverMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('pool.state'), ...serverPoolStateSchema.shape }),
   readyMessageSchema,
@@ -1078,6 +1119,7 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('usage.summary'), requestId: id, ...usageSummarySchema.shape }),
   z.object({ type: z.literal('usage.page'), requestId: id, ...usagePageSchema.shape }),
+  z.object({ type: z.literal('runs.state'), requestId: id, runs: z.array(runInfoSchema) }),
   // What a whole session has cost so far, summed from the model requests the call log holds for it.
   z.object({
     type: z.literal('session.stats'),

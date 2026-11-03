@@ -31,7 +31,7 @@ import {
   X,
 } from 'lucide-react';
 import type { Session, SessionEvent } from '@cc-desk-tunnel/protocol';
-import { describe, duration, summarize } from './activity.ts';
+import { describe, duration, isRunning, summarize } from './activity.ts';
 import type { Category } from './activity.ts';
 import type { HistoryState, TaskProgress } from './client.ts';
 import { RunStatus, TaskLine, terminalState } from './RunStatus.tsx';
@@ -76,6 +76,8 @@ type Live = {
   taskControl: (tool: Tool) => 'ready' | 'sent' | undefined;
   endTool: (tool: Tool) => void;
   backgroundTool: (tool: Tool) => void;
+  // A call the session's run is still on, whether or not a later question closed the turn it is in.
+  ongoing: (tool: Tool) => boolean;
   // Absent while a fork cannot be made.
   edit?: (item: Text) => void;
 };
@@ -197,7 +199,10 @@ function TaskActions({
 }
 
 function ToolRow({ tool, active, live }: { tool: Tool; active: boolean; live: Live }) {
-  const { category, verb, subject, added, removed, running, failed } = describe(tool, active);
+  const { category, verb, subject, added, removed, running, failed } = describe(
+    tool,
+    active || live.ongoing(tool),
+  );
   const Icon = icons[category];
   const pictures = useMemo(() => (tool.output ? toolPictures(tool.output) : null), [tool.output]);
   const approval = live.canApprove(tool);
@@ -361,7 +366,7 @@ function WorkGroup({
   latest: boolean;
   live: Live;
 }) {
-  const { label, waiting, running, started, ended } = summarize(work, active, latest);
+  const { label, waiting, running, started, ended } = summarize(work, active, latest, live.ongoing);
   // The one call of the group waited on in the foreground can be acted on without opening it; several are acted on
   // in their own lines.
   const controlled = work.items.filter(
@@ -515,6 +520,11 @@ function heldOpen(turns: Turn[], index: number) {
   return last > index && !turns[last].endedAt;
 }
 
+const toolsOf = (turn: Turn) =>
+  turn.steps.flatMap((step) =>
+    step.kind === 'work' ? step.items.filter((item): item is Tool => item.kind === 'tool') : [],
+  );
+
 function TurnView({
   turn,
   native,
@@ -529,6 +539,9 @@ function TurnView({
   held: boolean;
 }) {
   const active = !turn.endedAt;
+  // A question sent while a command runs closes the turn before it, yet the run still waits on that command:
+  // the turn stays open so the command is seen running.
+  const hanging = !active && toolsOf(turn).some(live.ongoing);
   const expanded = usePrefs().view.mode === 'expanded';
   const notes = turn.steps.filter((step) => step.kind === 'assistant').length;
   // A turn of nothing but a compaction, as /compact makes, has nothing to fold away.
@@ -574,7 +587,7 @@ function TurnView({
           />
         )
       )}
-      {active || held || expanded || !folds
+      {active || hanging || held || expanded || !folds
         ? steps()
         : turn.steps.length > 0 && (
             <Fold
@@ -835,7 +848,17 @@ export default function Conversation({
       sendTask(tool.id);
       backgroundTask(tool.id);
     },
+    ongoing: (tool) => session?.activeRun?.id === tool.runId && isRunning(tool),
   };
+  // Questions sent while a command runs in the foreground wait until it is over: the command they wait on, and
+  // how many there are.
+  const activeRunId = session?.activeRun?.id;
+  const waitingMessages = activeRunId
+    ? turns.filter(
+        (turn) => turn.question?.runId === activeRunId && turn.question.delivery === '等待原生处理',
+      ).length
+    : 0;
+  const blocking = waitingMessages ? turns.flatMap(toolsOf).findLast(live.ongoing) : undefined;
   const scroll = useRef<HTMLDivElement>(null);
   // The view follows new output until the reader moves up from the end, and again once they come back down to it.
   const follow = useRef(true);
@@ -1115,6 +1138,20 @@ export default function Conversation({
                 />
               ))}
             </LinkPlace.Provider>
+            {blocking && (
+              <div className="queue-blocked" role="status">
+                <LoaderCircle className="spinning" />
+                <span>
+                  {waitingMessages} 条消息在等当前命令结束：
+                  <code>{describe(blocking, true).subject}</code>
+                  <small>已运行 {duration(blocking.at, now)}</small>
+                  {!live.taskControl(blocking) && ' · 可在“运行管理”里停止或强制停止'}
+                </span>
+                {live.taskControl(blocking) && (
+                  <TaskActions tool={blocking} control={live.taskControl(blocking)!} live={live} />
+                )}
+              </div>
+            )}
             {session.activeRun && background && (
               <div className="background-tasks">
                 <div className="run-indicator" role="status">

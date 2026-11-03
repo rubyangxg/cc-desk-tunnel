@@ -1930,6 +1930,227 @@ kbd {
   color: var(--accent-strong);
 }
 /* Scheduled tasks are listed in the side column; the form is in the page. */
+/* The run manager: one card per run, its commands and background tasks under it. */
+.runs-side-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.runs-side-item:hover {
+  background: var(--hover);
+}
+.runs-side-item strong {
+  font-weight: 500;
+  font-size: 13.5px;
+  overflow-wrap: anywhere;
+}
+.runs-side-item small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.runs-page {
+  max-width: 920px;
+}
+.runs-intro {
+  margin: -10px 0 18px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.runs-empty {
+  padding: 30px 0;
+  color: var(--muted);
+  text-align: center;
+}
+.runs-notice {
+  color: var(--muted);
+  font-size: 13px;
+}
+.run-card {
+  margin-bottom: 14px;
+  padding: 14px 18px;
+}
+.run-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.run-card-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.run-card-title .text-link {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.run-status {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--hover);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+.run-status-running {
+  color: var(--accent);
+}
+.run-status-awaiting_approval,
+.run-status-quota {
+  background: var(--warn-soft);
+  color: var(--warn-text);
+}
+.run-card-actions,
+.run-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.run-card-actions .button,
+.run-item-actions .button {
+  min-height: 28px;
+  padding: 2px 10px;
+  font-size: 12.5px;
+}
+.run-card-actions svg,
+.run-item-actions svg {
+  width: 14px;
+  height: 14px;
+}
+.run-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 8px 0 4px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.run-card-meta > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.run-card-meta svg {
+  width: 13px;
+  height: 13px;
+}
+.run-queued {
+  color: var(--warn-text);
+}
+.run-section {
+  margin: 12px 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.run-none {
+  margin: 0 0 4px;
+  font-size: 12.5px;
+}
+.run-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.run-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line-soft);
+}
+.run-item-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 0;
+}
+.run-item-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.run-where {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 400;
+}
+.run-where.remote {
+  color: var(--warn-text);
+}
+.run-where svg {
+  width: 12px;
+  height: 12px;
+}
+.run-item-time {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.run-command {
+  display: block;
+  max-height: 4.8em;
+  overflow: hidden;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* Under questions that wait on a command still running in the foreground. */
+.queue-blocked {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-s);
+  background: var(--warn-soft);
+  color: var(--warn-text);
+  font-size: 13px;
+}
+.queue-blocked > svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+.queue-blocked > span {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.queue-blocked code {
+  margin: 0 4px;
+}
+.queue-blocked small {
+  margin-left: 6px;
+  color: var(--muted);
+}
 .schedule-row {
   display: flex;
   align-items: flex-start;

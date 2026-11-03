@@ -31,6 +31,10 @@ export class NativeInput {
     this.emit({ type: 'message.delivery', messageId: id, status: 'submitted' });
     this.wake?.();
   }
+  // Messages handed over that Claude has not taken in yet.
+  waiting() {
+    return [...this.outstanding.values()].filter((pending) => !pending.received).length;
+  }
   firstText() {
     return this.messages.find((message) => !message.internal)?.text;
   }

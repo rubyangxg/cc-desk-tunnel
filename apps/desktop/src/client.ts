@@ -28,6 +28,7 @@ type DataMessage = Extract<
       | 'usage.summary'
       | 'usage.page'
       | 'session.stats'
+      | 'runs.state'
       | 'settings.state'
       | 'instructions.state'
       | 'session.snapshot'
@@ -43,6 +44,7 @@ type Replies = {
   'usage.summary': 'usage.summary';
   'usage.query': 'usage.page';
   'session.stats': 'session.stats';
+  'runs.list': 'runs.state';
   'settings.get': 'settings.state';
   'settings.update': 'settings.state';
   'instructions.get': 'instructions.state';
@@ -611,6 +613,7 @@ export class ProxyClient {
         message.type === 'usage.summary' ||
         message.type === 'usage.page' ||
         message.type === 'session.stats' ||
+        message.type === 'runs.state' ||
         message.type === 'settings.state' ||
         message.type === 'instructions.state' ||
         message.type === 'web.settings.state' ||

@@ -43,6 +43,7 @@ import type {
   EventPayload,
   TerminalActivity,
   Fragment,
+  RunInfo,
   ServerMessage,
   Session,
   TerminalControl,
@@ -87,6 +88,7 @@ import type { UpdateOptions } from './updates.ts';
 import { UsageLog, createUsageReceiver, telemetryEnvironment } from './usage.ts';
 import { WebAccess } from './web-access.ts';
 import { browserActivity, browserCommands, isWebCommand } from './web-commands.ts';
+import { commandProcesses, killAll, runProcesses } from './process-tree.ts';
 
 type Peer = {
   socket: WebSocket;
@@ -138,6 +140,12 @@ export type Run = {
     backgroundTask?: (toolId: string) => Promise<boolean>;
   };
   quotaWaiting?: boolean;
+  // For the run manager: when it began, its tool calls not answered yet, the CLI's background tasks, and whether
+  // it waits only for those.
+  startedAt: number;
+  live: Map<string, { name: string; input: string; at: number; taskId?: string }>;
+  tasks: { id: string; kind: string; description: string }[];
+  background?: boolean;
   quotaDeadline?: { accountId: string; at: number };
   wakeQuota?: () => void;
   attempted?: Set<string>;
@@ -190,6 +198,28 @@ type Seat = {
 };
 type Login = { process: NativeLogin; owner: Peer; url?: string };
 type CommandOf<T extends Command['type']> = Extract<Command, { type: T }>;
+// A tool call's input as the run manager shows it: the command of a shell call, else what says most of it.
+function toolFields(input: string): Record<string, unknown> | undefined {
+  try {
+    const value: unknown = JSON.parse(input);
+    return value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+export function toolCommand(input: string) {
+  const command = toolFields(input)?.command;
+  return typeof command === 'string' ? command : '';
+}
+export function toolSummary(input: string) {
+  const fields = toolFields(input);
+  if (!fields) return input.slice(0, 2000);
+  for (const key of ['command', 'description', 'prompt', 'file_path', 'pattern', 'url', 'query']) {
+    const value = fields[key];
+    if (typeof value === 'string' && value.trim()) return value.slice(0, 2000);
+  }
+  return input.slice(0, 2000);
+}
 export type ServerOptions = {
   token: string;
   dataDir: string;
@@ -817,6 +847,33 @@ export function createProxyServer(options: ServerOptions) {
     run.open = undefined;
     record(run.sessionId, run.id, open);
   }
+  // What the run manager shows of a run, kept up from what the run tells.
+  function observeRun(run: Run, payload: EventPayload) {
+    switch (payload.type) {
+      case 'tool.requested':
+        run.live.set(payload.toolId, { name: payload.name, input: payload.input, at: Date.now() });
+        break;
+      case 'tool.input': {
+        const tool = run.live.get(payload.toolId);
+        if (tool) tool.input = payload.input;
+        break;
+      }
+      case 'tool.task': {
+        const tool = run.live.get(payload.toolId);
+        if (tool) tool.taskId = payload.taskId;
+        break;
+      }
+      case 'tool.result':
+        run.live.delete(payload.toolId);
+        break;
+      case 'native.tasks':
+        run.tasks = payload.tasks;
+        break;
+      case 'run.status':
+        run.background = payload.waiting === 'background';
+        break;
+    }
+  }
   function emit(run: Run, payload: EventPayload) {
     // A background task's word of itself is for whoever is watching now.
     if (payload.type === 'native.progress') {
@@ -838,6 +895,7 @@ export function createProxyServer(options: ServerOptions) {
       return;
     }
     settle(run);
+    observeRun(run, payload);
     if (payload.type === 'native.session' && pool) {
       const account = pool.get(store.get(run.sessionId).session.accountId ?? 'default');
       payload = { ...payload, accountId: account.id, accountName: account.name };
@@ -909,6 +967,78 @@ export function createProxyServer(options: ServerOptions) {
     if (status !== 'completed' || run.cancelReason)
       pauseQueue(run.sessionId, '任务已停止或失败，请确认后继续队列。');
     else queueMicrotask(() => drainQueue(run.sessionId));
+  }
+  // What the run manager shows of a run.
+  function runInfo(run: Run): RunInfo {
+    const { session } = store.get(run.sessionId);
+    const device =
+      run.device === serverDevice.id
+        ? serverDevice
+        : (session.device ?? { id: run.device, name: run.device.slice(0, 8) });
+    const processes = options.claude ? runProcesses(run.id) : null;
+    return {
+      sessionId: run.sessionId,
+      runId: run.id,
+      title: session.title,
+      projectPath: session.projectPath,
+      device: { id: device.id, name: device.name },
+      startedAt: new Date(run.startedAt).toISOString(),
+      status: run.quotaWaiting
+        ? 'quota'
+        : run.approvals.size || (run.approvalId && run.decide)
+          ? 'awaiting_approval'
+          : run.background
+            ? 'background'
+            : 'running',
+      queued: run.input?.waiting() ?? 0,
+      queue: session.messageQueue?.items.length ?? 0,
+      processes: processes && processes.length,
+      tools: [...run.live].map(([toolId, tool]) => {
+        const summary = toolSummary(tool.input);
+        return {
+          toolId,
+          ...(tool.taskId ? { taskId: tool.taskId } : {}),
+          name: tool.name,
+          summary,
+          startedAt: new Date(tool.at).toISOString(),
+          remote: /(^|[\s;&|(])ssh\s/.test(summary) || summary.includes('device-script'),
+        };
+      }),
+      tasks: run.tasks,
+    };
+  }
+  // Ends a run at once, or with a tool only the processes of its command. What is gone already is nothing.
+  function killRun(command: CommandOf<'run.kill'>) {
+    const run = runs.get(command.sessionId);
+    if (!run || run.id !== command.runId) return;
+    if (command.toolId) {
+      const tool = run.live.get(command.toolId);
+      if (!tool) return;
+      const pids = options.claude ? commandProcesses(run.id, toolCommand(tool.input)) : [];
+      if (!pids.length)
+        throw new DomainError(
+          'process_not_found',
+          '没有找到这条命令的进程，它可能已经结束；仍未结束时可强制停止整个任务。',
+        );
+      killAll(pids);
+      emit(run, {
+        type: 'native.notice',
+        text: `已强制结束命令：${toolSummary(tool.input).slice(0, 80)}`,
+      });
+      return;
+    }
+    if (!options.claude) {
+      finish(run, 'cancelled', '已强制停止');
+      return;
+    }
+    run.cancelReason = '已强制停止';
+    run.input?.close();
+    killAll(runProcesses(run.id) ?? []);
+    run.controller.abort();
+    for (const decide of run.approvals.values()) decide(false);
+    run.approvals.clear();
+    // The adapter ends the run once the CLI is gone; should it hang there, the run is ended here.
+    setTimeout(() => finish(run, 'cancelled', '已强制停止'), 10_000).unref();
   }
   // A native run ends through its own adapter, which reports what is known about in-flight tools first.
   function cancel(run: Run, reason: string) {
@@ -995,6 +1125,7 @@ export function createProxyServer(options: ServerOptions) {
               : undefined,
           ),
           input: run.input!,
+          runId: run.id,
           controls: run.controls,
           waiting: (background) =>
             emit(run, {
@@ -1948,6 +2079,9 @@ export function createProxyServer(options: ServerOptions) {
       controls: {},
       stats: inOrder(),
       goalContinuation: continued,
+      startedAt: Date.now(),
+      live: new Map(),
+      tasks: [],
     };
     runs.set(command.sessionId, run);
     if (options.claude)
@@ -2302,6 +2436,13 @@ export function createProxyServer(options: ServerOptions) {
         }
         return undefined;
       }
+      case 'runs.list':
+        send(peer, {
+          type: 'runs.state',
+          requestId: command.requestId,
+          runs: [...runs.values()].map(runInfo),
+        });
+        return undefined;
       case 'session.create': {
         const session = store.create(
           command.requestId,
@@ -2416,6 +2557,9 @@ export function createProxyServer(options: ServerOptions) {
       case 'run.task.background':
       case 'approval.reply':
         controlRun(peer, command);
+        return command.sessionId;
+      case 'run.kill':
+        killRun(command);
         return command.sessionId;
       case 'session.handoff':
       case 'run.handoff': {
@@ -2658,6 +2802,7 @@ export function createProxyServer(options: ServerOptions) {
         'terminal-quota',
         'message-queue',
         'project-move',
+        'run-manager',
         ...(pool
           ? [
               'account-pool',

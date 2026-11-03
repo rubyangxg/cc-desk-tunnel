@@ -269,3 +269,55 @@ test('a turn report names the message it answered, or none for a turn a backgrou
   assert.equal(eventSchema.safeParse(event({ ...stats, requests: -1 })).success, false);
   assert.equal(eventSchema.safeParse(event({ ...stats, partial: undefined })).success, false);
 });
+
+test('the run manager lists runs and force-stops a run or one command of it', () => {
+  const requestId = randomUUID();
+  const sessionId = randomUUID();
+  const runId = randomUUID();
+  assert.ok(commandSchema.safeParse({ type: 'runs.list', requestId }).success);
+  assert.equal(commandSchema.safeParse({ type: 'runs.list', requestId, extra: 1 }).success, false);
+  const kill = { type: 'run.kill', requestId, sessionId, runId };
+  assert.ok(commandSchema.safeParse(kill).success);
+  assert.ok(commandSchema.safeParse({ ...kill, toolId: 'call-1' }).success);
+  assert.equal(commandSchema.safeParse({ ...kill, toolId: '' }).success, false);
+  assert.equal(commandSchema.safeParse({ ...kill, runId: 'x' }).success, false);
+  const run = {
+    sessionId,
+    runId,
+    title: '会话',
+    projectPath: 'D:\\项目',
+    device: { id: randomUUID(), name: '电脑' },
+    startedAt: new Date().toISOString(),
+    status: 'running',
+    queued: 2,
+    queue: 0,
+    processes: 4,
+    tools: [
+      {
+        toolId: 'call-1',
+        taskId: 'b1',
+        name: 'Bash',
+        summary: 'ssh -F cfg device-script',
+        startedAt: new Date().toISOString(),
+        remote: true,
+      },
+    ],
+    tasks: [{ id: 'b2', kind: 'local_bash', description: 'npm run dev' }],
+  };
+  assert.ok(serverMessageSchema.safeParse({ type: 'runs.state', requestId, runs: [run] }).success);
+  assert.ok(
+    serverMessageSchema.safeParse({
+      type: 'runs.state',
+      requestId,
+      runs: [{ ...run, processes: null }],
+    }).success,
+  );
+  assert.equal(
+    serverMessageSchema.safeParse({
+      type: 'runs.state',
+      requestId,
+      runs: [{ ...run, status: 'done' }],
+    }).success,
+    false,
+  );
+});
