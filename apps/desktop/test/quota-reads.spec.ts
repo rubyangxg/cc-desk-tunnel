@@ -63,6 +63,7 @@ for (const modern of [true, false])
     await expect.poll(() => statuses.at(-1)).toBe(modern ? true : undefined);
 
     await sections.getByRole('button', { name: '常规', exact: true }).click();
+    await sections.getByRole('button', { name: '账号与额度', exact: true }).click();
     await expect(page.getByRole('switch', name)).toHaveAttribute('aria-checked', 'false');
     await page.getByRole('switch', name).click();
     await expect.poll(() => watched).toEqual(modern ? [true, false, true] : []);

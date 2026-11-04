@@ -16,6 +16,7 @@ import { DomainError } from './errors.ts';
 import { deviceTerms } from './device-terms.ts';
 import { ClaudeStream } from './claude-stream.ts';
 import type { SshConnection } from './tunnel.ts';
+import { cacheTtl } from './idle-compaction.ts';
 import { loginOf, nativeCapabilities, nativeMetrics, Quotas } from './native-controls.ts';
 import type { NativeInput } from './native-input.ts';
 import { readNativeSettings, settingsPath } from './native-settings.ts';
@@ -527,8 +528,11 @@ export async function runClaude(
         if (!run.signal.aborted) {
           try {
             const payload = await nativeMetrics(session, message, { quota: quotaOf(login) });
-            if (payload.type === 'native.metrics') metrics = payload;
-            run.emit(payload);
+            if (payload.type === 'native.metrics') {
+              metrics = payload;
+              const ttl = cacheTtl(message.usage);
+              run.emit(ttl ? { ...payload, cacheTtl: ttl } : payload);
+            } else run.emit(payload);
           } catch {
             run.emit({ type: 'native.notice', text: '本轮原生状态未能读取；任务结果不受影响。' });
           }

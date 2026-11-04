@@ -63,7 +63,11 @@ test('Claude Code settings load from the service and save each change at once', 
   await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
   await page.getByRole('button', { name: '设置与账号', exact: true }).click();
   await page.getByRole('menuitem', { name: '设置', exact: true }).click();
-  const panel = page.getByRole('region', { name: 'Claude Code 设置' });
+  await page
+    .getByRole('navigation', { name: '设置分类' })
+    .getByRole('button', { name: 'CLI 设置', exact: true })
+    .click();
+  const panel = page.getByRole('region', { name: 'CLI 设置' });
   await expect(panel.getByLabel('自动压缩窗口', { exact: true })).toHaveValue('250000');
   await expect(panel.getByLabel('快速模式', { exact: true })).toHaveValue('false');
   await panel.getByLabel('自动压缩窗口', { exact: true }).selectOption('1000000');
@@ -103,6 +107,7 @@ test('the settings of this computer open from the login page without a connectio
   await page.getByRole('button', { name: '本机设置', exact: true }).click();
   await expect(page.getByRole('navigation', { name: '设置分类' }).getByRole('button')).toHaveText([
     '常规',
+    '外观',
     '共享文档',
     '通知',
     '快捷键',
@@ -159,7 +164,10 @@ test('the global CLAUDE.md is edited here and saved only over what was read', as
   await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
   await page.getByRole('button', { name: '设置与账号', exact: true }).click();
   await page.getByRole('menuitem', { name: '设置', exact: true }).click();
-  // The other settings of the page are not answered here.
+  await page
+    .getByRole('navigation', { name: '设置分类' })
+    .getByRole('button', { name: '全局说明', exact: true })
+    .click();
   const panel = page.locator('.instructions-card');
   const editor = panel.getByLabel('全局说明', { exact: true });
   const save = panel.getByRole('button', { name: '保存', exact: true });
@@ -180,4 +188,86 @@ test('the global CLAUDE.md is edited here and saved only over what was read', as
   await panel.getByRole('button', { name: '重新载入', exact: true }).click();
   await expect(editor).toHaveValue('终端里改过\n');
   await expect(panel.getByRole('alert')).toHaveCount(0);
+});
+
+test('global instructions follow the selected pool account without changing the other account', async ({
+  page,
+}) => {
+  const files: Record<string, { text: string; version: string }> = {
+    default: { text: 'Account A instructions', version: 'a1' },
+    '22222222-2222-4222-8222-222222222222': { text: 'Account B instructions', version: 'b1' },
+  };
+  const writes: string[] = [];
+  await page.routeWebSocket('ws://127.0.0.1:18898/ws', (route) => {
+    const send = (value: unknown) => route.send(JSON.stringify(value));
+    route.onMessage((raw) => {
+      const message = JSON.parse(String(raw));
+      if (message.type === 'device') return;
+      if (message.type === 'auth')
+        return send({
+          type: 'ready',
+          protocolVersion: PROTOCOL_VERSION,
+          version: '0.4.47',
+          connectionId: randomUUID(),
+          adapter: 'claude-code',
+          features: ['account-pool'],
+          sessions: [],
+        });
+      if (message.type === 'pool.status')
+        send({
+          type: 'pool.state',
+          refreshing: false,
+          serverTime: Date.now(),
+          settings: {
+            enabled: true,
+            strategy: 'order',
+            order: ['default', '22222222-2222-4222-8222-222222222222'],
+            preferredId: 'default',
+          },
+          accounts: ['default', '22222222-2222-4222-8222-222222222222'].map((id) => ({
+            id,
+            name: id,
+            enabled: true,
+            loggedIn: true,
+            checkedAt: Date.now(),
+            blockedUntil: null,
+            login: null,
+            busy: false,
+            limits: { available: true, windows: [] },
+          })),
+        });
+      if (message.type.startsWith('instructions.')) {
+        const id = message.accountId ?? 'default';
+        if (message.type === 'instructions.update') {
+          writes.push(id);
+          files[id] = { text: message.text, version: `${id}-saved` };
+        }
+        send({ type: 'instructions.state', requestId: message.requestId, ...files[id] });
+      }
+      send({ type: 'response', requestId: message.requestId, ok: true });
+    });
+  });
+  await page.goto('/');
+  await page.getByLabel('服务地址', { exact: true }).fill('ws://127.0.0.1:18898/ws');
+  await page
+    .getByLabel('服务凭据', { exact: true })
+    .fill('test-only-account-settings-token-with-enough-length');
+  await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
+  await page.getByRole('button', { name: '设置与账号', exact: true }).click();
+  await page.getByRole('menuitem', { name: '设置', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: '设置分类' })
+    .getByRole('button', { name: '全局说明', exact: true })
+    .click();
+  const editor = page.getByRole('textbox', { name: '全局说明', exact: true });
+  await expect(editor).toHaveValue('Account A instructions');
+  await page
+    .getByLabel('说明所属 Claude 账号')
+    .selectOption('22222222-2222-4222-8222-222222222222');
+  await expect(editor).toHaveValue('Account B instructions');
+  await editor.fill('Changed B');
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect.poll(() => writes).toEqual(['22222222-2222-4222-8222-222222222222']);
+  await page.getByLabel('说明所属 Claude 账号').selectOption('default');
+  await expect(editor).toHaveValue('Account A instructions');
 });

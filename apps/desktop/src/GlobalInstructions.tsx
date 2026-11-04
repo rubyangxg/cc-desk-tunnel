@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
 import { INSTRUCTIONS_LIMIT } from '@cc-desk-tunnel/protocol';
 import type { ProxyClient } from './client.ts';
+import { Page } from './ui.tsx';
 
 // The instructions every session on this service starts with: the user CLAUDE.md of the official CLI on the cloud
 // host. A save goes through only over the version that was read, so a change made meanwhile in the terminal is not
@@ -8,9 +10,11 @@ import type { ProxyClient } from './client.ts';
 export default function GlobalInstructions({
   client,
   accountId,
+  controls,
 }: {
   client: ProxyClient;
   accountId?: string;
+  controls?: ReactNode;
 }) {
   const [saved, setSaved] = useState<{ text: string; version: string } | null>(null);
   const [text, setText] = useState('');
@@ -56,15 +60,12 @@ export default function GlobalInstructions({
     }
   }
   return (
-    <>
-      <h2 className="page-heading">全局说明（CLAUDE.md）</h2>
+    <Page
+      title="全局说明"
+      intro="云端 Claude Code 的用户级 CLAUDE.md：使用所选账号的会话开始时读取，从下一次运行起生效。Claude Code 在用户级只读 CLAUDE.md，AGENTS.md 只在项目里读取；项目在你的电脑上，其中的 CLAUDE.md 与 AGENTS.md 不会自动读取，需要时在消息里请 Claude 去读。"
+    >
+      {controls}
       <div className="card instructions-card">
-        <p className="muted">
-          云端官方 CLI 的用户级
-          CLAUDE.md：使用当前所选账号的会话开始时都会读取，从下一次运行起生效。Claude Code
-          在用户级只读 CLAUDE.md，AGENTS.md 只在项目里读取；项目在你的电脑上，其中的 CLAUDE.md 与
-          AGENTS.md 不会自动读取，需要时在消息里请 Claude 去读。
-        </p>
         <textarea
           aria-label="全局说明"
           className="instructions-editor"
@@ -101,6 +102,6 @@ export default function GlobalInstructions({
           </button>
         </div>
       </div>
-    </>
+    </Page>
   );
 }

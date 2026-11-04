@@ -36,10 +36,10 @@ export function proxyFor(url, env = process.env) {
 // One signed-in connection to the service, as this computer. `closed` resolves when it ends, whichever side ended
 // it; `lost` tells a fault on the way from an end asked for.
 export class Service extends EventEmitter {
-  static async connect({ url, fingerprint, token, deviceId, log = () => {} }) {
+  static async connect({ url, fingerprint, token, deviceId, waits, log = () => {} }) {
     const service = new Service();
     service.bridge = await openProxyBridge(
-      { url, fingerprint },
+      { url, fingerprint, waits },
       {
         ...components(),
         environment: {},
@@ -86,6 +86,7 @@ export class Service extends EventEmitter {
           this.connectionId = message.connectionId;
           this.version = message.version;
           this.features = message.features ?? [];
+          this.update = message.update;
           resolve();
         } else if (message.type === 'connection.error') {
           this.error = message;
@@ -99,6 +100,10 @@ export class Service extends EventEmitter {
           this.sessions.set(message.session.id, message.session);
         else if (message.type === 'session.deleted') this.sessions.delete(message.sessionId);
         else if (message.type === 'devices') this.devices = message.devices;
+        else if (message.type === 'service.update') {
+          const { type: _type, ...update } = message;
+          this.update = update;
+        }
         const waiting = message.requestId && this.waiting.get(message.requestId);
         if (waiting) {
           this.waiting.delete(message.requestId);

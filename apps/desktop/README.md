@@ -155,3 +155,5 @@ Electron 选择“远程代理”，输入可信 WSS 地址、代理 token；自
 显式启用真实测试：设置 `NATIVE_TEST_CONFIG` 指向私有 `{url,token,fingerprint?}` 连接配置，运行 `npm run test:ui`。真实测试会消耗账号额度并操作 `.local/` 下的夹具，不在离线测试中默认启用。总体边界见[架构](../../docs/architecture.md)。
 
 发行回归单独设置 `WINDOWS_PACKAGE_EXE` 为待测 exe 的绝对路径，执行 `npm run test:ui -- --grep "packaged exe"`；同时设置 `NATIVE_TEST_CONFIG` 时只做真实连接 / 账号状态 / 关闭回收，不发送问答。测试移除开发工具 PATH / 组件覆盖变量、从独立 cwd 启动并检查单实例。截图和 profile 仍在忽略目录中，不提交实际账号记录。
+
+设置页按本机、服务端和 Claude Code 分组；CLI 设置和全局说明可选择所属账号。上下文与缓存中的空闲自动压缩默认关闭，需先升级服务端。

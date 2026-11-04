@@ -230,3 +230,13 @@ We recognize [LINUX DO](https://linux.do/) and its values of sincerity, friendli
 ## License
 
 [Apache License 2.0](LICENSE). Bundled third-party components and their licenses are listed in [NOTICE](NOTICE).
+
+### One-line Windows ccdt installer
+
+The personal release provides Windows clients and server packages. In PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/rubyangxg/cc-desk-tunnel/personal/deploy/install-ccdt.ps1 | iex
+```
+
+The installer verifies the official personal release SHA256 before installing.

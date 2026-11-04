@@ -64,6 +64,7 @@ import {
   probeFailureMessages,
   trackTask,
 } from './diagnostics.ts';
+import { IdleCompactions } from './idle-compaction.ts';
 import { NativeInput } from './native-input.ts';
 import { statusLineQuota } from './native-controls.ts';
 import { completeOnboarding } from './native-onboarding.ts';
@@ -144,6 +145,7 @@ export type Run = {
   nativeId?: string;
   goalContinuation?: boolean;
   goalIntent?: boolean;
+  compacting?: boolean;
   // Serialize reports so later totals never arrive before earlier ones.
   stats: ReturnType<typeof inOrder>;
 };
@@ -255,6 +257,8 @@ export function createProxyServer(options: ServerOptions) {
   let poolRefresh: Promise<void> | undefined;
   let poolTimer: NodeJS.Timeout | undefined;
   const seats = new Map<string, Seat>();
+  const compactions = new IdleCompactions(store.directory, compactIdle);
+  armCompactions();
   const graceMs = options.graceMs ?? (options.claude ? 300_000 : 0);
   let login: Login | undefined;
   // Each run or terminal is a CLI process that keeps some 250 MB; more of them than the memory holds would
@@ -808,7 +812,57 @@ export function createProxyServer(options: ServerOptions) {
       usage.observe(payload.rateLimits);
     const event = store.append(sessionId, runId, payload, createdAt);
     broadcast({ type: 'session.event', event }, sessionId);
+    if (payload.type === 'native.metrics' && payload.cacheTtl)
+      compactions.arm(sessionId, Date.parse(event.createdAt), payload);
+    else if (payload.type === 'message.user') compactions.cancel(sessionId);
     return event;
+  }
+  // Each session's last turn sets when it is compacted while idle, as after the service starts or the setting changes.
+  function armCompactions() {
+    if (!compactions.settings.enabled) return;
+    for (const session of store.list()) {
+      const turn = !session.activeRun && store.lastCachedTurn(session.id);
+      if (turn) compactions.arm(session.id, turn.endedAt, turn.metrics);
+    }
+  }
+  // Compacts an idle session before its prompt cache lapses, as the compact button does; see idle-compaction.ts. It
+  // runs here whether or not a window or the session's computer is there. A session that runs, or that a terminal
+  // holds, is left alone: either keeps its cache current.
+  function compactIdle(sessionId: string) {
+    if (closing || !options.claude) return;
+    try {
+      const { session } = store.get(sessionId);
+      if (
+        session.activeRun ||
+        runs.has(sessionId) ||
+        terminals.has(sessionId) ||
+        mutations.size ||
+        !session.device ||
+        session.accountHandoff ||
+        session.goal ||
+        session.messageQueue?.items.length ||
+        session.messageQueue?.handoff ||
+        !availableAccount(pool!.get(session.accountId ?? 'default'))
+      )
+        return;
+      const events = store.snapshot(sessionId).events;
+      const lastStatus = events.findLast((event) => event.payload.type === 'run.status');
+      if (
+        lastStatus?.payload.type !== 'run.status' ||
+        lastStatus.payload.status !== 'completed' ||
+        handoffBlockReason(events, lastStatus.runId)
+      )
+        return;
+      submit(undefined, { type: 'session.compact', requestId: randomUUID(), sessionId }, session);
+      const run = runs.get(sessionId);
+      if (run)
+        emit(run, {
+          type: 'native.notice',
+          text: `上一轮结束已 ${compactions.settings.afterMinutes} 分钟，提示缓存即将过期：按设置自动压缩上下文，压缩读取的是缓存。`,
+        });
+    } catch {
+      // As many runs as the service holds are going, or the session's native record is gone: left as it is.
+    }
   }
   // Records what has arrived of the output the run is in the middle of.
   function settle(run: Run) {
@@ -973,7 +1027,13 @@ export function createProxyServer(options: ServerOptions) {
         const accountId = session.accountId ?? 'default';
         const claude = pool!.options(accountId);
         run.nativeId = session.nativeSessionId ?? session.id;
-        const ssh = run.device === serverDevice.id ? undefined : seats.get(run.device)!.door!.ssh!;
+        const door = seats.get(run.device)?.door?.ssh;
+        const ssh =
+          run.device === serverDevice.id
+            ? undefined
+            : door
+              ? sessionSsh(store.directory, run.sessionId, door)
+              : { configPath: sessionSshPath(store.directory, run.sessionId) };
         const said = store.promptValues(run.sessionId);
         let quota: Extract<EventPayload, { type: 'run.error' }> | undefined;
         const status = await runClaude(claude, {
@@ -1011,7 +1071,7 @@ export function createProxyServer(options: ServerOptions) {
           dataDir: store.directory,
           resume: store.hasNativeContext(run.sessionId),
           signal: run.controller.signal,
-          ssh: ssh ? sessionSsh(store.directory, run.sessionId, ssh) : undefined,
+          ssh,
           emit: (event) => {
             if (
               event.type === 'run.error' &&
@@ -1051,6 +1111,7 @@ export function createProxyServer(options: ServerOptions) {
         const goalEnded =
           (hadGoal || run.goalIntent) && store.get(run.sessionId).session.goal?.status !== 'active';
         if (
+          run.compacting ||
           status !== 'failed' ||
           run.controller.signal.aborted ||
           (!pool!.settings.enabled && !resumesAfterQuota(run)) ||
@@ -1058,7 +1119,7 @@ export function createProxyServer(options: ServerOptions) {
           goalEnded ||
           blocked
         ) {
-          if (status === 'failed' && quota && !run.controller.signal.aborted)
+          if (status === 'failed' && quota && !run.controller.signal.aborted && !run.compacting)
             emit(run, {
               type: 'native.notice',
               text: goalEnded
@@ -1067,7 +1128,7 @@ export function createProxyServer(options: ServerOptions) {
                   ? '自动接力未开启。开启账号池自动接力后，可手动继续当前任务。'
                   : `自动接力已暂停：${blocked}`,
             });
-          if (status === 'failed' && !quota)
+          if (status === 'failed' && !quota && !run.compacting)
             pool!.update(accountId, { error: '本次运行异常，请检测账号后再参与自动调度' });
           finish(run, status, run.cancelReason);
           return;
@@ -1313,9 +1374,8 @@ export function createProxyServer(options: ServerOptions) {
       await active.controls.refresh(command.quota);
       return;
     }
-    // A terminal keeps the CLI's state from being read, except for the quota the user asks for, which a CLI of its
-    // own reads without taking up the session of a terminal (its figures stay as they were).
-    if ((terminals.size && !command.quota) || runs.size || mutations.size)
+    // A terminal's session is read by a CLI of its own that does not take it up (its figures stay as they were).
+    if (runs.size || mutations.size)
       throw new DomainError('native_busy', '运行结束后再刷新原生状态。');
     const resume = !terminals.has(command.sessionId);
     const last = resume ? null : store.lastMetrics(command.sessionId);
@@ -1360,6 +1420,8 @@ export function createProxyServer(options: ServerOptions) {
     const running = terminals.get(command.sessionId);
     if (running?.continued && running.process && command.continueSession)
       return attachTerminal(peer, running, command);
+    // The terminal's own CLI takes care of the session while it is held.
+    compactions.cancel(command.sessionId);
     if (terminals.has(command.sessionId) || runs.has(command.sessionId) || mutations.size)
       throw new DomainError('native_busy', '请先结束这个会话的运行或会话管理，再打开终端。');
     const device = target(peer, session);
@@ -1866,10 +1928,11 @@ export function createProxyServer(options: ServerOptions) {
         },
       });
   }
-  // A message starts a run, or joins the native run this connection already owns. Compacting is the native
-  // /compact command sent as a message.
+  // A message starts a run on the computer the session is on, or joins the native run going there. Compacting
+  // is the native /compact command sent as a message. The service compacts an idle session from no connection
+  // (`peer` absent; see `compactIdle`).
   function submit(
-    peer: Peer,
+    peer: Peer | undefined,
     command: CommandOf<'message.send' | 'session.compact' | 'run.continue'>,
     session: Session,
   ) {
@@ -1902,7 +1965,7 @@ export function createProxyServer(options: ServerOptions) {
         );
       assertCommandContext(session, text);
       active.input.assertWritable();
-      peer.subscriptions.add(command.sessionId);
+      peer?.subscriptions.add(command.sessionId);
       emit(active, { type: 'message.user', messageId: command.requestId, text, scenario });
       goalIntent(active, text);
       active.input.submit(command.requestId, store.notice(command.sessionId) + text);
@@ -1910,7 +1973,7 @@ export function createProxyServer(options: ServerOptions) {
     }
     if (options.claude && mutations.size)
       throw new DomainError('native_busy', '原生状态正在读取，请稍后发送。');
-    const device = target(peer, session);
+    const device = peer ? target(peer, session) : session.device!.id;
     room();
     if (pool) {
       const current =
@@ -1919,7 +1982,7 @@ export function createProxyServer(options: ServerOptions) {
       // /goal operates on this native session's hook. In particular, status/clear are local
       // commands and must still work at zero quota, without priority moving them to another account.
       const selected =
-        goalCommand(text) !== undefined && current
+        (goalCommand(text) !== undefined || command.type === 'session.compact') && current
           ? pool.get(current)
           : pool.choose(pool.settings.enabled ? undefined : current);
       if (poolLogins.has(selected.id) || (selected.id === 'default' && login))
@@ -1935,12 +1998,12 @@ export function createProxyServer(options: ServerOptions) {
       updated(session.id);
     }
     assertCommandContext(session, text);
-    peer.subscriptions.add(command.sessionId);
+    peer?.subscriptions.add(command.sessionId);
     const run: Run = {
       id: randomUUID(),
       sessionId: command.sessionId,
       device,
-      connectionId: peer.id,
+      connectionId: peer?.id ?? serverDevice.id,
       controller: new AbortController(),
       toolFinished: false,
       approvals: new Map(),
@@ -1948,6 +2011,7 @@ export function createProxyServer(options: ServerOptions) {
       controls: {},
       stats: inOrder(),
       goalContinuation: continued,
+      compacting: command.type === 'session.compact',
     };
     runs.set(command.sessionId, run);
     if (options.claude)
@@ -2196,6 +2260,19 @@ export function createProxyServer(options: ServerOptions) {
             '原生设置文件无法读取或写入；请在原生终端用 /config 检查。',
           );
         }
+        return undefined;
+      }
+      case 'compaction.get':
+        send(peer, {
+          type: 'compaction.state',
+          requestId: command.requestId,
+          values: compactions.settings,
+        });
+        return undefined;
+      case 'compaction.update': {
+        const values = compactions.update(command.values);
+        armCompactions();
+        broadcast({ type: 'compaction.state', requestId: command.requestId, values });
         return undefined;
       }
       case 'instructions.get':
@@ -2650,6 +2727,7 @@ export function createProxyServer(options: ServerOptions) {
       client: installer(),
       sessions: store.list(),
       features: [
+        'idle-compaction',
         'remote-session-create',
         'running-session-fork',
         'chunked-history',
@@ -2749,7 +2827,7 @@ export function createProxyServer(options: ServerOptions) {
             message:
               platformOf(peer.device) === 'win32'
                 ? '服务端经隧道连不上本机的 SSH 服务。\n隧道已经建立，但探测命令没有得到应答：常见于安全软件拦截了内置的 sshd.exe 或 PowerShell，请检查保护记录后重新连接。'
-                : '服务端经隧道连不上本机的 SSH 服务。\n隧道已经建立，但探测命令没有得到应答：请重新连接；反复出现时在“设置 → 常规”里打开连接日志查看原因。',
+                : '服务端经隧道连不上本机的 SSH 服务。\n隧道已经建立，但探测命令没有得到应答：请重新连接；反复出现时在“设置 → 关于与更新”里打开连接日志查看原因。',
           });
           peer.socket.close(4003, 'SSH probe failed');
         }),
@@ -3128,6 +3206,7 @@ export function createProxyServer(options: ServerOptions) {
       );
       for (const run of runs.values()) cancel(run, '服务停止，运行未重放。');
       for (const seat of seats.values()) clearTimeout(seat.away);
+      compactions.clear();
       const cleanup = [
         ...[...peers].map((peer) => peer.tunnel?.close()),
         ...[...seats.values()].map((seat) => seat.door?.close()),

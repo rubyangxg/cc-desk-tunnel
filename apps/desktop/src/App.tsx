@@ -4,6 +4,7 @@ import {
   lazy,
   Suspense,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -72,6 +73,7 @@ import { onSharedChange, saveShared, shared, useShared } from './shared.ts';
 import { useNotifications } from './notifications.ts';
 import { folderName, isInside, isNewer, pathKey, withProject } from './paths.ts';
 import { getPrefs, setPrefs, toggled, usePrefs } from './prefs.ts';
+import { UPDATE_TICK_MS, lookDue } from './update-check.ts';
 import { actions, comboOf, keyFor, show as comboText } from './shortcuts.ts';
 import type { Action } from './shortcuts.ts';
 import Rail from './Rail.tsx';
@@ -89,7 +91,8 @@ import Sidebar from './Sidebar.tsx';
 import { useSessionCatalog } from './useSessionCatalog.ts';
 import TitleBar from './TitleBar.tsx';
 import type { BarMenu } from './TitleBar.tsx';
-import { IconButton, Menu } from './ui.tsx';
+import IdleReminder from './IdleReminder.tsx';
+import { IconButton, Menu, WorkspaceVisible } from './ui.tsx';
 import type { MenuItem, MenuPosition } from './ui.tsx';
 
 const NativeTerminal = lazy(() => import('./NativeTerminal.tsx'));
@@ -154,6 +157,7 @@ export function App({
     () => (inBrowser ? watchActivity(() => client.markActive()) : undefined),
     [client, inBrowser],
   );
+  const workspaceVisible = useContext(WorkspaceVisible);
   const [clock] = useState(() => ({ now: client.serviceNow, activityAt: client.activityAt }));
   // The version whose notes are shown, over whichever page is up.
   const [notes, setNotes] = useState<string | null>(null);
@@ -414,10 +418,13 @@ export function App({
     }
   }, [connected, profiles.focusAccount]);
   const canCompact = !!latest(events, 'native.context')?.persisted;
-  // A native terminal anywhere keeps what the CLI holds for all sessions, the account and its status, from
-  // being read or changed, save the quota the account page asks for; this window's own terminal,
-  // `terminalSessionId`, also takes the window.
+  // A chat run holds the CLI's state while it goes; a terminal holds only its own session, and this window's own
+  // terminal, `terminalSessionId`, also takes the window.
   const anyTerminal = state.sessions.some((session) => session.activeRun?.surface === 'terminal');
+  const anyChat = state.sessions.some(
+    (session) => session.activeRun && session.activeRun.surface !== 'terminal',
+  );
+  const statusBusy = anyChat || (anyTerminal && !state.features.includes('terminal-quota'));
   const controlsDisabled =
     (!!selected && archive?.key !== archiveKey) ||
     !!linkedHistory?.forward ||
@@ -500,11 +507,38 @@ export function App({
     });
   };
 
-  // A check or an upgrade of the service that failed says why.
-  const update = state.update;
+  // A check or an upgrade of the service that failed says why to whoever asked for it. The checks a window makes by
+  // itself while it is in use fail quietly, to be made again within the hour.
+  const live = state.update;
+  const asked = useRef(false);
   useEffect(() => {
-    if (update?.state === 'failed' && update.detail) setError(update.detail);
-  }, [update]);
+    if (live?.state === 'failed' && live.detail && asked.current) setError(live.detail);
+    if (live && !['checking', 'installing'].includes(live.state)) asked.current = false;
+  }, [live]);
+  // While the service looks again, the release it found last stays offered.
+  const [settled, setSettled] = useState(live);
+  useEffect(() => {
+    if (live?.state !== 'checking') setSettled(live);
+  }, [live]);
+  const update =
+    live?.state === 'checking' && settled && ['available', 'manual'].includes(settled.state)
+      ? settled
+      : live;
+  // While this window is shown, the service looks for a new release at least hourly (see update-check.ts).
+  useEffect(() => {
+    if (!host.serviceManagement || !nativeMode || !connected || !workspaceVisible) return;
+    const look = () => {
+      if (!document.hidden && lookDue(client.state.update, Date.now()))
+        void client.request({ type: 'service.update.check' }).catch(() => {});
+    };
+    look();
+    const timer = setInterval(look, UPDATE_TICK_MS);
+    document.addEventListener('visibilitychange', look);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', look);
+    };
+  }, [client, nativeMode, connected, workspaceVisible]);
   const serviceUpdate = !nativeMode
     ? null
     : update?.state === 'available'
@@ -519,6 +553,7 @@ export function App({
               )
             )
               void act(async () => {
+                asked.current = true;
                 await client.request({ type: 'service.update.install', version: update.latest! });
               });
           },
@@ -548,6 +583,7 @@ export function App({
               disabled: busy || update?.state === 'checking',
               run: () => {
                 void act(async () => {
+                  asked.current = true;
                   await client.request({ type: 'service.update.check' });
                 });
               },
@@ -636,7 +672,7 @@ export function App({
       !connected ||
       history?.loading ||
       selected.activeRun ||
-      anyTerminal ||
+      statusBusy ||
       rotation.working ||
       refreshed.current.has(selected.id)
     )
@@ -649,9 +685,13 @@ export function App({
     connected,
     history?.loading,
     selected?.activeRun,
-    anyTerminal,
+    statusBusy,
     rotation.working,
   ]);
+  useEffect(() => {
+    if (nativeMode && connected && state.features.includes('idle-compaction'))
+      void client.request({ type: 'compaction.get' }).catch(() => {});
+  }, [nativeMode, connected]);
   useEffect(() => {
     if (nativeMode && connected)
       void client.request({ type: serverPool ? 'pool.status' : 'account.status' }).catch(() => {});
@@ -669,7 +709,7 @@ export function App({
       state.account?.loggedIn !== true ||
       refreshing ||
       rotation.working ||
-      state.sessions.some((session) => session.activeRun)
+      statusBusy
     )
       return;
     void refreshStatus(undefined, true);
@@ -838,7 +878,11 @@ export function App({
   const show = (sessionId: string) => visit({ ...place, page: 'chat', sessionId });
   const open = (page: Page, section: Section = place.section) => {
     if (!host.schedules && page === 'schedules') return;
-    if (!host.nativeSettings && (section === 'claude' || section === 'account'))
+    if (
+      (!host.nativeSettings &&
+        ['connection', 'context', 'account', 'claude', 'instructions'].includes(section)) ||
+      (section === 'connection' && !window.desktop)
+    )
       section = 'general';
     visit({ page, section, sessionId: client.state.selectedId });
   };
@@ -1077,7 +1121,6 @@ export function App({
   }
   function sessionMenu(session: Session): MenuItem[] {
     const idle = connected && !busy && !refreshing && !terminalSessionId;
-    const anyRun = state.sessions.some((item) => !!item.activeRun);
     const pinned = prefs.pinnedSessions.includes(session.id);
     return [
       {
@@ -1160,7 +1203,7 @@ export function App({
             {
               label: '刷新状态',
               icon: <RefreshCw />,
-              disabled: !idle || anyRun || refreshing || !!history?.loading,
+              disabled: !idle || statusBusy || refreshing || !!history?.loading,
               run: () => {
                 void refreshStatus(session.id);
               },
@@ -1421,7 +1464,7 @@ export function App({
       icon: <Settings />,
       hint: hint('settings'),
       separated: true,
-      run: () => open('settings', nativeMode && host.nativeSettings ? 'claude' : 'general'),
+      run: () => open('settings', 'general'),
     },
     { label: '帮助', icon: <CircleHelp />, run: () => open('settings', 'help') },
     {
@@ -1714,12 +1757,17 @@ export function App({
                     items: barMenus.find((item) => item.label === menu.label)?.items ?? [],
                   };
   const sectionNames: Record<Section, string> = {
-    account: '账号与额度',
-    claude: 'Claude Code 设置',
-    general: '常规设置',
+    general: '常规',
+    appearance: '外观',
+    connection: '连接',
+    notifications: '通知',
     document: '共享文档',
-    notifications: '通知设置',
     shortcuts: '快捷键',
+    context: '上下文与缓存',
+    web: '浏览器访问',
+    account: '账号与额度',
+    claude: 'CLI 设置',
+    instructions: '全局说明',
     help: '帮助',
     about: '关于与更新',
   };
@@ -2222,6 +2270,24 @@ export function App({
                   <strong>{selected.goal.status === 'active' ? '目标进行中' : '目标已暂停'}</strong>
                   <span>{selected.goal.condition}</span>
                 </div>
+              )}
+            {nativeMode &&
+              selected &&
+              !selected.activeRun &&
+              (!away || remote) &&
+              !terminalSessionId && (
+                <IdleReminder
+                  events={events}
+                  settings={state.compaction}
+                  canCompact={canCompact && !controlsDisabled}
+                  compact={() => {
+                    void compact();
+                  }}
+                  startFresh={() => {
+                    if (onThis(selected)) void createInProject(selected.projectPath);
+                    else void newSession();
+                  }}
+                />
               )}
             {selected && (!away || remote) && !terminalSessionId && (
               <Composer

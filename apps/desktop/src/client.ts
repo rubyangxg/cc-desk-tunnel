@@ -10,6 +10,7 @@ import type {
   AccountState,
   Command,
   Device,
+  IdleCompaction,
   NativeCapabilities,
   NativeMetrics,
   ClientServerMessage as ServerMessage,
@@ -29,6 +30,7 @@ type DataMessage = Extract<
       | 'usage.page'
       | 'session.stats'
       | 'settings.state'
+      | 'compaction.state'
       | 'instructions.state'
       | 'session.snapshot'
       | 'web.settings.state'
@@ -45,6 +47,8 @@ type Replies = {
   'session.stats': 'session.stats';
   'settings.get': 'settings.state';
   'settings.update': 'settings.state';
+  'compaction.get': 'compaction.state';
+  'compaction.update': 'compaction.state';
   'instructions.get': 'instructions.state';
   'instructions.update': 'instructions.state';
   'web.settings.get': 'web.settings.state';
@@ -94,6 +98,7 @@ export class RequestInterruptedError extends Error {
       'quota.watch',
       'session.stats',
       'settings.get',
+      'compaction.get',
       'instructions.get',
       'web.settings.get',
       'web.certificate.get',
@@ -161,6 +166,8 @@ export type ClientState = {
   capabilities: NativeCapabilities | null;
   metrics: NativeMetrics | null;
   account: AccountState | null;
+  // The service's idle compaction setting, as it last said; every window is told when it changes.
+  compaction: IdleCompaction | null;
   // What each session's background tasks last said of themselves, by task: kept while the window is open
   // and nowhere else.
   progress: Record<string, Record<string, TaskProgress>>;
@@ -198,6 +205,7 @@ export class ProxyClient {
     capabilities: null,
     metrics: null,
     account: null,
+    compaction: null,
     progress: {},
   };
   results = new Map<string, DataMessage>();
@@ -331,6 +339,7 @@ export class ProxyClient {
       capabilities: null,
       metrics: null,
       account: null,
+      compaction: null,
     });
     this.open();
   }
@@ -618,6 +627,10 @@ export class ProxyClient {
         message.type === 'web.certificate.state'
       ) {
         if (this.pending.has(message.requestId)) this.results.set(message.requestId, message);
+      } else if (message.type === 'compaction.state') {
+        if (message.requestId && this.pending.has(message.requestId))
+          this.results.set(message.requestId, message);
+        this.update({ compaction: message.values });
       } else if (message.type === 'service.update') {
         const { type: _type, ...update } = message;
         this.update({ update });
@@ -718,7 +731,10 @@ export class ProxyClient {
           this.activity.set(message.event.sessionId, at);
         if (payload.type === 'native.capabilities') this.update({ capabilities: payload });
         if (payload.type === 'native.metrics') this.update({ metrics: payload });
-        if (!this.cacheOrder.includes(message.event.sessionId)) return;
+        // The service streams the shown session's events, and only some events of the others (a terminal's quota goes
+        // to every connection): one of those in a cached history would move its cursor past what was never received,
+        // and showing that session again would not fetch it.
+        if (message.event.sessionId !== this.state.selectedId) return;
         this.streamEvents.push(message.event);
         this.streamTimer ??= setTimeout(() => this.flushStream(), 32);
       } else if (message.type === 'session.fragment') {

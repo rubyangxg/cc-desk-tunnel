@@ -245,3 +245,13 @@ docs/               跨模块的架构、部署、开发文档
 ## 许可
 
 [Apache License 2.0](LICENSE)。随包分发的第三方组件及其许可见 [NOTICE](NOTICE)。
+
+### Windows ccdt 一键安装
+
+在 PowerShell 运行，会校验正式 Release 的 SHA256 后安装个人版：
+
+```powershell
+irm https://raw.githubusercontent.com/rubyangxg/cc-desk-tunnel/personal/deploy/install-ccdt.ps1 | iex
+```
+
+设置按本机、服务端和 Claude Code 分组。空闲上下文自动压缩默认关闭，可在服务端设置中开启。

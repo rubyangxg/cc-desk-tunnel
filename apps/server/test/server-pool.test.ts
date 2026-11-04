@@ -1591,3 +1591,213 @@ nativeTest(
     await f.request({ type: 'terminal.close', sessionId: b, terminalId: openedB.terminalId });
   },
 );
+
+nativeTest(
+  'compaction stays on its original account even when pool priority changes',
+  { timeout: 30000 },
+  async (t) => {
+    const f = await fixture(t, '');
+    const { sessionId } = await f.request({
+      type: 'session.create',
+      title: 'compact safely',
+      projectPath: '/local/project',
+    });
+    await f.request({ type: 'message.send', sessionId, text: 'prepare the session' });
+    const completed = () =>
+      f.wait(
+        (m) =>
+          m.type === 'session.event' &&
+          m.event.sessionId === sessionId &&
+          m.event.payload.type === 'run.status' &&
+          m.event.payload.status === 'completed',
+      );
+    await completed();
+    const before = f.server.store.get(sessionId!).session.nativeSessionId;
+    await f.request({
+      type: 'pool.configure',
+      values: { strategy: 'order', order: [f.id, 'default'] },
+    });
+    await f.request({ type: 'session.compact', sessionId });
+    await completed();
+    assert.equal(f.server.store.get(sessionId!).session.accountId, 'default');
+    assert.equal(f.server.store.get(sessionId!).session.nativeSessionId, before);
+    const calls = readFileSync(f.log, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].directory, calls[1].directory);
+    assert.equal(calls[1].prompt, '/compact');
+  },
+);
+
+nativeTest(
+  'automatic idle compaction leaves failed, goal, queued and handoff sessions untouched',
+  { timeout: 30000 },
+  async (t) => {
+    const f = await fixture(t, '');
+    const ids: string[] = [];
+    for (const kind of ['completed', 'failed', 'goal', 'queue', 'handoff']) {
+      const { sessionId } = await f.request({
+        type: 'session.create',
+        title: kind,
+        projectPath: '/local/project',
+      });
+      const id = sessionId!;
+      ids.push(id);
+      if (kind === 'completed') {
+        await f.request({
+          type: 'message.send',
+          sessionId: id,
+          text: 'seed persisted native history',
+        });
+        await f.wait(
+          (m) =>
+            m.type === 'session.event' &&
+            m.event.sessionId === id &&
+            m.event.payload.type === 'run.status' &&
+            m.event.payload.status === 'completed',
+        );
+      }
+      f.server.store.selectAccount(id, 'default');
+      const runId = randomUUID();
+      f.server.store.append(id, runId, {
+        type: 'native.session',
+        nativeSessionId: id,
+        accountId: 'default',
+        model: 'test',
+        version: 'test',
+      });
+      f.server.store.append(id, runId, {
+        type: 'native.context',
+        nativeSessionId: id,
+        persisted: true,
+      });
+      if (kind === 'goal')
+        f.server.store.append(id, runId, {
+          type: 'native.goal',
+          goal: {
+            condition: 'keep working',
+            status: 'paused',
+            iterations: 1,
+            updatedAt: new Date().toISOString(),
+          },
+        });
+      if (kind === 'queue')
+        f.server.store.setMessageQueue(id, {
+          paused: true,
+          items: [
+            {
+              id: randomUUID(),
+              text: 'queued',
+              scenario: 'chat',
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        });
+      if (kind === 'handoff') f.server.store.selectAccount(id, f.id);
+      f.server.store.append(
+        id,
+        runId,
+        {
+          type: 'native.metrics',
+          context: {
+            model: 'test',
+            usedTokens: 150000,
+            windowTokens: 1000000,
+            percentage: 15,
+            measuredAt: new Date().toISOString(),
+            categories: [],
+          },
+          usage: null,
+          rateLimits: null,
+          cacheTtl: '1h',
+        },
+        new Date(Date.now() - 51 * 60000).toISOString(),
+      );
+      f.server.store.append(id, runId, {
+        type: 'run.status',
+        status: kind === 'failed' ? 'failed' : 'completed',
+        connectionId: 'test',
+      });
+    }
+    await f.request({
+      type: 'pool.configure',
+      values: { strategy: 'order', order: [f.id, 'default'] },
+    });
+    await f.request({ type: 'compaction.update', values: { enabled: true } });
+    for (let i = 0; i < 1000; i++) {
+      const events = f.server.store.snapshot(ids[0]).events;
+      if (
+        events.some((e) => e.payload.type === 'message.user' && e.payload.text === '/compact') &&
+        !f.server.store.get(ids[0]).session.activeRun
+      )
+        break;
+      await delay(10);
+    }
+    const events = f.server.store.snapshot(ids[0]).events;
+    assert.equal(
+      events
+        .map((e) => e.payload)
+        .filter((p) => p.type === 'run.status')
+        .at(-1)?.status,
+      'completed',
+      JSON.stringify(events.map((e) => e.payload)),
+    );
+    await delay(200);
+    const calls = readFileSync(f.log, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    assert.equal(calls.length, 2, 'one seed turn, then only the completed idle session compacts');
+    assert.equal(calls[1].prompt, '/compact');
+    assert.equal(f.server.store.get(ids[0]).session.accountId, 'default');
+    for (const id of ids.slice(1))
+      assert.equal(
+        f.server.store
+          .snapshot(id)
+          .events.some((e) => e.payload.type === 'message.user' && e.payload.text === '/compact'),
+        false,
+      );
+    assert.equal(f.server.store.get(ids[2]).session.goal?.status, 'paused');
+    assert.equal(f.server.store.get(ids[3]).session.messageQueue?.items.length, 1);
+  },
+);
+
+nativeTest(
+  'a missing native record during compaction never disables the account or replays on another account',
+  async (t) => {
+    const f = await fixture(t, '');
+    const { sessionId } = await f.request({
+      type: 'session.create',
+      title: 'missing compact history',
+      projectPath: '/local/project',
+    });
+    f.server.store.selectAccount(sessionId!, 'default');
+    f.server.store.append(sessionId!, randomUUID(), {
+      type: 'native.session',
+      nativeSessionId: sessionId!,
+      accountId: 'default',
+      model: 'test',
+      version: 'test',
+    });
+    await f.request({ type: 'session.compact', sessionId });
+    await f.wait(
+      (m) =>
+        m.type === 'session.event' &&
+        m.event.sessionId === sessionId &&
+        m.event.payload.type === 'run.status' &&
+        m.event.payload.status === 'failed',
+    );
+    await f.request({ type: 'pool.status' });
+    const state = f.messages.filter((m) => m.type === 'pool.state').at(-1);
+    assert.ok(state?.type === 'pool.state');
+    assert.equal(state.accounts.find((a) => a.id === 'default')?.error, undefined);
+    assert.equal(f.server.store.get(sessionId!).session.accountId, 'default');
+    assert.equal(
+      f.server.store.snapshot(sessionId!).events.filter((e) => e.payload.type === 'message.user')
+        .length,
+      1,
+    );
+  },
+);
