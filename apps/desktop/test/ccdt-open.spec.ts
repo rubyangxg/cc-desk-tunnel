@@ -88,6 +88,15 @@ test('a session opens in ccdt signed in as the window is, or the window says how
   try {
     const page = await application.firstWindow();
     const version = await application.evaluate(({ app }) => app.getVersion());
+    await expect(page.getByRole('heading', { name: '连接代理服务', exact: true })).toBeVisible();
+    console.log(
+      'Source Electron boot:',
+      await application.evaluate(({ app }) => ({
+        packaged: app.isPackaged,
+        appPath: app.getAppPath(),
+      })),
+      await page.evaluate(() => ({ desktop: !!window.desktop, dev: window.desktop?.dev })),
+    );
     await page.getByRole('button', { name: '本地模拟', exact: true }).click();
     await page.getByLabel('服务地址', { exact: true }).fill(url);
     await page.getByLabel('服务凭据', { exact: true }).fill(token);

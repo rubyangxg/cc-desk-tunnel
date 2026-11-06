@@ -80,6 +80,16 @@ jobs:
         shell: bash
       # Exercise the actual Windows SSH setup and component lifecycle before packaging.
       - run: node --test apps/desktop/test-main/component-host.test.mjs
+      # Source Electron checks run before packaging, with its pristine development runtime.
+      - run: npm run build
+      - run: node --test apps/desktop/test-main/ccdt.test.mjs
+      - run: npx playwright test ccdt-open.spec.ts
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: windows-ccdt-test-failure
+          path: test-results/
+          retention-days: 7
       # Ends with the packaged program started offline; a package that does not start fails here.
       - run: npm run package:windows || (sleep 60 && npm run package:windows)
         shell: bash
@@ -89,8 +99,6 @@ jobs:
           path: artifacts/windows/*.exe
           if-no-files-found: error
           retention-days: 30
-      - run: node --test apps/desktop/test-main/ccdt.test.mjs
-      - run: npx playwright test ccdt-open.spec.ts
       - run: npm run package:cli
         shell: bash
       - run: |
