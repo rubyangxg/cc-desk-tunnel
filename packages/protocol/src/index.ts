@@ -4,7 +4,7 @@ import { webCertificateStateSchema } from './web-certificate.ts';
 export * from './web.ts';
 export * from './web-certificate.ts';
 
-export const PROTOCOL_VERSION = 22;
+export const PROTOCOL_VERSION = 23;
 // The release each protocol version began with, from 0.2.4 on: a client newer than its service signs in with
 // the service's number to have it upgrade (see the README). A new number adds its line here.
 export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
@@ -24,6 +24,7 @@ export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
   '0.4.21': 20,
   '0.4.30': 21,
   '0.4.35': 22,
+  '0.4.48': 23,
 };
 export const MAX_FRAME_BYTES = 256 * 1024;
 // The longest global instructions edited here, in characters; it keeps a frame of them within MAX_FRAME_BYTES.
@@ -860,7 +861,8 @@ export const commandSchema = z.discriminatedUnion('type', [
       type: z.literal('terminal.open'),
       ...request,
       sessionId: id,
-      // The terminal continues the session's conversation, and what it adds is recorded in the session afterwards.
+      // Sent by ccdt before 0.3.10, when a terminal could also be one apart from the session's conversation. Every
+      // terminal continues it now, and what it adds is recorded in the session; the field is let through, unread.
       continueSession: z.boolean().optional(),
       cols: z.number().int().min(20).max(400),
       rows: z.number().int().min(5).max(160),
@@ -1191,6 +1193,7 @@ export const clientServerMessageSchema = z.union([
       z.literal(19),
       z.literal(20),
       z.literal(21),
+      z.literal(22),
     ]),
   }),
 ]);
@@ -1198,21 +1201,38 @@ export type ClientServerMessage = z.infer<typeof clientServerMessageSchema>;
 
 export function fallbackServerProtocol(message: ClientServerMessage, attempted: number) {
   if (message.type !== 'connection.error' || message.code !== 'version_mismatch') return null;
-  if ([17, 18, 19, 20, 21, 22].includes(attempted) && message.service === '0.3.1') return 16;
+  if (attempted > 16 && attempted <= PROTOCOL_VERSION && message.service === '0.3.1') return 16;
   if (
-    [18, 19, 20, 21, 22].includes(attempted) &&
+    attempted > 17 &&
+    attempted <= PROTOCOL_VERSION &&
     /^(?:0\.3\.[25]|0\.4\.[0-9])$/.test(message.service ?? '')
   )
     return 17;
   if (
-    [19, 20, 21, 22].includes(attempted) &&
+    attempted > 18 &&
+    attempted <= PROTOCOL_VERSION &&
     /^(?:0\.3\.[34]|0\.4\.10)$/.test(message.service ?? '')
   )
     return 18;
-  if ([20, 21, 22].includes(attempted) && /^0\.4\.(?:1[1-9]|20)$/.test(message.service ?? ''))
+  if (
+    attempted > 19 &&
+    attempted <= PROTOCOL_VERSION &&
+    /^0\.4\.(?:1[1-9]|20)$/.test(message.service ?? '')
+  )
     return 19;
-  if ([21, 22].includes(attempted) && /^0\.4\.2[1-9]$/.test(message.service ?? '')) return 20;
-  if (attempted === 22 && /^0\.4\.3[0-4]$/.test(message.service ?? '')) return 21;
+  if (
+    attempted > 20 &&
+    attempted <= PROTOCOL_VERSION &&
+    /^0\.4\.2[1-9]$/.test(message.service ?? '')
+  )
+    return 20;
+  if (
+    attempted > 21 &&
+    attempted <= PROTOCOL_VERSION &&
+    /^0\.4\.3[0-4]$/.test(message.service ?? '')
+  )
+    return 21;
+  if (attempted === 23 && /^0\.4\.(?:3[5-9]|4[0-7])$/.test(message.service ?? '')) return 22;
   return null;
 }
 

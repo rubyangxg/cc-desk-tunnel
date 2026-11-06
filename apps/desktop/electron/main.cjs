@@ -464,6 +464,10 @@ handle('service:upgrade', async (event, config) => {
     (error) => ({ error: error.message }),
   );
 });
+handle('ccdt:open', async (_event, request) => {
+  const { openSession } = await import(pathToFileURL(path.join(__dirname, 'ccdt.mjs')).href);
+  return openSession(request, { version: app.getVersion() });
+});
 // Each token uses the current OS account's secure storage. The old single login becomes the default profile.
 handle('profiles:load', () => loadProfiles(readSettings(), safeStorage));
 handle('profiles:save', (_event, profiles) => {

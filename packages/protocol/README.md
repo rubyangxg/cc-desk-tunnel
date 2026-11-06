@@ -4,6 +4,8 @@
 
 个人版 0.4.35 使用协议 22，加入前台任务控制事件与命令；客户端继续兼容 0.4.30–0.4.34 的协议 21 握手及升级入口。旧客户端不能连接协议 22 服务端，应先升级服务端再升级客户端。
 
+个人版 0.4.48 使用协议 23，终端总是续接所属账号的原生会话；`terminal.open.continueSession` 只为旧调用保留字段。客户端保留对 0.4.35–0.4.47（协议 22）的受限握手和升级入口。必须先升级服务端，再升级客户端和 ccdt；服务端不接受旧协议客户端。
+
 ## 连接与消息
 
 - WebSocket `/ws` 建立后，首帧必须是 `auth`：协议版本、代理服务 token、设备名称。5 秒内不认证则关闭；token 不进入会话事件。服务回传 `ready`、连接 ID 和会话目录。
@@ -21,7 +23,7 @@
 - `native.context` 报告官方原生会话存储检查结果，不传输私有 JSONL 或将镜像作为模型输入。改名 / 删除先更新官方原生记录，失败保留代理镜像；禁止与运行并发管理。
 - `session.status` 无模型提示，读取原生公开控制状态。`native.metrics.errors` 区分上下文 / 用量失败；额度标注测量时间。`native.title` 只同步未被用户改名的自动标题；旧会话默认不自动覆盖。
 - `terminal.open/close` 为带 requestId 的操作，`terminal.opened/data/closed` 仅发所属连接；独立的 terminalId，摘要 `activeRun.surface=terminal` 表示互斥占用。默认终端是独立的原生会话；`terminal.open.continueSession` 让终端接续这个 session 的原生会话（`--resume`/`--session-id` 为 session ID），终端里每一轮结束时（CLI 的 Stop hook）和终端结束时，把新增的对话按图形运行的事件格式记入 session；这样的终端由 `run.status.activity`（`working`、`waiting`、`idle`）报告 CLI 在做什么，摘要的 `activeRun.activity` 同步。终端原始文本不存入 session.event。
-- `terminal.input/resize/ack` 无逐键请求响应；校验归属、terminalId 和大小。`ack.bytes` 是 xterm 已渲染的 UTF-8 字节数，控制 PTY 背压；不能超过服务尚未确认的输出。原始数据帧按 16384 个 UTF-16 code units 分片且不切开 surrogate pair。
+- `terminal.input/resize/ack` 无逐键请求响应；校验归属、terminalId 和大小。`ack.bytes` 是 ccdt 已写入终端的 UTF-8 字节数，控制 PTY 背压；不能超过服务尚未确认的输出。原始数据帧按 16384 个 UTF-16 code units 分片且不切开 surrogate pair。
 
 ## 浏览器连接
 

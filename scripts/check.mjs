@@ -46,6 +46,22 @@ for (const file of files) {
       errors.push('JSON 无效：' + file);
     }
   }
+  // The /bin/sh of macOS, bash 3.2, takes a byte of a character after a name as part of the name: `$rc）` asks for a
+  // variable that is not there. A name followed by anything but ASCII is written in braces.
+  if (file.endsWith('.sh')) {
+    for (const [index, line] of content.split('\n').entries())
+      if (/\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]/.test(line))
+        errors.push('shell 变量名后紧跟非 ASCII 字符，应写成 ${名字}：' + file + ':' + (index + 1));
+  }
+  // Windows PowerShell 5.1 reads a script file without a BOM in the system's code page, GBK on a Chinese Windows, where
+  // its characters swallow the quotes after them. A script run as a file and holding anything but ASCII starts with a
+  // BOM; the one piped to iex does not, as there the BOM is taken for part of the first command.
+  if (file.endsWith('.ps1')) {
+    const piped = file === 'deploy/install-ccdt.ps1';
+    if (piped && content.startsWith('\uFEFF')) errors.push('经 iex 运行的脚本不能带 BOM：' + file);
+    if (!piped && !content.startsWith('\uFEFF') && /[^\x00-\x7F]/.test(content))
+      errors.push('含非 ASCII 字符的 PowerShell 脚本应以 UTF-8 BOM 开头：' + file);
+  }
   if (file.endsWith('.md')) {
     for (const match of content.matchAll(/\]\(([^\s)]+)\)/g)) {
       const link = match[1];

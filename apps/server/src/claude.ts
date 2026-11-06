@@ -2,7 +2,7 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { nativeStore } from './native-store.ts';
-import type { Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { Query, SDKSessionInfo, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type {
   DevicePlatform,
   Effort,
@@ -21,6 +21,17 @@ import { loginOf, nativeCapabilities, nativeMetrics, Quotas } from './native-con
 import type { NativeInput } from './native-input.ts';
 import { readNativeSettings, settingsPath } from './native-settings.ts';
 import { questionTally } from './question.ts';
+
+// Whether the native session is on record once a run or a terminal let it go, for the clients to offer compacting it.
+// It is recorded last, so that the page of history a client opens the session with holds it.
+export function nativeContext(sessionId: string, info: SDKSessionInfo | undefined) {
+  return {
+    type: 'native.context',
+    nativeSessionId: sessionId,
+    persisted: !!info,
+    updatedAt: info ? new Date(info.lastModified).toISOString() : undefined,
+  } satisfies EventPayload;
+}
 
 // Whether reasoning summaries are asked for. A settings file that cannot be read leaves them on.
 function thinkingShown(options: ClaudeOptions) {
@@ -584,12 +595,7 @@ export async function runClaude(
     });
   }
   const context = await nativeStore(options, 'info', nativeId, { dir: cwd });
-  run.emit({
-    type: 'native.context',
-    nativeSessionId: nativeId,
-    persisted: !!context,
-    updatedAt: context ? new Date(context.lastModified).toISOString() : undefined,
-  });
+  run.emit(nativeContext(nativeId, context));
   if (context?.summary?.trim())
     run.emit({ type: 'native.title', title: context.summary.trim().slice(0, 120) });
   for (const tool of mapper.tools.values())

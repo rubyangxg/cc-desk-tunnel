@@ -269,3 +269,15 @@ test('a turn report names the message it answered, or none for a turn a backgrou
   assert.equal(eventSchema.safeParse(event({ ...stats, requests: -1 })).success, false);
   assert.equal(eventSchema.safeParse(event({ ...stats, partial: undefined })).success, false);
 });
+
+test('personal versions before 0.4.48 retain protocol 22 while new releases require 23', () => {
+  assert.equal(PROTOCOL_HISTORY['0.4.48'], 23);
+  const refusal = {
+    type: 'connection.error' as const,
+    code: 'version_mismatch',
+    service: '0.4.47',
+    message: 'upgrade required',
+  };
+  assert.equal(fallbackServerProtocol(refusal, 23), 22);
+  assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.48' }, 23), null);
+});

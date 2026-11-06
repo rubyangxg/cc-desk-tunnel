@@ -6,8 +6,8 @@ import { join } from 'node:path';
 import { packageName } from './runtime.mjs';
 
 const RELEASES = 'https://github.com/rubyangxg/cc-desk-tunnel/releases/download';
-// The first release whose install script replaces a ccdt while it runs; an earlier one's would leave it half removed.
-export const FIRST_UPGRADABLE = '0.4.46';
+// The first personal release with both live-runtime replacement and a BOM for Chinese Windows PowerShell 5.1.
+export const FIRST_UPGRADABLE = '0.4.48';
 
 // The ccdt package of a release for this system, checked against the release's SHA256SUMS as the server bundle is.
 export async function download(release, { system, get = fetch } = {}) {

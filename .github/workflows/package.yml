@@ -22,6 +22,14 @@ on:
         options: [windows-server, all]
   push:
     branches: [personal]
+  pull_request:
+    paths:
+      - .github/workflows/package.yml
+      - scripts/package-*.mjs
+      - scripts/release-manifest.mjs
+      - scripts/smoke-posix-package.mjs
+      - scripts/prepare-windows.ps1
+      - apps/cli/install/**
 permissions:
   contents: read
 concurrency:
@@ -30,9 +38,12 @@ concurrency:
 # The steps that download Electron and the packaging tools are tried a second time after a minute: those
 # downloads now and then time out.
 jobs:
-  # The server image of the release, for amd64 and arm64 (see images.yml).
+  # The server image of the release, for amd64 and arm64 (see images.yml). It is built once every client is: an
+  # image tag is never moved once pushed, so a release whose clients failed must not leave one behind, or trying
+  # again after a fix would stop at the tag of the commit before.
   images:
-    if: inputs.release != ''
+    if: always() && inputs.release != '' && needs.windows.result == 'success' && needs.server.result == 'success' && (needs.linux.result == 'success' || needs.linux.result == 'skipped') && (needs.android.result == 'success' || needs.android.result == 'skipped')
+    needs: [windows, linux, android, server]
     uses: ./.github/workflows/images.yml
     permissions:
       contents: read
@@ -78,12 +89,16 @@ jobs:
           path: artifacts/windows/*.exe
           if-no-files-found: error
           retention-days: 30
+      - run: node --test apps/desktop/test-main/ccdt.test.mjs
+      - run: npx playwright test ccdt-open.spec.ts
       - run: npm run package:cli
         shell: bash
       - run: |
           $folder = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\ccdt"
           tar -xf (Get-Item artifacts/cli/*.zip).FullName -C $folder
-          & "$folder\ccdt\install.ps1"
+          # Run as ccdt upgrade and the one-line installer run it, by Windows PowerShell.
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$folder\ccdt\install.ps1"
+          if ($LASTEXITCODE) { throw 'The install script failed.' }
           $env:Path = [Environment]::GetEnvironmentVariable('Path', 'User') + ';' + $env:Path
           ccdt --version
           if ($LASTEXITCODE) { throw 'The installed ccdt did not start.' }
@@ -92,7 +107,8 @@ jobs:
           try {
             Start-Sleep -Milliseconds 500
             if ($running.HasExited) { throw 'The old runtime exited before the upgrade check.' }
-            & "$folder\ccdt\install.ps1"
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$folder\ccdt\install.ps1"
+            if ($LASTEXITCODE) { throw 'The install script failed.' }
             if ($running.HasExited) { throw 'Updating ccdt stopped the running old runtime.' }
             ccdt --version
             if ($LASTEXITCODE) { throw 'The upgraded ccdt did not start.' }

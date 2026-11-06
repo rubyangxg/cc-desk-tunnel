@@ -21,13 +21,14 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      # The tests of the SSH service of macOS and Linux write their fixtures for zsh.
-      - run: sudo apt-get install -y --no-install-recommends zsh
+      # The tests of the SSH service of macOS and Linux write their fixtures for zsh; the desktop client opens ccdt in
+      # a terminal window, here xterm on a screen of xvfb's.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh xterm xvfb
       - run: npm ci
       - run: npm run check
       - run: npm run typecheck
       - run: npm run format:check
-      - run: npm test
+      - run: xvfb-run -a npm test
       - run: bash deploy/test-scripts.sh
   # The service's own tests on arm64, for what it compiles there; beside the image jobs rather than after them.
   linux-arm:

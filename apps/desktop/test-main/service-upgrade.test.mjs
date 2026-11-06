@@ -105,3 +105,10 @@ test('repeated available frames ask once and install once', async () => {
     1,
   );
 });
+
+test('the personal protocol 22 service still upgrades after the protocol 23 transition', async () => {
+  const { result, received } = await upgrade('available', '0.4.47', 22);
+  assert.equal(result, '0.3.4');
+  assert.equal(received[0].protocolVersion, 22);
+  assert.equal(received.at(-1).type, 'service.update.install');
+});

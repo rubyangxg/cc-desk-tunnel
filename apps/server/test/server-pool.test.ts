@@ -1801,3 +1801,44 @@ nativeTest(
     );
   },
 );
+
+nativeTest(
+  'ccdt continues the original native account despite a new priority and records its persistence on exit',
+  { timeout: 30000 },
+  async (t) => {
+    const f = await fixture(t, '');
+    const { sessionId } = await f.request({
+      type: 'session.create',
+      title: 'terminal native account',
+      projectPath: '/project',
+    });
+    await f.request({ type: 'message.send', sessionId, text: 'seed native context' });
+    await f.wait(
+      (m) =>
+        m.type === 'session.event' &&
+        m.event.sessionId === sessionId &&
+        m.event.payload.type === 'run.status' &&
+        m.event.payload.status === 'completed',
+    );
+    const before = f.server.store.get(sessionId!).session.nativeSessionId ?? sessionId!;
+    await f.request({
+      type: 'pool.configure',
+      values: { strategy: 'order', order: [f.id, 'default'] },
+    });
+    await f.request({ type: 'terminal.open', sessionId, cols: 80, rows: 24 });
+    const opened = await f.wait((m) => m.type === 'terminal.opened' && m.sessionId === sessionId);
+    assert.ok(opened.type === 'terminal.opened');
+    assert.equal(f.server.store.get(sessionId!).session.accountId, 'default');
+    assert.equal(f.server.store.get(sessionId!).session.nativeSessionId ?? sessionId, before);
+    await f.request({ type: 'terminal.close', sessionId, terminalId: opened.terminalId });
+    await f.wait((m) => m.type === 'terminal.closed' && m.terminalId === opened.terminalId);
+    const context = f.server.store
+      .snapshot(sessionId!)
+      .events.map((e) => e.payload)
+      .findLast((p) => p.type === 'native.context');
+    assert.ok(context?.type === 'native.context');
+    assert.equal(context.nativeSessionId, before);
+    assert.equal(context.persisted, true);
+    assert.equal(f.server.store.get(sessionId!).session.accountId, 'default');
+  },
+);
