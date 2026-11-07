@@ -4,7 +4,7 @@ import { webCertificateStateSchema } from './web-certificate.ts';
 export * from './web.ts';
 export * from './web-certificate.ts';
 
-export const PROTOCOL_VERSION = 23;
+export const PROTOCOL_VERSION = 24;
 // The release each protocol version began with, from 0.2.4 on: a client newer than its service signs in with
 // the service's number to have it upgrade (see the README). A new number adds its line here.
 export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
@@ -25,6 +25,7 @@ export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
   '0.4.30': 21,
   '0.4.35': 22,
   '0.4.48': 23,
+  '0.4.49': 24,
 };
 export const MAX_FRAME_BYTES = 256 * 1024;
 // The longest global instructions edited here, in characters; it keeps a frame of them within MAX_FRAME_BYTES.
@@ -520,6 +521,10 @@ export type SessionEvent = z.infer<typeof eventSchema>;
 // The systems a device may run. What runs its scripts and how its paths are written follow from it.
 export const devicePlatformSchema = z.enum(['win32', 'darwin', 'linux']);
 export type DevicePlatform = z.infer<typeof devicePlatformSchema>;
+// The shells a device runs Claude's scripts in, each under a host name of its own (`device-pwsh` and so on): PowerShell
+// 7 on Windows, and Git Bash too where Git for Windows is installed; on macOS and Linux the user's own shell.
+export const deviceShellSchema = z.enum(['pwsh', 'bash', 'zsh']);
+export type DeviceShell = z.infer<typeof deviceShellSchema>;
 // One of the user's computers: the client there makes the ID once and keeps it. Its system is recorded
 // unless it is Windows, which is what every computer was before others were supported.
 export const deviceSchema = z.object({
@@ -587,11 +592,16 @@ export const sessionSchema = z.object({
       device: id.optional(),
       // The system the prompt describes; Windows where none is recorded.
       platform: devicePlatformSchema.optional(),
+      // The device's shells the prompt names, and the one it says the user prefers, if any.
+      shells: z.array(deviceShellSchema).optional(),
+      shell: deviceShellSchema.optional(),
       told: z
         .object({
           projectPath: z.string(),
           device: id.optional(),
           platform: devicePlatformSchema.optional(),
+          shells: z.array(deviceShellSchema).optional(),
+          shell: deviceShellSchema.optional(),
         })
         .optional(),
       compacted: z.boolean().optional(),
@@ -743,6 +753,10 @@ export const commandSchema = z.discriminatedUnion('type', [
       ...request,
       values: idleCompactionSchema.partial().strict(),
     })
+    .strict(),
+  // The shell the user prefers Claude to run scripts in on the computer of this connection; null leaves it to Claude.
+  z
+    .object({ type: z.literal('device.shell'), ...request, shell: deviceShellSchema.nullable() })
     .strict(),
   z
     .object({
@@ -1169,7 +1183,13 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('devices'),
     devices: z.array(
-      deviceSchema.extend({ ready: z.boolean(), server: z.literal(true).optional() }),
+      deviceSchema.extend({
+        ready: z.boolean(),
+        server: z.literal(true).optional(),
+        // The shells the computer runs scripts in, and the one its user prefers, if any; none for the service.
+        shells: z.array(deviceShellSchema).optional(),
+        shell: deviceShellSchema.optional(),
+      }),
     ),
   }),
   // The execution channel runs over connections the device opens to this same address. `secret` signs them
@@ -1194,6 +1214,7 @@ export const clientServerMessageSchema = z.union([
       z.literal(20),
       z.literal(21),
       z.literal(22),
+      z.literal(23),
     ]),
   }),
 ]);
@@ -1232,7 +1253,13 @@ export function fallbackServerProtocol(message: ClientServerMessage, attempted: 
     /^0\.4\.3[0-4]$/.test(message.service ?? '')
   )
     return 21;
-  if (attempted === 23 && /^0\.4\.(?:3[5-9]|4[0-7])$/.test(message.service ?? '')) return 22;
+  if (
+    attempted > 22 &&
+    attempted <= PROTOCOL_VERSION &&
+    /^0\.4\.(?:3[5-9]|4[0-7])$/.test(message.service ?? '')
+  )
+    return 22;
+  if (attempted === 24 && message.service === '0.4.48') return 23;
   return null;
 }
 
@@ -1261,6 +1288,8 @@ export const tunnelCredentialsSchema = z
       .regex(/^[a-zA-Z0-9_.\\@-]+$/),
     privateKey: z.string().min(1).max(16384),
     hostPublicKey: z.string().regex(/^ssh-ed25519 [A-Za-z0-9+/=]+$/),
+    // What the SSH service runs scripts in.
+    shells: z.array(deviceShellSchema).min(1).max(3),
   })
   .strict();
 export type TunnelCredentials = z.infer<typeof tunnelCredentialsSchema>;

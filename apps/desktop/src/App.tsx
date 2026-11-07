@@ -1779,6 +1779,7 @@ export function App({
     document: '共享文档',
     shortcuts: '快捷键',
     context: '上下文与缓存',
+    shell: 'Shell',
     web: '浏览器访问',
     account: '账号与额度',
     claude: 'CLI 设置',
@@ -1839,6 +1840,7 @@ export function App({
           section={place.section}
           go={(section) => open('settings', section)}
           native={nativeMode}
+          here={state.devices.find((device) => device.id === state.device?.id)}
           form={form}
           changeForm={changeForm}
           workspaceRoot={workspaceRoots[0] ?? ''}

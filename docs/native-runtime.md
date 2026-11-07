@@ -14,7 +14,7 @@
 
 后台任务（后台 Bash 命令、子代理）活在 CLI 进程里，任务结束时 CLI 自己开始下一轮。一轮结束时若还有后台任务，服务端不关闭 CLI：运行状态改为“等待后台任务”，界面把这一轮视为已完成，列出任务并可逐个结束，期间可以继续发消息。任务结束后 CLI 开始的那一轮照常显示；任务全部结束且没有新的一轮时运行结束。停止运行会结束 CLI，后台任务随之终止。任务列表取自 SDK 的 `background_tasks_changed` 消息，不计标记为 ambient 的任务；结束单个任务用 SDK 的 `stopTask`。
 
-`ccdt` 的终端另外用 node-pty 启动同一 CLI 交互式入口，不走 SDK、不设置 SDK 入口标记、不启动通用 shell。正常 flags / 私有提供方 env / Windows SSH 提示词属于外层配置；用户已有 settings.env 原样复用。键盘与画面经 WSS 接至用户自己的终端，不解释 OAuth 内容或存储终端日志。终端接着会话的原生会话（`--resume`，或以会话 ID 新建），每一轮结束后经 hooks 记入会话，图形客户端里也能看到。
+`ccdt` 的终端另外用 node-pty 启动同一 CLI 交互式入口，不走 SDK、不设置 SDK 入口标记、不启动通用 shell。正常 flags / 私有提供方 env / Windows SSH 提示词属于外层配置；用户已有 settings.env 原样复用。键盘与画面经 WSS 接至用户自己的终端，不解释 OAuth 内容或存储终端日志。终端接着会话的原生会话（`--resume`，或以会话 ID 新建）。hooks 报告终端在做什么，也给出 CLI 记录的位置：服务端跟着读记录新写的行，分段记入会话；每一轮结束再经 SDK 完整读一遍，补上遗漏并发现回退。轮次结束时按状态行和本轮的 usage 记下上下文与缓存时长，供空闲提醒使用。
 
 登录 / 退出 / 状态由服务端驱动官方 `claude auth login / logout / status`，授权链接与回填代码经桌面端转交，凭据只由 CLI 自己读写。官方 `auth login` 不记下首次引导已完成（2.1.286 实测），交互式终端因此会让已登录账号重走主题与登录。
 
@@ -30,7 +30,8 @@
 
 - 更换之后，系统提示词继续写原来的路径；变更由下一条用户消息前面的一段说明告诉 Claude（`[CC Desk Tunnel: the user moved this session …]`），界面只显示用户自己写的内容。
 - 换电脑同理：会话被另一台设备接过去之后，说明里写明换了电脑、那台电脑的名字和它上面的项目目录（`[CC Desk Tunnel: the user now continues this session from another of their computers …]`）。
-- 重连不需要说明：SSH 配置用会话固定的路径（见下文“存储”），不随连接变化；提示词里不写设备上任何程序或文件的位置，PowerShell 和定时任务文件由设备上的环境变量 `CC_DESK_TUNNEL_PWSH`、`CC_DESK_TUNNEL_SCHEDULES` 指明，客户端装在哪里都一样。
+- 设备能用的 shell 变了（装上或卸掉 Git for Windows），或用户在“设置 → Shell”里改了偏好，也由下一条消息前的说明告诉 Claude，连同新的脚本写法（`[CC Desk Tunnel: the shells the device runs scripts in changed …]`、`[CC Desk Tunnel: the user now prefers …]`）。
+- 重连不需要说明：会话的 `ssh` 读会话固定的配置（见下文“存储”），不随连接变化；提示词里不写服务端或设备上任何程序和文件的位置，PowerShell、Git Bash 和定时任务文件由设备上的环境变量 `CC_DESK_TUNNEL_PWSH`、`CC_DESK_TUNNEL_BASH`、`CC_DESK_TUNNEL_SCHEDULES` 指明，客户端装在哪里都一样。
 - 系统提示词在缓存前缀本来就要失效的时刻跟上当前值：观察到压缩事件之后的下一轮。
 - 还没有原生上下文的会话直接改路径，没有说明。
 
@@ -52,9 +53,9 @@ Claude Code 原生存储是模型会话上下文的唯一权威，包含原生�
 - 首轮 `sessionId`，后续 `resume`；显式 `persistSession: true`。即使每轮启动新 CLI 进程，原生上下文仍由同一 session 恢复。
 - 恢复前通过官方 `getSessionInfo` 检查原生记录存在；缺失则明确失败，不静默另开会话，不用代理事件假装恢复。
 - 运行结束通过官方接口确认记录已保存，并同步保存状态到 GUI。压缩由 CLI 执行，客户端只展示实际公开的压缩 / 状态事件。
-- SSH 配置里一台设备有两个主机名。`device` 原样执行一条命令行（Windows 上由 cmd.exe 解析），scp / sftp 也用它；`device-script` 是同一台设备加上一条固定的 `RemoteCommand`：把标准输入整段读成 PowerShell 7 脚本再执行，UTF-8、纯文本报错、保留退出码。提示词让 Claude 把脚本用 here-document 送给 `device-script`，脚本不经过任何一层命令行，不需要转义或编码，也没有长度限制。就绪探测走的是同一个主机名。PowerShell 自带的 `-Command -` 与 `-File -` 逐行处理标准输入，跨行的块会丢失，所以不用。
+- SSH 配置里一台设备的每种 shell 一个主机名，另有 `device`。`device` 原样执行一条命令行（Windows 上由 cmd.exe 解析），scp / sftp 也用它；`device-pwsh`、`device-bash`（Windows 上的 Git Bash）、`device-zsh` 等是同一台设备加上一条固定的 `RemoteCommand`，把标准输入整段当作那种 shell 的脚本执行，UTF-8、保留退出码。提示词让 Claude 按脚本所用的 shell 把它用 here-document 送给对应的主机，脚本不经过任何一层命令行，不需要转义或编码，也没有长度限制；偏好的 shell 只是提示词里的一句话，两种都能用。就绪探测走设备一定有的那种 shell。PowerShell 自带的 `-Command -` 与 `-File -` 逐行处理标准输入，跨行的块会丢失，所以 `device-pwsh` 先读完整段再执行；Git Bash 前先把命令共用的无窗口控制台切到 UTF-8，脚本调用的 cmd、ping 等 Windows 程序才不按系统代码页（中文系统是 GBK）输出。
 - 每台设备另有一个固定的入口 `devices/<device-id>/`：端口和配置路径在设备在线及宽限期内不变，密钥随每次连接更换；会话的 SSH 配置指向它，所以重连对正在运行的 CLI 没有任何可见变化，设备不在时新发起的命令在入口处等待（最长一分钟）。
-- 临时 SSH config / key 在 `connections/<connection-id>/`；断连回收这个目录，不碰 `native/` 下的工作目录、CLI 原生 transcript 或记忆。系统提示词里写的不是这个目录，而是每个会话固定的 `session-ssh/<session-id>.conf`，它只有一行 `Include`，每次运行前指向当前连接的配置：连接目录每次重连都换，提示词若跟着变，模型侧的提示缓存从系统提示词之后全部失效，整段对话要重新写入缓存。重连不丢失会话，也不改变提示词。
+- 临时 SSH config / key 在 `connections/<connection-id>/`；断连回收这个目录，不碰 `native/` 下的工作目录、CLI 原生 transcript 或记忆。每个会话另有固定的 `session-ssh/<session-id>/`：`config` 先 `Include` 设备入口的配置，其余主机再读用户和系统自己的 ssh 配置（`ssh -F` 会替换掉它们）；`bin/` 里的 `ssh`、`scp`、`sftp` 只是带上 `-F config` 调用系统的同名程序，服务端把这个目录放在会话 CLI 的 PATH 最前面。于是 Claude 照常写 `ssh device-pwsh`，连其他主机也和普通 `ssh` 一样；提示词里不出现任何路径，重连和换连接都不改变它，模型侧的提示缓存保持有效。
 
 代理 `PROXY_DATA_DIR/sessions.sqlite` 只是 GUI 事件、项目绑定、审批偏好与索引的展示镜像；Windows 只有有界会话内容缓存与草稿，打开会话按页拉取，不重放所有 token。镜像里一段输出只存一条；输出途中的片段只转发给正在看的窗口，不落盘。不应把“界面历史存在”当作“原生上下文存在”。
 

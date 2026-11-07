@@ -316,7 +316,9 @@ export async function openProxyBridge(
             current.ssh = ssh;
             if (closed || remote.readyState !== WebSocket.OPEN) return;
             current.channels = openChannels(message, ssh.port, dialChannel, fail);
-            remote.send(JSON.stringify(ssh.credentials));
+            const credentials = { ...ssh.credentials };
+            if (nativeReady.protocolVersion < 24) delete credentials.shells;
+            remote.send(JSON.stringify(credentials));
           })
           .catch((error) => fail(error.message));
       } else if (message.type === 'tunnel.open') {

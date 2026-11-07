@@ -102,6 +102,7 @@ async function fixture(t: TestContext, fail = 'quota', graceMs?: number) {
   socket.send(
     JSON.stringify({
       type: 'tunnel.credentials',
+      shells: ['bash'],
       connectionId: offer.type === 'tunnel.offer' && offer.connectionId,
       username: 'test',
       privateKey: 'unused offline test key',
@@ -666,6 +667,27 @@ nativeTest(
       assert.deepEqual(catalog.terminalCommands, ['exit']);
       assert.equal(catalog.commandDetails?.[0].argumentHint, '<condition>');
     }
+    // Changing the shell adds a context notice. A slash command must be refused before that
+    // notice can turn it into ordinary text, and refusing it must not consume the notice.
+    await f.request({ type: 'device.shell', shell: 'bash' });
+    const shellRequest = randomUUID();
+    f.socket.send(
+      JSON.stringify({
+        type: 'message.send',
+        sessionId,
+        requestId: shellRequest,
+        text: '/goal keep context',
+      }),
+    );
+    const shellRejected = await f.wait(
+      (m) => m.type === 'response' && m.requestId === shellRequest,
+    );
+    assert.ok(
+      shellRejected.type === 'response' &&
+        !shellRejected.ok &&
+        shellRejected.code === 'command_context_changed',
+    );
+    assert.match(f.server.store.notice(sessionId!), /prefers Git Bash/);
     await f.request({ type: 'session.account', sessionId, accountId: f.id });
     const requestId = randomUUID();
     f.socket.send(
@@ -1536,8 +1558,23 @@ nativeTest(
     });
     const openedB = await f.wait((m) => m.type === 'terminal.opened' && m.sessionId === b);
     assert.ok(openedA.type === 'terminal.opened' && openedB.type === 'terminal.opened');
+    await f.request({
+      type: 'settings.update',
+      accountId: 'default',
+      values: { autoCompactWindow: 500_000 },
+    });
+    await f.request({
+      type: 'settings.update',
+      accountId: f.id,
+      values: { autoCompactWindow: 250_000 },
+    });
     const status = (used: number) =>
       JSON.stringify({
+        model: { id: 'test-model' },
+        context_window: {
+          context_window_size: 1_000_000,
+          current_usage: { input_tokens: 100_000 },
+        },
         rate_limits: {
           five_hour: { used_percentage: used, resets_at: Math.floor(Date.now() / 1000) + 3600 },
         },
@@ -1571,6 +1608,8 @@ nativeTest(
       metricsB?.rateLimits?.windows.find((w) => w.name === 'five_hour')?.utilization,
       78,
     );
+    assert.equal(metricsA?.context?.percentage, 20);
+    assert.equal(metricsB?.context?.percentage, 40, 'each terminal uses its own account settings');
     assert.ok(
       !f.messages.some(
         (m) =>
@@ -1579,6 +1618,55 @@ nativeTest(
           m.event.payload.type === 'native.metrics',
       ),
       'an unrelated terminal cannot replace the selected conversation metrics',
+    );
+    // A delayed native answer writes cache/context metrics without a fresh quota reading.
+    // It must not erase the account's last valid quota or make the account unavailable.
+    const transcript = join(f.dir, 'delayed-terminal.jsonl');
+    writeFileSync(transcript, '');
+    writeFixture(
+      join(f.dir, 'terminals', `${openedA.terminalId}.hooks`),
+      JSON.stringify({
+        hook_event_name: 'SessionStart',
+        session_id: a,
+        transcript_path: transcript,
+      }) + '\n',
+    );
+    await delay(700); // the hook installs the record watcher before the CLI appends its answer
+    writeFixture(
+      transcript,
+      JSON.stringify({
+        type: 'assistant',
+        uuid: randomUUID(),
+        sessionId: a,
+        timestamp: new Date().toISOString(),
+        message: {
+          id: randomUUID(),
+          content: [{ type: 'text', text: 'delayed native answer' }],
+          usage: { cache_creation: { ephemeral_1h_input_tokens: 10 } },
+        },
+      }) + '\n',
+    );
+    await f.wait(
+      (m) =>
+        m.type === 'session.event' &&
+        m.event.sessionId === a &&
+        m.event.payload.type === 'native.metrics' &&
+        m.event.payload.cacheTtl === '1h',
+    );
+    for (let i = f.messages.length - 1; i >= 0; i--)
+      if (f.messages[i].type === 'pool.state') f.messages.splice(i, 1);
+    await f.request({ type: 'pool.status' });
+    const retained = await f.wait(
+      (m) =>
+        m.type === 'pool.state' &&
+        m.accounts.some(
+          (account) =>
+            account.id === 'default' && account.limits?.windows.some((w) => w.utilization === 33),
+        ),
+    );
+    assert.ok(
+      retained.type === 'pool.state' &&
+        retained.accounts.find((account) => account.id === 'default')?.limits?.available,
     );
     const activeA = f.server.store.get(a).session.activeRun?.id;
     await f.request({ type: 'session.status', sessionId: a, quota: true });

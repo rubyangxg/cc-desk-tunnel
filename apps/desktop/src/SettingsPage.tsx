@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
+import { platformOf } from '@cc-desk-tunnel/protocol';
 import {
   ArrowLeft,
   Bell,
@@ -14,9 +15,10 @@ import {
   Search,
   Settings,
   SlidersHorizontal,
+  SquareTerminal,
   UserRound,
 } from 'lucide-react';
-import type { ProxyClient } from './client.ts';
+import type { ConnectedDevice, ProxyClient } from './client.ts';
 import WebAccessSettings from './WebAccessSettings.tsx';
 import Help from './Help.tsx';
 import type { ConnectionForm } from './LoginPage.tsx';
@@ -32,6 +34,7 @@ import IdleCompactionSettings from './IdleCompactionSettings.tsx';
 import SettingsPanel from './SettingsPanel.tsx';
 import { useShared } from './shared.ts';
 import type { ListedConnection } from './shared.ts';
+import ShellSettings from './ShellSettings.tsx';
 import ShortcutSettings from './ShortcutSettings.tsx';
 import SharedDocument from './SharedDocument.tsx';
 import { IconButton, Page, Row, Switch } from './ui.tsx';
@@ -45,6 +48,7 @@ export type Section =
   | 'notifications'
   | 'shortcuts'
   | 'context'
+  | 'shell'
   | 'web'
   | 'account'
   | 'claude'
@@ -105,6 +109,13 @@ const sections: { id: Section; name: string; group: string; icon: typeof Bell; w
     words: '自动压缩 提示缓存 过期 空闲 上下文 compact',
   },
   {
+    id: 'shell',
+    name: 'Shell',
+    group: '服务端',
+    icon: SquareTerminal,
+    words: 'PowerShell Git Bash 命令 脚本 终端 偏好',
+  },
+  {
     id: 'web',
     name: '浏览器访问',
     group: '服务端',
@@ -147,6 +158,7 @@ const here = (browser: boolean) =>
     ? '只保存在这个浏览器里，只影响在这里打开的页面。'
     : '只保存在这台电脑，只影响这个客户端。';
 const everyDevice = '保存在服务端，对所有连接到它的设备生效。';
+const thisDevice = '保存在服务端，只对这台电脑生效。';
 const kinds: { key: NotifyKind; title: string; detail: string }[] = [
   { key: 'done', title: '任务完成', detail: 'Claude Code 做完了一轮任务' },
   { key: 'failed', title: '任务失败', detail: '一轮任务因错误而结束' },
@@ -850,7 +862,11 @@ export default function SettingsPage({
   showNotes,
   back,
   browser = false,
+  here,
 }: {
+  // This computer as the service lists it, with the shells it runs Claude's scripts in. A Windows one has a page for
+  // the shell Claude should prefer.
+  here?: ConnectedDevice;
   // Given before a connection exists: only this computer's own settings are shown, and this leaves them.
   back?: () => void;
   browser?: boolean;
@@ -882,6 +898,12 @@ export default function SettingsPage({
       (item.id !== 'context' || (native && client.state.features.includes('idle-compaction'))) &&
       (item.id !== 'web' || ((native || browser) && (client.state.serviceProtocol ?? 0) >= 20)) &&
       (item.id !== 'instructions' || (client.state.serviceProtocol ?? 0) >= 18) &&
+      (item.id !== 'shell' ||
+        (native &&
+          !browser &&
+          !!here &&
+          platformOf(here) === 'win32' &&
+          (client.state.serviceProtocol ?? 0) >= 24)) &&
       `${item.name} ${item.words}`.toLowerCase().includes(term),
   );
   return (
@@ -949,6 +971,10 @@ export default function SettingsPage({
             ) : (
               <p className="muted">升级服务端后可设置自动压缩。</p>
             )}
+          </Page>
+        ) : section === 'shell' && here && (client.state.serviceProtocol ?? 0) >= 24 ? (
+          <Page title="Shell" intro={thisDevice}>
+            <ShellSettings client={client} here={here} />
           </Page>
         ) : section === 'web' ? (
           <Page title="浏览器访问" intro={everyDevice}>

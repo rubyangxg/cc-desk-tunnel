@@ -270,8 +270,10 @@ test('a turn report names the message it answered, or none for a turn a backgrou
   assert.equal(eventSchema.safeParse(event({ ...stats, partial: undefined })).success, false);
 });
 
-test('personal versions before 0.4.48 retain protocol 22 while new releases require 23', () => {
+test('personal releases retain protocol 22/23 and current releases require 24', () => {
   assert.equal(PROTOCOL_HISTORY['0.4.48'], 23);
+  assert.equal(PROTOCOL_HISTORY['0.4.49'], 24);
+  assert.equal(PROTOCOL_VERSION, 24);
   const refusal = {
     type: 'connection.error' as const,
     code: 'version_mismatch',
@@ -279,5 +281,7 @@ test('personal versions before 0.4.48 retain protocol 22 while new releases requ
     message: 'upgrade required',
   };
   assert.equal(fallbackServerProtocol(refusal, 23), 22);
+  assert.equal(fallbackServerProtocol(refusal, 24), 22);
+  assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.48' }, 24), 23);
   assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.48' }, 23), null);
 });

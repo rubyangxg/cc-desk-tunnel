@@ -1,6 +1,14 @@
 import { ProjectQuotaSettings } from './project-quota.ts';
 import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
-import { createReadStream, mkdirSync, readFileSync, rmSync, unwatchFile, watchFile } from 'node:fs';
+import {
+  createReadStream,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  unwatchFile,
+  watchFile,
+} from 'node:fs';
 import { createServer } from 'node:http';
 import { totalmem } from 'node:os';
 import { join } from 'node:path';
@@ -73,10 +81,12 @@ import { readNativeSettings, updateNativeSettings, settingsPath } from './native
 import { readInstructions, writeInstructions, instructionsPath } from './native-instructions.ts';
 import type { NativeTerminal } from './native-terminal.ts';
 import {
+  statusLineContext,
   terminalActivity,
-  terminalEvents,
   terminalHooks,
+  terminalRecord,
   terminalSettings,
+  TerminalTranscript,
 } from './terminal-transcript.ts';
 import { inOrder } from './question.ts';
 import { simulate } from './simulation.ts';
@@ -179,6 +189,11 @@ type Terminal = {
     toldElsewhere?: boolean;
     // The native session held no message when last looked at.
     empty?: boolean;
+    // The CLI's record of the session, which a hook names, and how far it was read as the CLI wrote it; what was read
+    // of it goes through `transcript`.
+    record?: string;
+    recordOffset: number;
+    transcript: TerminalTranscript;
   };
 };
 const INTERRUPTS = new Set(['\x1b', '\x03', '\x1b[27u', '\x1b[99;5u']);
@@ -507,7 +522,16 @@ export function createProxyServer(options: ServerOptions) {
           : []),
         ...[...seats.values()].flatMap((seat) => {
           const device = [...seat.peers].findLast((peer) => peer.device)?.device;
-          return device ? [{ ...device, ready: !options.tunnel || !!seat.door?.ready }] : [];
+          if (!device) return [];
+          const { shells, shell } = store.execution(device.id, platformOf(device));
+          return [
+            {
+              ...device,
+              ready: !options.tunnel || !!seat.door?.ready,
+              shells,
+              ...(shell ? { shell } : {}),
+            },
+          ];
         }),
       ],
     };
@@ -801,7 +825,11 @@ export function createProxyServer(options: ServerOptions) {
   // Stores an event and sends it to the session's subscribers; quota readings also drive the usage periods.
   function record(sessionId: string, runId: string, payload: EventPayload, createdAt?: string) {
     const accountId = store.get(sessionId).session.accountId ?? 'default';
-    if (payload.type === 'native.metrics' && pool) {
+    if (
+      payload.type === 'native.metrics' &&
+      pool &&
+      (payload.rateLimits || payload.errors?.usage)
+    ) {
       pool.observe(accountId, payload.rateLimits, payload.errors?.usage);
       publishPool();
     }
@@ -1034,7 +1062,10 @@ export function createProxyServer(options: ServerOptions) {
             ? undefined
             : door
               ? sessionSsh(store.directory, run.sessionId, door)
-              : { configPath: sessionSshPath(store.directory, run.sessionId) };
+              : {
+                  configPath: join(sessionSshPath(store.directory, run.sessionId), 'config'),
+                  bin: join(sessionSshPath(store.directory, run.sessionId), 'bin'),
+                };
         const said = store.promptValues(run.sessionId);
         let quota: Extract<EventPayload, { type: 'run.error' }> | undefined;
         const status = await runClaude(claude, {
@@ -1043,7 +1074,7 @@ export function createProxyServer(options: ServerOptions) {
           stopAtQuota: () => pool!.settings.enabled || resumesAfterQuota(run),
           nativeRoot: session.nativeRoot ?? session.id,
           projectPath: said.projectPath,
-          platform: said.platform,
+          execution: said.execution,
           permissionMode: session.permissionMode,
           model: session.model,
           effort: session.effort,
@@ -1460,6 +1491,8 @@ export function createProxyServer(options: ServerOptions) {
         activity: 'idle',
         at: new Date().toISOString(),
         connectionId: peer.id,
+        recordOffset: 0,
+        transcript: new TerminalTranscript((payload, at) => terminalEvent(current, payload, at)),
       },
     };
     terminals.set(current.sessionId, current);
@@ -1489,19 +1522,19 @@ export function createProxyServer(options: ServerOptions) {
       if (closing || peer.socket.readyState !== WebSocket.OPEN)
         throw new Error('Connection closed');
       completeOnboarding(claude.environment?.CLAUDE_CONFIG_DIR);
+      const reach = ssh ? sessionSsh(store.directory, session.id, ssh) : undefined;
       current.process = new NativeTerminal(
         claude.executable,
-        terminalArguments(
-          claude,
-          session,
-          ssh ? sessionSsh(store.directory, session.id, ssh) : undefined,
-          { resume, settingsPath: current.continued.settingsPath },
-        ),
+        terminalArguments(claude, session, reach, {
+          resume,
+          settingsPath: current.continued.settingsPath,
+          execution: store.execution(session.device?.id, platformOf(session.device)),
+        }),
         {
           cwd: prepareNativeDirectory(claude, store.directory, nativeRoot(session.id)),
           cols: command.cols,
           rows: command.rows,
-          env: terminalEnvironment(claude),
+          env: terminalEnvironment(claude, process.env, reach),
           screen: {
             detached: () => {
               if (current.owner)
@@ -1530,6 +1563,7 @@ export function createProxyServer(options: ServerOptions) {
           const { hooksPath, settingsPath, statusPath } = current.continued;
           unwatchFile(hooksPath);
           unwatchFile(statusPath);
+          if (current.continued.record) unwatchFile(current.continued.record);
           await heardTerminal(current, true);
           // A terminal that said nothing leaves no native session: its record, with nothing in it, would keep the
           // session's ID from a chat run or the next terminal, which the CLI refuses it to as one in use.
@@ -1616,7 +1650,7 @@ export function createProxyServer(options: ServerOptions) {
     }, graceMs);
   }
   // What the hooks of a terminal that continues its session wrote since they were last read: the session shows what
-  // its CLI is doing, and what a turn added, once it ended, is recorded (see `importTerminal`). Reads go one at a time,
+  // its CLI is doing, and what a turn added is read whole once it ended (see `importTerminal`). Reads go one at a time,
   // and the last, when the terminal `ended`, records what is left.
   function heardTerminal(terminal: Terminal, ended = false, interrupted = false) {
     const { continued } = terminal;
@@ -1628,12 +1662,16 @@ export function createProxyServer(options: ServerOptions) {
         for (const hook of hooks) {
           if (typeof hook.session_id === 'string' && hook.session_id !== terminal.nativeId)
             continued.elsewhere = true;
+          else if (!continued.record && typeof hook.transcript_path === 'string' && !ended)
+            followRecord(terminal, hook.transcript_path);
           activity = terminalActivity(hook) ?? activity;
         }
         interrupted &&= !hooks.length && continued.activity === 'working';
         if (interrupted) activity = 'idle';
-        if (ended || interrupted || hooks.some((hook) => terminalActivity(hook) === 'idle'))
+        if (ended || interrupted || hooks.some((hook) => terminalActivity(hook) === 'idle')) {
           await importTerminal(terminal);
+          terminalTurnEnded(terminal);
+        }
         if (ended || !activity || activity === continued.activity) return;
         continued.activity = activity;
         record(terminal.sessionId, terminal.id, {
@@ -1649,13 +1687,93 @@ export function createProxyServer(options: ServerOptions) {
     continued.heard = task;
     return task;
   }
+  // The CLI's record of the session, read as the CLI writes it, from where it is when a hook names it: a turn shows
+  // here part by part as it goes, a moment after the terminal (see `terminalRecord`). Nothing the CLI writes before
+  // its first hook is a turn's. Reads go one at a time, with those of the hooks.
+  function followRecord(terminal: Terminal, path: string) {
+    const { continued } = terminal;
+    continued.record = path;
+    try {
+      continued.recordOffset = statSync(path).size;
+    } catch {
+      continued.recordOffset = 0;
+    }
+    watchFile(path, { interval: 1000 }, () => void readRecord(terminal));
+  }
+  function readRecord(terminal: Terminal) {
+    const { continued } = terminal;
+    const task = continued.heard
+      .then(() => {
+        if (!continued.record) return;
+        const { messages, offset } = terminalRecord(continued.record, continued.recordOffset);
+        continued.recordOffset = offset;
+        continued.transcript.accept(messages, continued.known);
+        for (const message of messages) continued.known.add(message.uuid);
+        // The CLI writes the end of a turn a moment after it says the turn is over.
+        if (continued.activity === 'idle') terminalTurnEnded(terminal);
+      })
+      .catch(() => {});
+    continued.heard = task;
+    return task;
+  }
+  // Records what a terminal's CLI wrote, each at the time the CLI recorded it, after what was recorded of its turns
+  // before and no later than now. What the terminal was doing is recorded as it happens, and does not move them: a
+  // turn keeps the times it took.
+  function terminalEvent(terminal: Terminal, payload: EventPayload, at?: string) {
+    const { continued } = terminal;
+    const now = new Date().toISOString();
+    const time = at && !Number.isNaN(Date.parse(at)) ? new Date(at).toISOString() : now;
+    continued.at = time < continued.at ? continued.at : time > now ? now : time;
+    record(terminal.sessionId, terminal.id, payload, continued.at);
+  }
+  // How full the context is, as the terminal's CLI last showed it in its status line.
+  function terminalContext(terminal: Terminal) {
+    try {
+      return statusLineContext(
+        JSON.parse(readFileSync(terminal.continued.statusPath, 'utf8')),
+        readNativeSettings(
+          settingsPath(
+            pool!.options(store.get(terminal.sessionId).session.accountId ?? 'default').environment
+              ?.CLAUDE_CONFIG_DIR,
+          ),
+        ).autoCompactWindow,
+      );
+    } catch {
+      return null;
+    }
+  }
+  // A terminal's turn is over, as a chat run's: the context it left and how long the cache it wrote lasts, from which
+  // the session tells how long it has been idle (see idle.ts). A turn that asked the model nothing says nothing.
+  function terminalTurnEnded(terminal: Terminal) {
+    const ttl = terminal.continued.transcript.cacheTtl();
+    if (!ttl) return;
+    const last = store.lastMetrics(terminal.sessionId);
+    record(terminal.sessionId, terminal.id, {
+      type: 'native.metrics',
+      context: terminalContext(terminal) ?? last?.context ?? null,
+      usage: last?.usage ?? null,
+      rateLimits: null,
+      cacheTtl: ttl,
+    });
+  }
   // The quota a terminal's CLI showed in its status line, its replies' as a chat run's stream would carry it: it goes
   // to the account's quota, and every connection is told, as the quota is the account's, not the session's.
   function terminalQuota(terminal: Terminal) {
     const { continued } = terminal;
     let windows;
+    let context;
     try {
-      windows = statusLineQuota(JSON.parse(readFileSync(continued.statusPath, 'utf8')));
+      const status: unknown = JSON.parse(readFileSync(continued.statusPath, 'utf8'));
+      windows = statusLineQuota(status);
+      context = statusLineContext(
+        status,
+        readNativeSettings(
+          settingsPath(
+            pool!.options(store.get(terminal.sessionId).session.accountId ?? 'default').environment
+              ?.CLAUDE_CONFIG_DIR,
+          ),
+        ).autoCompactWindow,
+      );
     } catch {
       return;
     }
@@ -1673,7 +1791,7 @@ export function createProxyServer(options: ServerOptions) {
     if (!rateLimits?.available) return;
     record(terminal.sessionId, terminal.id, {
       type: 'native.metrics',
-      context: last?.context ?? null,
+      context: context ?? last?.context ?? null,
       usage: last?.usage ?? null,
       rateLimits,
     });
@@ -1697,14 +1815,7 @@ export function createProxyServer(options: ServerOptions) {
     const { continued } = terminal;
     const { known } = continued;
     const { sessionId } = terminal;
-    const now = new Date().toISOString();
-    // Each at the time the CLI recorded it, after what was recorded of its turns before and no later than now. What the
-    // terminal was doing is recorded as it happens, and does not move them: a turn keeps the times it took.
-    const emit = (payload: EventPayload, at?: string) => {
-      const time = at && !Number.isNaN(Date.parse(at)) ? new Date(at).toISOString() : now;
-      continued.at = time < continued.at ? continued.at : time > now ? now : time;
-      record(sessionId, terminal.id, payload, continued.at);
-    };
+    const emit = (payload: EventPayload) => terminalEvent(terminal, payload);
     const dir = nativeDirectory(store.directory, nativeRoot(sessionId));
     const claude = pool!.options(store.get(sessionId).session.accountId ?? 'default');
     const messages = await nativeStore(claude, 'messages', terminal.nativeId, {
@@ -1725,17 +1836,22 @@ export function createProxyServer(options: ServerOptions) {
         version: '',
       });
     }
-    const compacted = messages.some(
-      (message) =>
-        !known.has(message.uuid) && (message as { isCompactSummary?: boolean }).isCompactSummary,
-    );
+    // A compaction, read here or as the CLI wrote it, leaves out what was there: that is no rewind.
+    const compacted =
+      continued.transcript.compactedSince() ||
+      messages.some(
+        (message) =>
+          !known.has(message.uuid) && (message as { isCompactSummary?: boolean }).isCompactSummary,
+      );
     if (
       continued.last &&
       !compacted &&
       !messages.some((message) => message.uuid === continued.last)
     )
       emit({ type: 'native.notice', text: '终端里回退了对话，上面有些内容已不在上下文中。' });
-    terminalEvents(messages, known, emit);
+    continued.transcript.accept(messages, known);
+    continued.transcript.settle();
+    continued.transcript.compactedSince();
     for (const message of messages) known.add(message.uuid);
     continued.last = messages.at(-1)?.uuid ?? continued.last;
     if (continued.elsewhere && !continued.toldElsewhere) {
@@ -1776,7 +1892,10 @@ export function createProxyServer(options: ServerOptions) {
       }
       if (command.type === 'session.delete') {
         store.delete(command.sessionId);
-        rmSync(sessionSshPath(store.directory, command.sessionId), { force: true });
+        rmSync(sessionSshPath(store.directory, command.sessionId), {
+          recursive: true,
+          force: true,
+        });
         broadcast({ type: 'session.deleted', sessionId: command.sessionId });
         for (const other of peers) other.subscriptions.delete(command.sessionId);
       } else {
@@ -1904,15 +2023,21 @@ export function createProxyServer(options: ServerOptions) {
       throw new DomainError('goal_too_long', '目标条件最多 4000 字符。');
     if (!options.claude || !/^\/[a-z][\w:-]*(?:\s|$)/i.test(text)) return;
     const known = session.prompt?.told ?? session.prompt;
+    const execution = store.execution(session.device?.id, platformOf(session.device));
+    const shellsChanged = known?.shells
+      ? known.shells.join() !== execution.shells.join() || known.shell !== execution.shell
+      : !!session.prompt?.told;
     if (
       session.accountHandoff ||
       (known &&
         !session.prompt?.compacted &&
-        (known.projectPath !== session.projectPath || known.device !== session.device?.id))
+        (known.projectPath !== session.projectPath ||
+          known.device !== session.device?.id ||
+          shellsChanged))
     )
       throw new DomainError(
         'command_context_changed',
-        '账号或项目已切换，请先发送一条普通消息衔接上下文，再使用指令。',
+        '账号、项目或 Shell 已切换，请先发送一条普通消息衔接上下文，再使用指令。',
       );
   }
   function goalIntent(run: Run, text: string) {
@@ -2279,6 +2404,11 @@ export function createProxyServer(options: ServerOptions) {
         broadcast({ type: 'compaction.state', requestId: command.requestId, values });
         return undefined;
       }
+      // Sessions on the computer are told with the user's next message to each (see `store.notice`).
+      case 'device.shell':
+        store.prefer(deviceOf(peer).id, command.shell);
+        announce();
+        return undefined;
       case 'instructions.get':
       case 'instructions.update': {
         if (!options.claude) throw new DomainError('native_unavailable', '离线模拟没有全局说明。');
@@ -2820,6 +2950,9 @@ export function createProxyServer(options: ServerOptions) {
     track(
       peer.tunnel
         .accept(credentials, peer.device?.platform)
+        .then(() => {
+          if (peer.device) store.equip(peer.device.id, peer.tunnel!.shells);
+        })
         .then(() => adopt(peer))
         .then(() => {
           send(peer, { type: 'tunnel.ready', connectionId: peer.id });
