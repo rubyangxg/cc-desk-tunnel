@@ -4859,6 +4859,17 @@ dialog:has(.web-settings-form) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+}
+.session-goal-clear {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 12px;
+}
+.session-goal-clear:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  text-decoration: none;
 }
 /* The one line that installs ccdt, wrapped to the dialog rather than scrolled. */
 dialog:has(.ccdt-dialog) {

@@ -1086,6 +1086,31 @@ export function App({
       }
     });
   }
+  // Clears the native goal the same way typing /goal clear would, without wiping the draft.
+  async function clearGoal() {
+    if (!selected || inputDisabled || !selected.goal) return;
+    if (!['active', 'paused'].includes(selected.goal.status)) return;
+    if (!window.confirm('清除当前目标？这与发送 /goal clear 相同。')) return;
+    const sessionId = selected.id;
+    const text = '/goal clear';
+    await act(async () => {
+      try {
+        if (await rotation.sendAfterQuota(selected, text, scenario, true)) return;
+        await client.request({
+          type: 'message.send',
+          sessionId,
+          text,
+          scenario,
+        });
+      } catch (error) {
+        if (error instanceof RequestRejectedError && error.code === 'pool_unavailable') {
+          await rotation.sendAfterQuota(selected, text, scenario);
+          return;
+        }
+        throw error;
+      }
+    });
+  }
   // Takes up the last turn, which was stopped or cut off, without the user writing anything.
   function resume() {
     if (!selected || linkedHistory?.forward) return;
@@ -2266,6 +2291,19 @@ export function App({
                 >
                   <strong>{selected.goal.status === 'active' ? '目标进行中' : '目标已暂停'}</strong>
                   <span>{selected.goal.condition}</span>
+                  <button
+                    type="button"
+                    className="text-link session-goal-clear"
+                    disabled={inputDisabled}
+                    title={
+                      inputDisabled ? '当前无法发送，请稍后再清除' : '清除目标（等同 /goal clear）'
+                    }
+                    onClick={() => {
+                      void clearGoal();
+                    }}
+                  >
+                    清除目标
+                  </button>
                 </div>
               )}
             {nativeMode && selected && !selected.activeRun && (!away || remote) && (
