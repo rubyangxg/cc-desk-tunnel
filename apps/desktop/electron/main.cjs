@@ -509,6 +509,70 @@ handle('profiles:sessions', async (_event, id) => {
   );
   return probeSessions(profile, (url) => session.defaultSession.resolveProxy(url));
 });
+// Replies translated with the user's own OpenAI-compatible API (see translation.cjs): a choice of this computer, kept
+// with its settings, the key encrypted like the connection tokens. Answers carry `error` rather than throwing, so the
+// window shows the reason itself instead of Electron's wrapping of it.
+const translation = require('./translation.cjs');
+const translations = translation.cache(path.join(base, 'translations.json'));
+const translationTurn = translation.limiter(2);
+const translationFetch = (url, init) => net.fetch(url, init);
+const translationConfig = () => translation.loadConfig(readComputer().translation, safeStorage);
+// What the settings page has typed but not saved yet, for its test and model list.
+function draftConfig(draft) {
+  const saved = translationConfig();
+  return {
+    ...saved,
+    baseUrl: typeof draft?.baseUrl === 'string' ? draft.baseUrl : saved.baseUrl,
+    model: typeof draft?.model === 'string' && draft.model.trim() ? draft.model : saved.model,
+    key: typeof draft?.key === 'string' && draft.key.trim() ? draft.key.trim() : saved.key,
+  };
+}
+const answer = (work) =>
+  Promise.resolve()
+    .then(work)
+    .then(
+      (value) => ({ value }),
+      (error) => ({ error: String(error?.message ?? error) }),
+    );
+handle('translation:settings', () => translation.publicConfig(translationConfig(), safeStorage));
+handle('translation:save', (_event, change) =>
+  answer(() => {
+    writeComputer({
+      translation: translation.encodeConfig(change, readComputer().translation, safeStorage),
+    });
+    return translation.publicConfig(translationConfig(), safeStorage);
+  }),
+);
+handle('translation:models', (_event, draft) =>
+  answer(() => translation.listModels(draftConfig(draft), { fetch: translationFetch })),
+);
+handle('translation:test', (_event, draft) =>
+  answer(async () => {
+    const started = Date.now();
+    const text = await translation.translate(draftConfig(draft), translation.sample, {
+      fetch: translationFetch,
+    });
+    return { source: translation.sample, text, ms: Date.now() - started };
+  }),
+);
+handle('translation:cached', (_event, text) => translations.get(String(text ?? '')));
+handle('translation:translate', (_event, text) =>
+  answer(() => {
+    const source = String(text ?? '');
+    return (
+      translations.get(source) ??
+      translationTurn(async () => {
+        const known = translations.get(source);
+        if (known) return known;
+        const result = await translation.translate(translationConfig(), source, {
+          fetch: translationFetch,
+        });
+        translations.set(source, result);
+        return result;
+      })
+    );
+  }),
+);
 // Replaces a file whole through a flushed temporary file, so a crash or power loss in the middle of a write
 // leaves the previous content in place.
 function replaceFile(target, text) {

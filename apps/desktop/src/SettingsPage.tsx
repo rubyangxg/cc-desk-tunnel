@@ -11,6 +11,7 @@ import {
   Hourglass,
   Info,
   Keyboard,
+  Languages,
   Palette,
   Search,
   Settings,
@@ -36,6 +37,8 @@ import { useShared } from './shared.ts';
 import type { ListedConnection } from './shared.ts';
 import ShellSettings from './ShellSettings.tsx';
 import ShortcutSettings from './ShortcutSettings.tsx';
+import TranslationSettings from './TranslationSettings.tsx';
+import { translator } from './translation.ts';
 import SharedDocument from './SharedDocument.tsx';
 import { IconButton, Page, Row, Switch } from './ui.tsx';
 import type { MenuItem } from './ui.tsx';
@@ -47,6 +50,7 @@ export type Section =
   | 'connection'
   | 'notifications'
   | 'shortcuts'
+  | 'translation'
   | 'context'
   | 'shell'
   | 'web'
@@ -100,6 +104,13 @@ const sections: { id: Section; name: string; group: string; icon: typeof Bell; w
     group: '本机',
     icon: Keyboard,
     words: '键盘 组合键 热键 后退 前进 侧栏 缩放',
+  },
+  {
+    id: 'translation',
+    name: '回复翻译',
+    group: '本机',
+    icon: Languages,
+    words: '翻译 中文 英文 双语 对照 自动翻译 API Key 接口 模型 OpenAI CPA grok DeepSeek',
   },
   {
     id: 'context',
@@ -894,6 +905,7 @@ export default function SettingsPage({
     (item) =>
       (!back || item.group === '本机') &&
       (item.id !== 'connection' || window.desktop) &&
+      (item.id !== 'translation' || (!browser && !!translator())) &&
       (!browser || !['context', 'account', 'claude', 'instructions'].includes(item.id)) &&
       (item.id !== 'context' || (native && client.state.features.includes('idle-compaction'))) &&
       (item.id !== 'web' || ((native || browser) && (client.state.serviceProtocol ?? 0) >= 20)) &&
@@ -996,6 +1008,8 @@ export default function SettingsPage({
           <Notices />
         ) : section === 'shortcuts' ? (
           <ShortcutSettings />
+        ) : section === 'translation' ? (
+          <TranslationSettings />
         ) : section === 'help' ? (
           <Help />
         ) : (
