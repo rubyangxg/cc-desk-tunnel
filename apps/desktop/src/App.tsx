@@ -1803,6 +1803,7 @@ export function App({
     notifications: '通知',
     document: '共享文档',
     shortcuts: '快捷键',
+    translation: '回复翻译',
     context: '上下文与缓存',
     shell: 'Shell',
     web: '浏览器访问',

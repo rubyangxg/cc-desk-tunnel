@@ -93,3 +93,12 @@ contextBridge.exposeInMainWorld('desktop', {
     return () => ipcRenderer.removeListener('proxy:closed', listener);
   },
 });
+// Kept apart from `desktop`: the replies' translation, with the user's own API (see translation.cjs in main).
+contextBridge.exposeInMainWorld('translator', {
+  settings: () => ipcRenderer.invoke('translation:settings'),
+  save: (change) => ipcRenderer.invoke('translation:save', change),
+  models: (draft) => ipcRenderer.invoke('translation:models', draft),
+  test: (draft) => ipcRenderer.invoke('translation:test', draft),
+  cached: (text) => ipcRenderer.invoke('translation:cached', text),
+  translate: (text) => ipcRenderer.invoke('translation:translate', text),
+});

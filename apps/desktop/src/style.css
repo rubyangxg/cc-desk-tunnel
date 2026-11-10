@@ -4886,3 +4886,80 @@ dialog:has(.ccdt-dialog) {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* Replies translated into Chinese (ReplyTranslation.tsx): under the English they translate, rendered the same way,
+   marked by a rule at the left so each pair reads as one. */
+.translation {
+  margin-top: 6px;
+  padding-left: 12px;
+  border-left: 2px solid color-mix(in srgb, var(--muted) 45%, transparent);
+}
+.translation-toggle,
+.translation-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.translation-toggle:hover,
+.translation-action:hover {
+  background: var(--line-soft);
+}
+.translation-toggle svg,
+.translation-action svg,
+.translation-note svg {
+  width: 13px;
+  height: 13px;
+}
+.translation-toggle > svg:first-child {
+  transition: transform 0.15s;
+}
+.translation.open .translation-toggle > svg:first-child {
+  transform: rotate(90deg);
+}
+.translation-content {
+  margin-top: 2px;
+}
+.translation-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.translation-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.translation-bar.failed .translation-note {
+  color: var(--danger, #c0392b);
+}
+.translation-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 0;
+  font-size: 14px;
+}
+.translation-form input,
+.translation-form select {
+  width: 100%;
+}
+.translation-model {
+  display: flex;
+  gap: 8px;
+}
+.translation-model input {
+  flex: 1;
+}
+.translation-form .setting-actions {
+  padding: 8px 0 4px;
+}

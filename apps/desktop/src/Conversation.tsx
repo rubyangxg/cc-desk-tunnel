@@ -52,6 +52,9 @@ import type { Link } from './links.ts';
 import { followLink, linkMenu } from './linkActions.ts';
 import { pictureUrl, toolPictures } from './pictures.ts';
 import { Picture } from './Picture.tsx';
+import ReplyTranslation from './ReplyTranslation.tsx';
+import { autoTranslate, loadTranslationSettings, useTranslationSettings } from './translation.ts';
+import { translatable } from './translation-text.ts';
 
 const RichText = lazy(() => import('./RichText.tsx'));
 const Rich = ({ text }: { text: string }) => (
@@ -339,9 +342,12 @@ function WorkItems({
             }
           >
             {() => (
-              <div className="message-content tool-detail" data-search-content>
-                <Rich text={item.text} />
-              </div>
+              <>
+                <div className="message-content tool-detail" data-search-content>
+                  <Rich text={item.text} />
+                </div>
+                <ReplyTranslation id={item.id} text={item.text} />
+              </>
             )}
           </Fold>
         ),
@@ -429,6 +435,7 @@ function Message({
       <div className="message-content" data-search-content data-copy-text={item.text}>
         {user ? <p>{item.text}</p> : <Rich text={item.text} />}
       </div>
+      {!user && native && <ReplyTranslation id={item.id} text={item.text} />}
       {user && (
         <div className="message-footer">
           {item.terminal && (
@@ -669,6 +676,14 @@ export default function Conversation({
   progress: Record<string, TaskProgress> | undefined;
 }) {
   const turns = useMemo(() => conversation(events), [events]);
+  // The AI's text and thinking, each translated once whole while automatic translation is on (translation.ts).
+  const translation = useTranslationSettings();
+  useEffect(() => {
+    void loadTranslationSettings();
+  }, []);
+  useEffect(() => {
+    if (native) autoTranslate(translatable(turns));
+  }, [turns, native, translation]);
   // A compaction under way counts its time in its own line, as a tool does.
   const steps = turns.at(-1)?.steps ?? [];
   const toolAtWork =
