@@ -17,7 +17,8 @@ import { deviceTerms } from './device-terms.ts';
 import type { Execution } from './device-terms.ts';
 import { ClaudeStream } from './claude-stream.ts';
 import type { SshConnection } from './tunnel.ts';
-import { cacheTtl } from './idle-compaction.ts';
+import { cacheTtl, cacheWrites } from './idle-compaction.ts';
+import { loginExpiryWarnings } from './login-expiry.ts';
 import { loginOf, nativeCapabilities, nativeMetrics, Quotas } from './native-controls.ts';
 import type { NativeInput } from './native-input.ts';
 import { readNativeSettings, settingsPath } from './native-settings.ts';
@@ -76,11 +77,12 @@ export type ClaudeRun = {
   continuationContext?: string;
   signal: AbortSignal;
   emit: (event: EventPayload) => void;
-  // Asks the user about a tool call. A question Claude asks comes back with the answers chosen.
+  // Asks the user about a tool call. A question Claude asks comes back with the answers chosen, or with how it went
+  // unanswered.
   approve: (
     toolId: string,
     waiting: 'approval' | 'question',
-  ) => Promise<{ allowed: boolean; answers?: Record<string, string> }>;
+  ) => Promise<{ allowed: boolean; answers?: Record<string, string>; unanswered?: Unanswered }>;
   // Absent only for a session owned by the service itself.
   ssh?: SshConnection;
   // Told when Claude has finished its turn and the run goes on only for background tasks, and when it resumes.
@@ -106,6 +108,18 @@ export type ClaudeRun = {
     backgroundTask?: (toolId: string) => Promise<boolean>;
   };
 };
+export type Unanswered = 'skipped' | 'replied_in_chat';
+// What Claude reads of a question left unanswered.
+const UNANSWERED: Record<Unanswered, string> = {
+  skipped: 'The user skipped this question without answering it.',
+  replied_in_chat:
+    'The user did not answer here and replied in the chat instead; read their message.',
+};
+// A CLI that takes an answer saying how a question went unanswered.
+const UNANSWERED_CAPABILITY = 'ask_user_question_unanswered_v1';
+// How long a CLI whose input has ended is given to exit by itself.
+const EXIT_MS = 5000;
+const loginExpiry = loginExpiryWarnings();
 // Login includes the isolated account configuration; no readings cross personal pool accounts.
 export const quotas = new Quotas();
 const quotaOf =
@@ -197,10 +211,14 @@ export async function runClaude(
   // The prompts the CLI took since the last turn ended; the OpenTelemetry records of their requests carry the same ids.
   let promptIds: string[] = [];
   const tally = questionTally();
+  const written = cacheWrites();
   // Output tokens of every model call so far, subagents included, as the CLI's running total counts them; a turn's
   // share is the step from one result to the next. A resumed session's total already holds earlier runs.
   let outputSoFar: number | undefined = run.resume ? undefined : 0;
+  // What the CLI says it supports, from the `init` that opens each turn.
+  let capabilities: string[] = [];
   let settle: ReturnType<typeof setTimeout> | undefined;
+  let exiting: ReturnType<typeof setTimeout> | undefined;
   let settled = false;
   let quotaStopped = false;
   // Background tasks the CLI last reported. They are this process's children: they end with it when the CLI is shut
@@ -282,10 +300,30 @@ export async function runClaude(
         canUseTool: async (name, input, context) => {
           const tool = mapper.tool(name, input, context.toolUseID);
           const question = name === 'AskUserQuestion';
-          const { allowed, answers } =
+          const { allowed, answers, unanswered } =
             context.signal.aborted || run.signal.aborted
               ? { allowed: false }
               : await run.approve(tool.id, question ? 'question' : 'approval');
+          if (question && unanswered) {
+            // A CLI that knows of it is told how the question went: the tool's result says so, and Claude reads
+            // the answer given for each question. An older one refuses an answer that says it.
+            const said = UNANSWERED[unanswered];
+            if (!capabilities.includes(UNANSWERED_CAPABILITY))
+              return { behavior: 'deny', message: said };
+            const asked = Array.isArray(input.questions)
+              ? (input.questions as { question?: unknown }[])
+                  .map((item) => item?.question)
+                  .filter((text): text is string => typeof text === 'string')
+              : [];
+            return {
+              behavior: 'allow',
+              updatedInput: {
+                ...input,
+                answers: Object.fromEntries(asked.map((text) => [text, said])),
+                annotations: Object.fromEntries(asked.map((text) => [text, { unanswered }])),
+              },
+            };
+          }
           tool.denied = !allowed;
           if (!allowed)
             return {
@@ -428,6 +466,7 @@ export async function runClaude(
       }
       if (message.type === 'rate_limit_event') quotas.observe(login, message);
       if (message.type === 'system' && message.subtype === 'init') {
+        capabilities = message.capabilities ?? [];
         terminal = message.terminal_slash_commands ?? [];
         offer();
       }
@@ -529,6 +568,9 @@ export async function runClaude(
             ? (message.usage?.output_tokens ?? 0)
             : outputTotal - outputSoFar;
         outputSoFar = outputTotal;
+        // Both are read every turn: the totals are counted from the turn before.
+        const grown = written(message.modelUsage);
+        const ttl = cacheTtl(message.usage) ?? grown;
         if (!run.signal.aborted) {
           // A turn that merged several messages answers them all; the last one is where the reply is shown.
           const answered = message.user_message_uuids ?? [message.user_message_uuid];
@@ -549,20 +591,29 @@ export async function runClaude(
             const payload = await nativeMetrics(session, message, { quota: quotaOf(login) });
             if (payload.type === 'native.metrics') {
               metrics = payload;
-              const ttl = cacheTtl(message.usage);
               run.emit(ttl ? { ...payload, cacheTtl: ttl } : payload);
             } else run.emit(payload);
           } catch {
             run.emit({ type: 'native.notice', text: '本轮原生状态未能读取；任务结果不受影响。' });
           }
+          const expiry = loginExpiry(message.credential_expires_at, Date.now(), login);
+          if (expiry) run.emit({ type: 'native.notice', text: expiry });
         }
-        if (done || run.signal.aborted) {
-          if (!run.signal.aborted && !message.is_error && goals.value?.status === 'active') {
+        if (run.signal.aborted) break;
+        if (done) {
+          // Probe the native goal before closing input; the probe needs its own CLI turn.
+          if (!message.is_error && goals.value?.status === 'active') {
             const saved = await probeGoal(session, messages, run.input);
             if (!saved) goals.status('finished');
             else goals.update({ ...goals.value, ...saved });
           }
-          break;
+          // The CLI ends once its input does, and says on the way out what it could not save (`session_writes_lost`),
+          // so it is heard out for a few seconds rather than stopped. The run's outcome is known already: how the
+          // process ends does not change it.
+          settled = true;
+          run.input.close();
+          exiting = setTimeout(() => running.close(), EXIT_MS);
+          continue;
         }
         idle = true;
         if (background) {
@@ -584,6 +635,7 @@ export async function runClaude(
   } finally {
     clearTimeout(goalTimer);
     clearTimeout(settle);
+    clearTimeout(exiting);
     run.controls.refresh = undefined;
     run.controls.stopTask = undefined;
     run.controls.quotaPolicyChanged = undefined;

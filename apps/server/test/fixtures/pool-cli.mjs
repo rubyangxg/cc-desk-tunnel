@@ -39,7 +39,12 @@ const emit = (value) => process.stdout.write(JSON.stringify(value) + '\n');
 const input = createInterface({ input: process.stdin });
 if (process.argv.includes('auth')) {
   if (process.argv.includes('status')) {
-    emit({ loggedIn: state().loggedIn, email: state().email, subscriptionType: 'pro' });
+    emit({
+      loggedIn: state().loggedIn,
+      email: state().email,
+      subscriptionType: 'pro',
+      loginExpiresAt: state().loginExpiresAt,
+    });
     process.exit(0);
   }
   if (process.argv.includes('logout')) {
@@ -57,6 +62,8 @@ if (process.argv.includes('auth')) {
     (process.argv.includes(name) ? process.argv[process.argv.indexOf(name) + 1] : undefined);
   const sessionId = arg('--resume') ?? arg('--session-id') ?? randomUUID();
   let appendSystemPrompt;
+  let asked = false;
+  let pendingQuestion;
   input.on('line', async (line) => {
     const message = JSON.parse(line);
     if (message.type === 'control_request') {
@@ -101,6 +108,23 @@ if (process.argv.includes('auth')) {
         response: { subtype: 'success', request_id: message.request_id, response },
       });
     }
+    if (message.type === 'control_response' && pendingQuestion) {
+      writeFileSync(
+        join(directory, 'question-response.json'),
+        JSON.stringify(message.response.response),
+      );
+      emit({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        session_id: sessionId,
+        user_message_uuid: pendingQuestion,
+        modelUsage: {},
+        usage: { output_tokens: 0 },
+        num_turns: 1,
+      });
+      pendingQuestion = undefined;
+    }
     if (message.type === 'user') {
       const config = state();
       if (process.env.POOL_TEST_LOG)
@@ -140,7 +164,36 @@ if (process.argv.includes('auth')) {
         permissionMode: 'auto',
         slash_commands: config.commands?.map((command) => command.name),
         terminal_slash_commands: config.terminalCommands,
+        capabilities:
+          config.askQuestion && !config.questionLegacy ? ['ask_user_question_unanswered_v1'] : [],
       });
+      if (config.askQuestion && !asked) {
+        asked = true;
+        pendingQuestion = message.uuid;
+        emit({
+          type: 'control_request',
+          request_id: randomUUID(),
+          request: {
+            subtype: 'can_use_tool',
+            tool_name: 'AskUserQuestion',
+            tool_use_id: randomUUID(),
+            input: {
+              questions: [
+                {
+                  question: 'Proceed?',
+                  header: 'Proceed',
+                  options: [
+                    { label: 'Yes', description: 'Continue' },
+                    { label: 'No', description: 'Stop' },
+                  ],
+                  multiSelect: false,
+                },
+              ],
+            },
+          },
+        });
+        return;
+      }
       const goalFile = join(directory, `goal-${sessionId}.json`);
       const goal = () => (existsSync(goalFile) ? JSON.parse(readFileSync(goalFile, 'utf8')) : null);
       const goalArgs = /^\/goal(?:\s+([\s\S]*))?$/.exec(message.message.content)?.[1]?.trim() ?? '';

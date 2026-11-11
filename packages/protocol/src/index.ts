@@ -4,7 +4,7 @@ import { webCertificateStateSchema } from './web-certificate.ts';
 export * from './web.ts';
 export * from './web-certificate.ts';
 
-export const PROTOCOL_VERSION = 24;
+export const PROTOCOL_VERSION = 25;
 // The release each protocol version began with, from 0.2.4 on: a client newer than its service signs in with
 // the service's number to have it upgrade (see the README). A new number adds its line here.
 export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
@@ -26,6 +26,7 @@ export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
   '0.4.35': 22,
   '0.4.48': 23,
   '0.4.49': 24,
+  '0.4.53': 25,
 };
 export const MAX_FRAME_BYTES = 256 * 1024;
 // The longest global instructions edited here, in characters; it keeps a frame of them within MAX_FRAME_BYTES.
@@ -90,6 +91,9 @@ export const accountStateSchema = z.object({
   email: z.string().optional(),
   organization: z.string().optional(),
   subscriptionType: z.string().optional(),
+  // When a stored claude.ai sign-in ends for good (ISO 8601), as `claude auth status` reads it: renewing the access
+  // token does not move it, and the real end can be up to three days earlier. Absent for any other credential.
+  loginExpiresAt: z.string().optional(),
   // Present while the official sign-in command waits for the code shown after browser authorization.
   login: z.object({ url: z.url() }).nullable(),
   notice: z.string().optional(),
@@ -124,6 +128,9 @@ export const nativeSettingsSchema = z.object({
   // Not a key of its own in the file: ENABLE_TOOL_SEARCH under `env`. Tools are then described to the model
   // only when it looks for them, instead of all of them with every request.
   toolSearch: toggle,
+  // Under `permissions` in the file: the first from CLI 2.1.319, the second from 2.1.314.
+  denyInsteadOfPrompting: toggle,
+  blockWritesOutsideWorkingDirectories: toggle,
 });
 export type NativeSettings = z.infer<typeof nativeSettingsSchema>;
 // The service's own setting, not the CLI's: before the prompt cache of an idle session lapses, it compacts the session
@@ -143,6 +150,8 @@ export const contextUsageSchema = z.object({
   measuredAt: timestamp,
   categories: z.array(
     z.object({
+      // The CLI's stable name for the row (CLI 2.1.304 and later), where `name` is English text that may change.
+      id: z.string().optional(),
       name: z.string(),
       tokens: z.number().nonnegative(),
       kind: z.enum(['used', 'free', 'buffer', 'deferred']),
@@ -155,6 +164,10 @@ export const nativeUsageSchema = z.object({
   outputTokens: z.number().nonnegative(),
   cacheReadTokens: z.number().nonnegative(),
   cacheWriteTokens: z.number().nonnegative(),
+  // The cache writes that last an hour and those that last five minutes, which the API prices differently (CLI 2.1.311
+  // and later). Writes a response did not say the lifetime of are in neither, so the two may add up to less.
+  cacheWrite1hTokens: z.number().nonnegative().optional(),
+  cacheWrite5mTokens: z.number().nonnegative().optional(),
   measuredAt: timestamp,
 });
 export const rateLimitsSchema = z.object({
@@ -182,6 +195,7 @@ export const serverPoolAccountSchema = z.object({
   loggedIn: z.boolean().nullable(),
   email: z.string().optional(),
   subscriptionType: z.string().optional(),
+  loginExpiresAt: z.string().optional(),
   limits: rateLimitsSchema.nullable(),
   checkedAt: z.number().nonnegative().nullable(),
   blockedUntil: z.number().nonnegative().nullable(),
@@ -1205,6 +1219,16 @@ export type ServerMessage = z.infer<typeof serverMessageSchema>;
 // Servers require their own protocol so old clients cannot silently miss new events.
 export const clientServerMessageSchema = z.union([
   serverMessageSchema,
+  // Protocol 24 and earlier do not send the new permission settings. Only client reads
+  // supply defaults; command schemas keep their strict fields and never add writes.
+  z.object({
+    type: z.literal('settings.state'),
+    requestId: id,
+    values: nativeSettingsSchema.extend({
+      denyInsteadOfPrompting: toggle.default(null),
+      blockWritesOutsideWorkingDirectories: toggle.default(null),
+    }),
+  }),
   readyMessageSchema.extend({
     protocolVersion: z.union([
       z.literal(16),
@@ -1215,6 +1239,7 @@ export const clientServerMessageSchema = z.union([
       z.literal(21),
       z.literal(22),
       z.literal(23),
+      z.literal(24),
     ]),
   }),
 ]);
@@ -1259,7 +1284,8 @@ export function fallbackServerProtocol(message: ClientServerMessage, attempted: 
     /^0\.4\.(?:3[5-9]|4[0-7])$/.test(message.service ?? '')
   )
     return 22;
-  if (attempted === 24 && message.service === '0.4.48') return 23;
+  if (attempted > 23 && attempted <= PROTOCOL_VERSION && message.service === '0.4.48') return 23;
+  if (attempted === 25 && /^0\.4\.(?:49|5[0-2])$/.test(message.service ?? '')) return 24;
   return null;
 }
 

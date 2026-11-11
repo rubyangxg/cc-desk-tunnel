@@ -119,3 +119,10 @@ test('the personal protocol 23 service upgrades with its own handshake', async (
   assert.equal(received[0].protocolVersion, 23);
   assert.equal(received.at(-1).type, 'service.update.install');
 });
+
+test('the personal protocol 24 service still upgrades through the current client', async () => {
+  const { result, received } = await upgrade('available', '0.4.52', 24);
+  assert.equal(result, '0.3.4');
+  assert.equal(received[0].protocolVersion, 24);
+  assert.equal(received.at(-1).type, 'service.update.install');
+});

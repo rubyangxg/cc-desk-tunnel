@@ -21,6 +21,10 @@ export function parseAccountStatus(output: string): Account {
     ...(typeof status.subscriptionType === 'string' && {
       subscriptionType: status.subscriptionType,
     }),
+    ...(typeof status.loginExpiresAt === 'string' &&
+      Number.isFinite(Date.parse(status.loginExpiresAt)) && {
+        loginExpiresAt: status.loginExpiresAt,
+      }),
   };
 }
 type Ran = { code: number | null; stdout: string; failure?: CommandFailure };

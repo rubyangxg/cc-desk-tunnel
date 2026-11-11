@@ -1532,6 +1532,14 @@ nativeTest(
   { timeout: 30000 },
   async (t) => {
     const f = await fixture(t, 'none', 100);
+    writeFixture(
+      join(f.config, 'settings.json'),
+      JSON.stringify({ statusLine: { type: 'command', command: 'echo account-A-status' } }),
+    );
+    writeFixture(
+      join(f.dir, 'accounts', f.id, 'config', 'settings.json'),
+      JSON.stringify({ statusLine: { type: 'command', command: 'echo account-B-status' } }),
+    );
     const a = (
       await f.request({ type: 'session.create', title: 'terminal A', projectPath: '/project' })
     ).sessionId!;
@@ -1558,6 +1566,13 @@ nativeTest(
     });
     const openedB = await f.wait((m) => m.type === 'terminal.opened' && m.sessionId === b);
     assert.ok(openedA.type === 'terminal.opened' && openedB.type === 'terminal.opened');
+    const settingsA = readFileSync(join(f.dir, 'terminals', `${openedA.terminalId}.json`), 'utf8');
+    const settingsB = readFileSync(join(f.dir, 'terminals', `${openedB.terminalId}.json`), 'utf8');
+    assert.match(settingsA, /account-A-status/);
+    assert.doesNotMatch(settingsA, /account-B-status/);
+    assert.match(settingsB, /account-B-status/);
+    assert.doesNotMatch(settingsB, /account-A-status/);
+
     await f.request({
       type: 'settings.update',
       accountId: 'default',
@@ -1928,5 +1943,100 @@ nativeTest(
     assert.equal(context.nativeSessionId, before);
     assert.equal(context.persisted, true);
     assert.equal(f.server.store.get(sessionId!).session.accountId, 'default');
+  },
+);
+
+for (const mode of ['skipped', 'replied_in_chat', 'legacy'] as const) {
+  nativeTest(
+    `native questions distinguish ${mode} without blocking later messages`,
+    { timeout: 30000 },
+    async (t) => {
+      const f = await fixture(t, '');
+      writeFixture(
+        join(f.config, 'fixture.json'),
+        JSON.stringify({
+          loggedIn: true,
+          email: 'a@example.test',
+          askQuestion: true,
+          questionLegacy: mode === 'legacy',
+        }),
+      );
+      await f.request({ type: 'pool.configure', values: { enabled: false } });
+      const { sessionId } = await f.request({
+        type: 'session.create',
+        title: 'native question',
+        projectPath: '/question',
+      });
+      await f.request({ type: 'session.subscribe', sessionId, afterSequence: 0 });
+      await f.request({ type: 'message.send', sessionId, text: 'Ask a question' });
+      const approval = await f.wait(
+        (m) =>
+          m.type === 'session.event' &&
+          m.event.sessionId === sessionId &&
+          m.event.payload.type === 'approval.requested',
+      );
+      assert.ok(
+        approval.type === 'session.event' && approval.event.payload.type === 'approval.requested',
+      );
+      if (mode === 'replied_in_chat')
+        await f.request({ type: 'message.send', sessionId, text: 'Continue with the chat answer' });
+      else
+        await f.request({
+          type: 'approval.reply',
+          sessionId,
+          runId: approval.event.runId,
+          approvalId: approval.event.payload.approvalId,
+          allowed: false,
+        });
+      await f.wait(
+        (m) =>
+          m.type === 'session.event' &&
+          m.event.sessionId === sessionId &&
+          m.event.payload.type === 'run.status' &&
+          m.event.payload.status === 'completed',
+      );
+      const response = JSON.parse(readFileSync(join(f.config, 'question-response.json'), 'utf8'));
+      if (mode === 'legacy') assert.equal(response.behavior, 'deny');
+      else {
+        assert.equal(response.behavior, 'allow');
+        assert.equal(response.updatedInput.annotations['Proceed?'].unanswered, mode);
+        assert.match(
+          response.updatedInput.answers['Proceed?'],
+          mode === 'skipped' ? /skipped/ : /replied in the chat/,
+        );
+      }
+      assert.equal(f.server.store.get(sessionId!).session.activeRun, null);
+    },
+  );
+}
+
+nativeTest(
+  'pool login expiry is read from each isolated account and cleared on logout',
+  { timeout: 30000 },
+  async (t) => {
+    const f = await fixture(t, '');
+    const dates = ['2027-01-01T00:00:00Z', '2027-02-01T00:00:00Z'];
+    for (const [file, email, loginExpiresAt] of [
+      [join(f.config, 'fixture.json'), 'a@example.test', dates[0]],
+      [join(f.dir, 'accounts', f.id, 'config', 'fixture.json'), 'b@example.test', dates[1]],
+    ])
+      writeFixture(file, JSON.stringify({ loggedIn: true, email, loginExpiresAt }));
+    await f.request({ type: 'pool.status', refresh: true });
+    const ready = await f.wait(
+      (m) =>
+        m.type === 'pool.state' &&
+        !m.refreshing &&
+        m.accounts.find((a) => a.id === 'default')?.loginExpiresAt === dates[0] &&
+        m.accounts.find((a) => a.id === f.id)?.loginExpiresAt === dates[1],
+    );
+    assert.ok(ready.type === 'pool.state');
+    await f.request({ type: 'pool.account.logout', accountId: 'default' });
+    await f.wait(
+      (m) =>
+        m.type === 'pool.state' &&
+        m.accounts.find((a) => a.id === 'default')?.loggedIn === false &&
+        m.accounts.find((a) => a.id === 'default')?.loginExpiresAt === undefined &&
+        m.accounts.find((a) => a.id === f.id)?.loginExpiresAt === dates[1],
+    );
   },
 );

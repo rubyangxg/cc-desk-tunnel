@@ -9,11 +9,13 @@ import {
   IDLE_COMPACTION,
   IdleCompactions,
   cacheTtl,
+  cacheWrites,
   compactionDue,
   readIdleCompaction,
   writeIdleCompaction,
 } from '../src/idle-compaction.ts';
 import { SessionStore } from '../src/store.ts';
+import { loginExpiryWarnings } from '../src/login-expiry.ts';
 
 type Metrics = Extract<EventPayload, { type: 'native.metrics' }>;
 const MINUTE = 60_000;
@@ -127,4 +129,39 @@ test('the store finds the last turn that wrote a cache, and when it ended', (t) 
   const found = store.lastCachedTurn(session.id);
   assert.equal(found?.metrics.context?.usedTokens, 150_000);
   assert.equal(found?.endedAt, Date.parse(turn.createdAt));
+  // A compaction after it, as a terminal's CLI makes of an idle session by itself, leaves nothing to compact.
+  store.append(session.id, 'terminal', {
+    type: 'native.compact',
+    trigger: 'auto',
+    previousTokens: 150_000,
+  });
+  assert.equal(store.lastCachedTurn(session.id), null);
+  store.append(session.id, 'run', metrics(20_000, '1h'));
+  assert.equal(store.lastCachedTurn(session.id)?.metrics.context?.usedTokens, 20_000);
+});
+
+test("a result that does not break its cache writes down is read by the session's totals", () => {
+  const written = cacheWrites();
+  const usage = (hour: number, minutes: number) => ({
+    'claude-opus-5-5': {
+      cacheCreationEphemeral1hInputTokens: hour,
+      cacheCreationEphemeral5mInputTokens: minutes,
+    },
+  });
+  assert.equal(written(usage(1000, 0)), '1h');
+  assert.equal(written(usage(1000, 0)), undefined, 'nothing written this turn');
+  assert.equal(written(usage(1000, 300)), '5m');
+  assert.equal(written(usage(4000, 600)), '1h');
+  assert.equal(written(undefined), undefined, 'a CLI that does not count them');
+});
+
+test('login expiry warnings are daily and isolated by pool account', () => {
+  const warn = loginExpiryWarnings();
+  const now = Date.parse('2026-11-11T00:00:00Z');
+  const expiry = '2026-11-15T00:00:00Z';
+  assert.match(warn(expiry, now, 'a')!, /4 天/);
+  assert.equal(warn(expiry, now, 'a'), null);
+  assert.match(warn(expiry, now, 'b')!, /4 天/);
+  assert.match(warn(expiry, now + 86400000, 'a')!, /3 天/);
+  assert.equal(warn(undefined, now, 'c'), null);
 });

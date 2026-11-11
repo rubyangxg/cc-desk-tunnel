@@ -132,15 +132,23 @@ export default function SettingsPanel({ client }: { client: ProxyClient }) {
           <div key={group.name}>
             <h2 className="page-heading">{group.name}</h2>
             <div className="settings-list card">
-              {group.fields.map((field) => (
-                <label key={field.key}>
-                  <span>
-                    <strong>{field.title}</strong>
-                    <small>{field.detail}</small>
-                  </span>
-                  {control(field, values[field.key])}
-                </label>
-              ))}
+              {group.fields
+                .filter(
+                  (field) =>
+                    (client.state.serviceProtocol ?? 0) >= 25 ||
+                    !['denyInsteadOfPrompting', 'blockWritesOutsideWorkingDirectories'].includes(
+                      field.key,
+                    ),
+                )
+                .map((field) => (
+                  <label key={field.key}>
+                    <span>
+                      <strong>{field.title}</strong>
+                      <small>{field.detail}</small>
+                    </span>
+                    {control(field, values[field.key])}
+                  </label>
+                ))}
             </div>
           </div>
         ))}

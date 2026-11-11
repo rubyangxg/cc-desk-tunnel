@@ -9,6 +9,7 @@ import {
   fallbackServerProtocol,
   authSchema,
   commandSchema,
+  nativeSettingsSchema,
   eventSchema,
   terminalControlSchema,
 } from '../src/index.ts';
@@ -270,10 +271,11 @@ test('a turn report names the message it answered, or none for a turn a backgrou
   assert.equal(eventSchema.safeParse(event({ ...stats, partial: undefined })).success, false);
 });
 
-test('personal releases retain protocol 22/23 and current releases require 24', () => {
+test('personal releases retain protocol 22/23/24 and current releases require 25', () => {
   assert.equal(PROTOCOL_HISTORY['0.4.48'], 23);
   assert.equal(PROTOCOL_HISTORY['0.4.49'], 24);
-  assert.equal(PROTOCOL_VERSION, 24);
+  assert.equal(PROTOCOL_HISTORY['0.4.53'], 25);
+  assert.equal(PROTOCOL_VERSION, 25);
   const refusal = {
     type: 'connection.error' as const,
     code: 'version_mismatch',
@@ -282,6 +284,33 @@ test('personal releases retain protocol 22/23 and current releases require 24', 
   };
   assert.equal(fallbackServerProtocol(refusal, 23), 22);
   assert.equal(fallbackServerProtocol(refusal, 24), 22);
+  assert.equal(fallbackServerProtocol(refusal, 25), 22);
+  for (const service of ['0.4.49', '0.4.50', '0.4.51', '0.4.52'])
+    assert.equal(fallbackServerProtocol({ ...refusal, service }, 25), 24);
+  assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.48' }, 25), 23);
   assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.48' }, 24), 23);
   assert.equal(fallbackServerProtocol({ ...refusal, service: '0.4.48' }, 23), null);
+});
+
+test('legacy settings remain readable without adding new permission writes', () => {
+  const old = Object.fromEntries(
+    Object.keys(nativeSettingsSchema.shape)
+      .filter(
+        (k) => !['denyInsteadOfPrompting', 'blockWritesOutsideWorkingDirectories'].includes(k),
+      )
+      .map((k) => [k, null]),
+  );
+  const frame = { type: 'settings.state', requestId: randomUUID(), values: old };
+  assert.equal(serverMessageSchema.safeParse(frame).success, false);
+  const read = clientServerMessageSchema.parse(frame);
+  assert.ok(read.type === 'settings.state');
+  assert.equal(read.values.denyInsteadOfPrompting, null);
+  assert.equal(read.values.blockWritesOutsideWorkingDirectories, null);
+  const command = commandSchema.parse({
+    type: 'settings.update',
+    requestId: randomUUID(),
+    values: { language: 'chinese' },
+  });
+  assert.ok(command.type === 'settings.update');
+  assert.deepEqual(command.values, { language: 'chinese' });
 });

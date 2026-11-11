@@ -350,6 +350,11 @@ export default function UnifiedAccountPool({
               <div className="pool-account-tags">
                 <span className="pool-service-badge">{profile.name}</span>
                 <span>{account.subscriptionType ?? 'Claude Code'}</span>
+                {account.loginExpiresAt && (
+                  <span title="Claude Code 登录有效期">
+                    登录至 {new Date(account.loginExpiresAt).toLocaleDateString('zh-CN')}
+                  </span>
+                )}
                 {account.busy && <span className="account-running">任务运行中</span>}
               </div>
               <Quota account={account} name="five_hour" label="5 小时额度" now={now} />
