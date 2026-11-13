@@ -8,10 +8,12 @@ import {
   serverMessageSchema,
   fallbackServerProtocol,
   authSchema,
+  runWorking,
   commandSchema,
   nativeSettingsSchema,
   eventSchema,
   terminalControlSchema,
+  tunnelCredentialsSchema,
 } from '../src/index.ts';
 
 test('only clients accept the audited v0.3.1 protocol and retry its version refusal once', () => {
@@ -91,6 +93,35 @@ test('handoff recovery requires an explicit bounded queue snapshot', () => {
     commandSchema.safeParse({ ...handoff, type: 'run.handoff', runId: randomUUID() }).success,
     false,
   );
+});
+
+test('tunnel credentials accept spaces in usernames without allowing config delimiters', () => {
+  const credentials = {
+    type: 'tunnel.credentials',
+    connectionId: randomUUID(),
+    username: 'local user',
+    privateKey: 'test-key',
+    hostPublicKey: 'ssh-ed25519 AAAATEST',
+    shells: ['pwsh'],
+  };
+  for (const username of ['local user', 'domain\\local user', 'user@example.com', 'user-name']) {
+    assert.ok(tunnelCredentialsSchema.safeParse({ ...credentials, username }).success, username);
+  }
+  for (const username of [
+    '',
+    'user\nForwardAgent yes',
+    'user\rname',
+    'user\tname',
+    'user"name',
+    'user\0name',
+    'user*',
+  ]) {
+    assert.equal(
+      tunnelCredentialsSchema.safeParse({ ...credentials, username }).success,
+      false,
+      username,
+    );
+  }
 });
 
 test('protocol validates UTF-8 text, IDs and bounded input', () => {
@@ -313,4 +344,20 @@ test('legacy settings remain readable without adding new permission writes', () 
   });
   assert.ok(command.type === 'settings.update');
   assert.deepEqual(command.values, { language: 'chinese' });
+});
+
+test('a run is at work while a turn goes or waits on the user, or the CLI of a terminal works or waits', () => {
+  const run = { id: randomUUID(), connectionId: randomUUID(), status: 'running' as const };
+  assert.equal(runWorking(null), false);
+  assert.equal(runWorking(run), true);
+  assert.equal(runWorking({ ...run, status: 'awaiting_approval', waiting: 'question' }), true);
+  assert.equal(runWorking({ ...run, waiting: 'background' }), false);
+  assert.equal(runWorking({ ...run, surface: 'terminal', activity: 'working' }), true);
+  assert.equal(runWorking({ ...run, surface: 'terminal', activity: 'waiting' }), true);
+  assert.equal(runWorking({ ...run, surface: 'terminal', activity: 'idle' }), false);
+  assert.equal(runWorking({ ...run, surface: 'terminal' }), false);
+  const install = { type: 'service.update.install', requestId: randomUUID(), version: '0.3.15' };
+  assert.equal(commandSchema.safeParse(install).success, true);
+  assert.equal(commandSchema.safeParse({ ...install, force: true }).success, true);
+  assert.equal(commandSchema.safeParse({ ...install, force: 'yes' }).success, false);
 });

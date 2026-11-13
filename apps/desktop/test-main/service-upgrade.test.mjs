@@ -126,3 +126,61 @@ test('the personal protocol 24 service still upgrades through the current client
   assert.equal(received[0].protocolVersion, 24);
   assert.equal(received.at(-1).type, 'service.update.install');
 });
+
+test('a service with sessions at work says so as busy, and a forced upgrade asks it to go past them', async () => {
+  const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  await new Promise((resolve) => server.once('listening', resolve));
+  const installs = [];
+  server.on('connection', (socket) => {
+    const send = (message) => socket.send(JSON.stringify(message));
+    socket.on('message', (raw) => {
+      const message = JSON.parse(raw.toString());
+      if (message.type === 'auth') send({ type: 'ready', update: { state: 'idle' } });
+      else if (message.type === 'service.update.check')
+        send({ type: 'service.update', state: 'available', latest: '0.3.16' });
+      else if (message.type === 'service.update.install') {
+        installs.push(message);
+        if (message.force) send({ type: 'service.update', state: 'restarting', latest: '0.3.16' });
+        else
+          send({
+            type: 'response',
+            requestId: message.requestId,
+            ok: false,
+            code: 'native_busy',
+            message: '「在回答」正在运行。',
+          });
+      }
+    });
+  });
+  const url = `ws://127.0.0.1:${server.address().port}/ws`;
+  const config = {
+    url,
+    fingerprint: '',
+    token: 'a'.repeat(32),
+    deviceName: '这台电脑',
+    service: '0.4.54',
+  };
+  try {
+    const busy = await upgradeService(config, { open: () => new WebSocket(url) }).catch(
+      (error) => error,
+    );
+    assert.equal(busy.code, 'busy');
+    assert.match(busy.message, /在回答/);
+    const forced = await upgradeService(
+      { ...config, force: true },
+      { open: () => new WebSocket(url) },
+    );
+    assert.equal(forced, '0.3.16');
+    const old = await upgradeService(
+      { ...config, service: '0.4.53', force: true },
+      { open: () => new WebSocket(url) },
+    ).catch((error) => error);
+    assert.equal(old.code, 'busy');
+    assert.deepEqual(
+      installs.map((message) => message.force),
+      [undefined, true, undefined],
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

@@ -730,7 +730,7 @@ test('theme follows the system, can be overridden and persists through reload', 
   await page.getByRole('menuitem', { name: '设置', exact: true }).click();
   await page
     .getByRole('navigation', { name: '设置分类' })
-    .getByRole('button', { name: '常规', exact: true })
+    .getByRole('button', { name: '外观', exact: true })
     .click();
   const theme = page.getByRole('radiogroup', { name: '主题' });
   await expect(theme.getByRole('radio', { name: '跟随系统', exact: true })).toBeChecked();

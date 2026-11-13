@@ -635,6 +635,16 @@ export const sessionSchema = z.object({
     .nullable(),
 });
 export type Session = z.infer<typeof sessionSchema>;
+// Whether a session's run is at work, so that the restart of a service upgrade would cut it off: a turn under way or
+// waiting on the user, or a terminal whose CLI works or waits. A terminal open at rest, and a turn ended but for the
+// background tasks it left, are not: an upgrade only ends them, and the session goes on after it.
+export function runWorking(run: Session['activeRun']) {
+  if (!run) return false;
+  if (run.surface === 'terminal') return run.activity === 'working' || run.activity === 'waiting';
+  return run.waiting !== 'background';
+}
+// The first release whose service takes `force` on `service.update.install`, and upgrades past what is at work.
+export const FORCED_UPGRADE_SINCE = '0.4.54';
 export const snapshotSchema = z.object({ session: sessionSchema, events: z.array(eventSchema) });
 export type SessionSnapshot = z.infer<typeof snapshotSchema>;
 export const historyPageSchema = snapshotSchema.extend({
@@ -793,7 +803,13 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('session.stats'), ...request, sessionId: id }).strict(),
   z.object({ type: z.literal('service.update.check'), ...request }).strict(),
   z
-    .object({ type: z.literal('service.update.install'), ...request, version: versionSchema })
+    .object({
+      type: z.literal('service.update.install'),
+      ...request,
+      version: versionSchema,
+      // Upgrades even while sessions are at work, which the restart cuts off.
+      force: z.boolean().optional(),
+    })
     .strict(),
   z
     .object({
@@ -1311,7 +1327,7 @@ export const tunnelCredentialsSchema = z
       .string()
       .min(1)
       .max(256)
-      .regex(/^[a-zA-Z0-9_.\\@-]+$/),
+      .regex(/^[a-zA-Z0-9_.\\@ -]+$/),
     privateKey: z.string().min(1).max(16384),
     hostPublicKey: z.string().regex(/^ssh-ed25519 [A-Za-z0-9+/=]+$/),
     // What the SSH service runs scripts in.
