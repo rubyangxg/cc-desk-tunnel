@@ -15,6 +15,7 @@ import {
   Server,
   ListOrdered,
   KeyRound,
+  Trash2,
 } from 'lucide-react';
 import type {
   ServerPoolAccount,
@@ -147,6 +148,7 @@ export default function ServerAccountPool({
   const [error, setError] = useState<string | null>(null);
   const [edit, setEdit] = useState<{ id?: string; name: string } | null>(null);
   const [logout, setLogout] = useState<ServerPoolAccount | null>(null);
+  const [remove, setRemove] = useState<ServerPoolAccount | null>(null);
   const [tokenAccount, setTokenAccount] = useState<ServerPoolAccount | null>(null);
   const [token, setToken] = useState('');
   const [codes, setCodes] = useState<Record<string, string>>({});
@@ -472,6 +474,8 @@ export default function ServerAccountPool({
                     )}
                     {account.busy && <span className="account-running">任务运行中</span>}
                     {account.id === pool.settings.preferredId && <span>默认账号</span>}
+                    {client.state.features.includes('account-pool-remove') &&
+                      account.id === 'default' && <span>内置账号，不能删除</span>}
                   </div>
                   <Quota account={account} name="five_hour" label="5 小时额度" now={now} />
                   <Quota account={account} name="seven_day" label="每周额度" now={now} />
@@ -615,6 +619,34 @@ export default function ServerAccountPool({
                             Setup token
                           </button>
                         )}
+                      {client.state.features.includes('account-pool-remove') && (
+                        <button
+                          className="button secondary"
+                          disabled={
+                            disabled ||
+                            account.id === 'default' ||
+                            account.busy ||
+                            pool.refreshing ||
+                            !!account.login
+                          }
+                          title={
+                            account.id === 'default'
+                              ? '原有 Claude 账号是内置账号，不能删除。'
+                              : account.busy || pool.refreshing || account.login
+                                ? '请等待该账号的任务、登录或额度检测结束，再删除。'
+                                : `删除 ${account.name}`
+                          }
+                          aria-label={
+                            account.id === 'default'
+                              ? '删除账号，原有 Claude 账号是内置账号不能删除'
+                              : `删除 ${account.name}`
+                          }
+                          onClick={() => setRemove(account)}
+                        >
+                          <Trash2 />
+                          删除账号
+                        </button>
+                      )}
                       <IconButton
                         title={`重命名 ${account.name}`}
                         disabled={disabled}
@@ -734,6 +766,33 @@ export default function ServerAccountPool({
                 }
               >
                 确认退出
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {remove && (
+        <Modal title={`删除 ${remove.name}`} onClose={() => !working && setRemove(null)}>
+          <div className="pool-edit-form">
+            <p>
+              将从账号池移除这个账号，并删除服务端保存的本地登录凭证。已有项目和会话历史会保留，不会注销或删除
+              Claude / Anthropic 官方账号。使用此账号的空闲会话会改到「原有 Claude
+              账号」；正在运行、登录或检测中的账号不能删除。
+            </p>
+            <div className="pool-modal-actions">
+              <button className="button" disabled={working} onClick={() => setRemove(null)}>
+                取消
+              </button>
+              <button
+                className="button danger"
+                disabled={disabled}
+                onClick={() =>
+                  void act({ type: 'pool.account.remove', accountId: remove.id }).then((ok) => {
+                    if (ok) setRemove(null);
+                  })
+                }
+              >
+                确认删除
               </button>
             </div>
           </div>

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -98,6 +99,7 @@ async function fixture(t: TestContext, fail = 'quota', graceMs?: number) {
   const ready = await wait((message) => message.type === 'ready');
   assert.equal(ready.type, 'ready');
   assert.ok(ready.type === 'ready' && ready.features?.includes('account-pool'));
+  assert.ok(ready.type === 'ready' && ready.features?.includes('account-pool-remove'));
   const offer = await wait((message) => message.type === 'tunnel.offer');
   socket.send(
     JSON.stringify({
@@ -2068,5 +2070,164 @@ nativeTest(
     await f.request({ type: 'pool.account.logout', accountId: 'default' });
     assert.equal(read(original).env?.CLAUDE_CODE_OAUTH_TOKEN, undefined);
     assert.equal(read(second).env.CLAUDE_CODE_OAUTH_TOKEN, tokens[1]);
+  },
+);
+
+nativeTest(
+  'pool accounts can be removed without deleting session history, and busy or built-in accounts stay',
+  { timeout: 60000 },
+  async (t) => {
+    const f = await fixture(t, '');
+    const credential = join(f.dir, 'accounts', f.id, 'config', 'fixture.json');
+    assert.equal(existsSync(credential), true);
+    await f.request({
+      type: 'pool.configure',
+      values: { enabled: false, preferredId: f.id, strategy: 'order', order: [f.id, 'default'] },
+    });
+    const created = await f.request({
+      type: 'session.create',
+      title: 'keep history',
+      projectPath: '/local/project',
+    });
+    const sessionId = created.sessionId!;
+    await f.request({ type: 'session.account', sessionId, accountId: f.id });
+    await f.request({
+      type: 'message.send',
+      sessionId,
+      text: 'remember this isolated account turn',
+    });
+    await f.wait(
+      (message) =>
+        message.type === 'session.event' &&
+        message.event.sessionId === sessionId &&
+        message.event.payload.type === 'run.status' &&
+        message.event.payload.status === 'completed',
+    );
+    const before = f.server.store.snapshot(sessionId).events.length;
+    assert.ok(before > 0);
+    assert.equal(f.server.store.get(sessionId).session.accountId, f.id);
+
+    const deny = async (command: object, code: string) => {
+      const requestId = randomUUID();
+      f.socket.send(JSON.stringify({ ...command, requestId }));
+      const reply = await f.wait(
+        (message) => message.type === 'response' && message.requestId === requestId,
+      );
+      assert.ok(reply.type === 'response' && !reply.ok);
+      assert.equal(reply.type === 'response' ? reply.code : undefined, code);
+    };
+    await deny({ type: 'pool.account.remove', accountId: 'default' }, 'account_protected');
+    assert.equal(f.server.store.list().length, 1);
+
+    await f.request({ type: 'pool.add', name: 'C' });
+    const extraState = await f.wait(
+      (message) => message.type === 'pool.state' && message.accounts.length === 3,
+    );
+    assert.equal(extraState.type, 'pool.state');
+    const extra =
+      extraState.type === 'pool.state'
+        ? extraState.accounts.find((account) => account.id !== 'default' && account.id !== f.id)?.id
+        : undefined;
+    assert.ok(extra);
+    try {
+      await f.request({ type: 'pool.account.login', accountId: extra });
+      await f.wait(
+        (message) =>
+          message.type === 'pool.state' &&
+          message.accounts.some((account) => account.id === extra && account.login),
+      );
+      await deny({ type: 'pool.account.remove', accountId: extra }, 'login_active');
+    } finally {
+      await f.request({ type: 'pool.account.cancel', accountId: extra });
+    }
+    await f.wait(
+      (message) =>
+        message.type === 'pool.state' &&
+        message.accounts.some((account) => account.id === extra && !account.login),
+    );
+    f.messages.length = 0;
+    await f.request({ type: 'pool.status' });
+    let idle = await f.wait((message) => message.type === 'pool.state');
+    while (idle.type === 'pool.state' && idle.refreshing)
+      idle = await f.wait((message) => message.type === 'pool.state' && !message.refreshing);
+    assert.equal(idle.type, 'pool.state');
+    if (idle.type === 'pool.state') {
+      const target = idle.accounts.find((account) => account.id === f.id);
+      assert.ok(target);
+      assert.equal(target.busy, false, JSON.stringify(target));
+      assert.equal(target.login, null);
+    }
+
+    await f.request({ type: 'pool.account.remove', accountId: f.id });
+    const removed = await f.wait(
+      (message) =>
+        message.type === 'pool.state' && !message.accounts.some((account) => account.id === f.id),
+    );
+    assert.equal(removed.type, 'pool.state');
+    if (removed.type === 'pool.state') {
+      assert.equal(removed.settings.preferredId, 'default');
+      assert.equal(removed.settings.order.includes(f.id), false);
+      assert.equal(
+        removed.accounts.some((account) => account.id === 'default'),
+        true,
+      );
+    }
+    assert.equal(existsSync(join(f.dir, 'accounts', f.id)), false);
+    assert.equal(existsSync(join(f.config, 'fixture.json')), true);
+    const session = f.server.store.get(sessionId).session;
+    assert.equal(session.id, sessionId);
+    assert.equal(session.accountId, 'default');
+    assert.equal(f.server.store.snapshot(sessionId).events.length >= before, true);
+    assert.equal(
+      f.server.store
+        .snapshot(sessionId)
+        .events.some(
+          (event) =>
+            event.payload.type === 'native.notice' &&
+            event.payload.text.includes('已从账号池删除') &&
+            event.payload.text.includes('会话记录已保留'),
+        ),
+      true,
+    );
+  },
+);
+
+nativeTest(
+  'a running pool account cannot be removed until the task ends',
+  { timeout: 60000 },
+  async (t) => {
+    const f = await fixture(t, 'quota');
+    await f.request({ type: 'pool.configure', values: { enabled: false, preferredId: f.id } });
+    const created = await f.request({
+      type: 'session.create',
+      title: 'busy account',
+      projectPath: '/local/project',
+    });
+    const sessionId = created.sessionId!;
+    await f.request({ type: 'session.account', sessionId, accountId: f.id });
+    await f.request({ type: 'message.send', sessionId, text: 'stay running on this account' });
+    await f.wait(
+      (message) =>
+        message.type === 'session.event' &&
+        message.event.sessionId === sessionId &&
+        message.event.payload.type === 'run.status' &&
+        message.event.payload.status === 'running',
+    );
+    const requestId = randomUUID();
+    f.socket.send(JSON.stringify({ type: 'pool.account.remove', accountId: f.id, requestId }));
+    const reply = await f.wait(
+      (message) => message.type === 'response' && message.requestId === requestId,
+    );
+    assert.ok(reply.type === 'response' && !reply.ok);
+    assert.equal(reply.type === 'response' ? reply.code : undefined, 'account_busy');
+    assert.equal(f.server.store.get(sessionId).session.accountId, f.id);
+    assert.equal(existsSync(join(f.dir, 'accounts', f.id)), true);
+    f.messages.length = 0;
+    await f.request({ type: 'pool.status' });
+    const state = await f.wait((message) => message.type === 'pool.state');
+    assert.equal(
+      state.type === 'pool.state' && state.accounts.some((account) => account.id === f.id),
+      true,
+    );
   },
 );

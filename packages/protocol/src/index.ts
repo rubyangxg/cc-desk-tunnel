@@ -744,7 +744,7 @@ export const commandSchema = z.discriminatedUnion('type', [
         .regex(/^[\x21-\x7e]+$/),
     })
     .strict(),
-  ...(['pool.account.logout', 'pool.account.cancel'] as const).map((type) =>
+  ...(['pool.account.logout', 'pool.account.cancel', 'pool.account.remove'] as const).map((type) =>
     z.object({ type: z.literal(type), ...request, accountId: poolAccountIdSchema }).strict(),
   ),
   z

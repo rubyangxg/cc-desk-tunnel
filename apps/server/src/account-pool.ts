@@ -1,6 +1,6 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   compareQuotaReset,
@@ -169,6 +169,23 @@ export class AccountPool {
   update(id: string, values: Partial<ServerPoolAccount>) {
     Object.assign(this.get(id), values);
     this.save();
+  }
+  // Isolated accounts only. The built-in default keeps its official login directory.
+  // Sessions that referenced the account are retargeted by the service, not deleted here.
+  remove(id: string) {
+    if (id === 'default')
+      throw new DomainError('account_protected', '原有 Claude 账号是内置账号，不能从账号池删除。');
+    this.get(id);
+    const parent = resolve(this.directory, 'accounts');
+    const home = resolve(parent, id);
+    const inside = relative(parent, home);
+    if (!inside || inside.startsWith('..') || inside.includes('..'))
+      throw new DomainError('account_missing', '这个 Claude 账号已不存在。');
+    this.accounts = this.accounts.filter((account) => account.id !== id);
+    this.settings.order = this.settings.order.filter((item) => item !== id);
+    if (this.settings.preferredId === id) this.settings.preferredId = 'default';
+    this.save();
+    rmSync(home, { recursive: true, force: true });
   }
   configDirectory(id: string) {
     this.get(id);
