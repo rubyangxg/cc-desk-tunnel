@@ -2229,5 +2229,17 @@ nativeTest(
       state.type === 'pool.state' && state.accounts.some((account) => account.id === f.id),
       true,
     );
+    await f.request({
+      type: 'run.cancel',
+      sessionId,
+      runId: f.server.store.get(sessionId).session.activeRun!.id,
+    });
+    await f.wait(
+      (message) =>
+        message.type === 'session.event' &&
+        message.event.sessionId === sessionId &&
+        message.event.payload.type === 'run.status' &&
+        message.event.payload.status === 'cancelled',
+    );
   },
 );
