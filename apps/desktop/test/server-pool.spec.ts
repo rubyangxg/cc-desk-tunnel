@@ -58,6 +58,19 @@ test('one-service account dashboard logs in independent accounts, saves policy a
   await page.getByLabel('Claude 账号名称', { exact: true }).fill('备用账号');
   await page.getByRole('button', { name: '添加账号', exact: true }).click();
   const backup = page.getByRole('article', { name: 'Claude 账号 · 备用账号', exact: true });
+  await backup.getByRole('button', { name: 'Setup token', exact: true }).click();
+  const tokenDialog = page
+    .getByRole('dialog')
+    .filter({ has: page.getByRole('heading', { name: '登录 备用账号', exact: true }) });
+  await tokenDialog
+    .locator('input[aria-label="账号池 setup token"]')
+    .fill('test-only-cancelled-token');
+  await expect(tokenDialog.locator('input[aria-label="账号池 setup token"]')).toHaveAttribute(
+    'type',
+    'password',
+  );
+  await tokenDialog.getByRole('button', { name: '关闭', exact: true }).click();
+  await expect(tokenDialog).toHaveCount(0);
   await backup.getByRole('button', { name: '登录账号', exact: true }).click();
   await expect(backup.getByRole('button', { name: '打开授权页', exact: true })).toBeVisible();
   await backup.getByLabel('备用账号 的授权码', { exact: true }).fill('offline-test-authorization');

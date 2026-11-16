@@ -2040,3 +2040,33 @@ nativeTest(
     );
   },
 );
+
+nativeTest(
+  'setup tokens stay in their account settings, are absent from broadcasts and logout only clears its own token',
+  { timeout: 30000 },
+  async (t) => {
+    const f = await fixture(t, '');
+    const original = join(f.config, 'settings.json');
+    const second = join(f.dir, 'accounts', f.id, 'config', 'settings.json');
+    const tokens = ['test-only-original-secret', 'test-only-second-secret'];
+    for (const [accountId, token] of [
+      ['default', tokens[0]],
+      [f.id, tokens[1]],
+    ]) {
+      f.messages.length = 0;
+      await f.request({ type: 'pool.account.token', accountId, token });
+      await f.wait(
+        (m) =>
+          m.type === 'pool.state' && !m.refreshing && m.accounts.every((a) => a.limits?.available),
+      );
+    }
+    const read = (file: string) => JSON.parse(readFileSync(file, 'utf8'));
+    assert.equal(read(original).env.CLAUDE_CODE_OAUTH_TOKEN, tokens[0]);
+    assert.equal(read(second).env.CLAUDE_CODE_OAUTH_TOKEN, tokens[1]);
+    await f.request({ type: 'settings.get', accountId: f.id });
+    for (const secret of tokens) assert.equal(JSON.stringify(f.messages).includes(secret), false);
+    await f.request({ type: 'pool.account.logout', accountId: 'default' });
+    assert.equal(read(original).env?.CLAUDE_CODE_OAUTH_TOKEN, undefined);
+    assert.equal(read(second).env.CLAUDE_CODE_OAUTH_TOKEN, tokens[1]);
+  },
+);

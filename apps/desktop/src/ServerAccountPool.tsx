@@ -14,6 +14,7 @@ import {
   RefreshCw,
   Server,
   ListOrdered,
+  KeyRound,
 } from 'lucide-react';
 import type {
   ServerPoolAccount,
@@ -146,6 +147,8 @@ export default function ServerAccountPool({
   const [error, setError] = useState<string | null>(null);
   const [edit, setEdit] = useState<{ id?: string; name: string } | null>(null);
   const [logout, setLogout] = useState<ServerPoolAccount | null>(null);
+  const [tokenAccount, setTokenAccount] = useState<ServerPoolAccount | null>(null);
+  const [token, setToken] = useState('');
   const [codes, setCodes] = useState<Record<string, string>>({});
   const [, setTick] = useState(0);
   const offset = useMemo(
@@ -215,6 +218,75 @@ export default function ServerAccountPool({
     );
   return (
     <section className="server-pool-page" aria-label="Claude 账号池">
+      {tokenAccount && (
+        <Modal
+          title={`登录 ${tokenAccount.name}`}
+          onClose={() => {
+            setToken('');
+            setTokenAccount(null);
+          }}
+        >
+          <form
+            className="dialog-form"
+            aria-label="账号池 setup token"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void act({
+                type: 'pool.account.token',
+                accountId: tokenAccount.id,
+                token: token.trim(),
+              }).then((ok) => {
+                if (ok) {
+                  setToken('');
+                  setTokenAccount(null);
+                }
+              });
+            }}
+          >
+            <p>可粘贴已有令牌，或通过官方授权生成。只配置此账号；有效性以实际请求为准。</p>
+            <label>
+              Setup token
+              <input
+                type="password"
+                aria-label="账号池 setup token"
+                autoComplete="off"
+                value={token}
+                maxLength={8192}
+                onChange={(event) => setToken(event.target.value)}
+              />
+            </label>
+            {error && (
+              <p role="alert" className="error-text">
+                {error}
+              </p>
+            )}
+            <div className="dialog-actions">
+              <button
+                type="button"
+                className="button secondary"
+                disabled={disabled}
+                onClick={() => {
+                  void act({
+                    type: 'pool.account.login',
+                    accountId: tokenAccount.id,
+                    method: 'setup-token',
+                  }).then((ok) => {
+                    if (ok) {
+                      setToken('');
+                      setTokenAccount(null);
+                    }
+                  });
+                }}
+              >
+                生成令牌并授权
+              </button>
+              <button className="button primary" disabled={disabled || !token.trim()}>
+                保存令牌
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
       {client.state.features.includes('quota-watch') && (
         <div className="quota-live">
           <span>
@@ -528,6 +600,21 @@ export default function ServerAccountPool({
                           {account.loggedIn ? '退出登录' : '登录账号'}
                         </button>
                       )}
+                      {!account.login &&
+                        (client.state.serviceProtocol ?? 0) >= 26 &&
+                        !account.loggedIn && (
+                          <button
+                            className="button secondary"
+                            disabled={disabled || account.busy || pool.refreshing}
+                            onClick={() => {
+                              setToken('');
+                              setTokenAccount(account);
+                            }}
+                          >
+                            <KeyRound />
+                            Setup token
+                          </button>
+                        )}
                       <IconButton
                         title={`重命名 ${account.name}`}
                         disabled={disabled}

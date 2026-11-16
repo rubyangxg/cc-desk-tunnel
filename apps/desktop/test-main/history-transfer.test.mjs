@@ -27,7 +27,10 @@ function fixture(t, respond) {
     }
     send(raw) {
       const request = JSON.parse(raw);
-      if (request.requestId) {
+      if (
+        request.requestId &&
+        !['session.history.next', 'session.history.cancel'].includes(request.type)
+      ) {
         requests.push(request);
         queueMicrotask(() => respond(request, f));
       }

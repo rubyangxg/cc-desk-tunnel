@@ -20,9 +20,12 @@ class Client {
   socket: WebSocket;
   messages: ServerMessage[] = [];
   computer: typeof device;
-  constructor(url: string, origin?: string, computer = device, maxPayload?: number) {
+  constructor(url: string, origin?: string, computer = device, maxPayload?: number | boolean) {
     this.computer = computer;
-    this.socket = new WebSocket(url.replace('http', 'ws') + '/ws', { origin, maxPayload });
+    this.socket = new WebSocket(url.replace('http', 'ws') + '/ws', {
+      origin,
+      ...(typeof maxPayload === 'boolean' ? { perMessageDeflate: maxPayload } : { maxPayload }),
+    });
     this.socket.on('message', (raw) =>
       this.messages.push(serverMessageSchema.parse(JSON.parse(raw.toString()))),
     );
@@ -773,6 +776,46 @@ test('session directory does not push history; switching subscribes to only the 
   );
 });
 
+test('history is identical with negotiated compression and without compression', async (t) => {
+  const f = await fixture(t);
+  const owner = await f.connect();
+  const sessionId = await f.create(owner);
+  f.server.store.append(sessionId, randomUUID(), {
+    type: 'text.delta',
+    messageId: randomUUID(),
+    text: '中文历史🙂\n'.repeat(10000),
+  });
+  const expected = f.server.store.snapshot(sessionId).events;
+  for (const compression of [true, false]) {
+    const client = new Client(f.url, undefined, device, compression);
+    f.clients.push(client);
+    await client.open();
+    assert.equal(client.socket.extensions, compression ? 'permessage-deflate' : '');
+    const requestId = randomUUID();
+    client.send({ type: 'session.subscribe', sessionId, requestId });
+    const parts: string[] = [];
+    for (;;) {
+      const part = await client.wait((message) => message.type === 'session.history.part');
+      assert.ok(part.type === 'session.history.part');
+      parts.push(part.data);
+      // An unrelated reply must get through before the receiver asks for another part.
+      if (parts.length === 1) {
+        const usage = await client.request({ type: 'usage.summary' });
+        assert.ok(usage.type === 'response' && usage.ok);
+      }
+      client.send({ type: 'session.history.next', requestId });
+      if (part.last) break;
+    }
+    const response = await client.wait(
+      (message) => message.type === 'response' && message.requestId === requestId,
+    );
+    assert.ok(response.type === 'response' && response.ok);
+    const snapshot = serverMessageSchema.parse(JSON.parse(parts.join(''))[0]);
+    assert.ok(snapshot.type === 'session.snapshot');
+    assert.deepEqual(snapshot.events, expected);
+  }
+});
+
 test('native model, effort and plan preferences persist while offline compact is rejected', async (t) => {
   const f = await fixture(t);
   const client = await f.connect();
@@ -1397,49 +1440,38 @@ test('the first active turn forks an empty independent task without its goal or 
   await client.request({ type: 'run.cancel', sessionId, runId: run.id });
 });
 
-test('large history is negotiated into bounded frames and legacy readers get an actionable error', async (t) => {
+test('large history is paced into bounded frames and remains complete for multibyte text', async (t) => {
   const f = await fixture(t);
   const client = new Client(f.url, undefined, device, 256 * 1024);
   f.clients.push(client);
-  const ready = await client.open();
-  assert.ok(ready.type === 'ready' && ready.features?.includes('chunked-history'));
+  await client.open();
   const sessionId = await f.create(client);
-  const text = '中文🧩"\\'.repeat(350000);
-  const event = f.server.store.append(sessionId, randomUUID(), { type: 'native.notice', text });
-  const requestId = randomUUID();
-  client.send({ type: 'session.subscribe', sessionId, afterSequence: 0, chunked: true, requestId });
-  const response = await client.wait((m) => m.type === 'response' && m.requestId === requestId);
-  assert.ok(response.type === 'response' && response.ok);
-  const parts = client.messages.filter(
-    (m) => m.type === 'session.snapshot.part' && m.requestId === requestId,
-  );
-  assert.ok(parts.length > 10);
-  assert.ok(
-    parts.every(
-      (m, i) =>
-        m.type === 'session.snapshot.part' &&
-        m.index === i &&
-        m.total === parts.length &&
-        Buffer.byteLength(JSON.stringify(m)) < 256 * 1024,
-    ),
-  );
-  const snapshot = JSON.parse(
-    parts.map((m) => (m.type === 'session.snapshot.part' ? m.data : '')).join(''),
-  );
-  assert.equal(snapshot.type, 'session.snapshot');
-  assert.deepEqual(snapshot.events, [event]);
-  const legacy = await client.request({
-    type: 'session.history',
-    sessionId,
-    beforeSequence: event.sequence + 1,
+  const event = f.server.store.append(sessionId, randomUUID(), {
+    type: 'native.notice',
+    text: '中文🧩"\\'.repeat(350000),
   });
-  assert.ok(legacy.type === 'response' && !legacy.ok && legacy.code === 'history_upgrade_required');
-  assert.equal(
-    client.socket.readyState,
-    WebSocket.OPEN,
-    'oversized old-format history must not break the connection',
-  );
-  assert.ok(await f.create(client), 'the same connection still accepts a normal request');
+  for (const chunked of [true, false]) {
+    const requestId = randomUUID();
+    client.send({ type: 'session.subscribe', sessionId, afterSequence: 0, chunked, requestId });
+    const parts: string[] = [];
+    for (;;) {
+      const part = await client.wait(
+        (m) => m.type === 'session.history.part' && m.requestId === requestId,
+      );
+      assert.ok(part.type === 'session.history.part');
+      assert.ok(Buffer.byteLength(JSON.stringify(part)) < 256 * 1024);
+      parts.push(part.data);
+      client.send({ type: 'session.history.next', requestId });
+      if (part.last) break;
+    }
+    const response = await client.wait((m) => m.type === 'response' && m.requestId === requestId);
+    assert.ok(response.type === 'response' && response.ok);
+    assert.ok(parts.length > 10);
+    const [snapshot] = JSON.parse(parts.join(''));
+    assert.equal(snapshot.type, 'session.snapshot');
+    assert.deepEqual(snapshot.events, [event]);
+  }
+  assert.ok(await f.create(client));
 });
 
 test('the idle compaction setting is read, changed for every window and kept with the sessions', async (t) => {

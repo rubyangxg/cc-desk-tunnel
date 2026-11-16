@@ -8,6 +8,7 @@ import {
 import type { EventPayload } from '@cc-desk-tunnel/protocol';
 import type {
   AccountState,
+  SetupTokenResult,
   Command,
   Device,
   IdleCompaction,
@@ -123,6 +124,8 @@ export type HistoryState = {
   hasEarlier: boolean;
   loading: boolean;
   loadingEarlier: boolean;
+  // Live events received after a failed snapshot must not advance a cursor past missing history.
+  needsReload?: boolean;
 };
 export type ClientState = {
   status: 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
@@ -162,6 +165,8 @@ export type ClientState = {
   capabilities: NativeCapabilities | null;
   metrics: NativeMetrics | null;
   account: AccountState | null;
+  // A newly generated token is held only until its one-time dialog closes or this connection ends.
+  setupToken: SetupTokenResult | null;
   // The service's idle compaction setting, as it last said; every window is told when it changes.
   compaction: IdleCompaction | null;
   // What each session's background tasks last said of themselves, by task: kept while the window is open
@@ -201,6 +206,7 @@ export class ProxyClient {
     capabilities: null,
     metrics: null,
     account: null,
+    setupToken: null,
     compaction: null,
     progress: {},
   };
@@ -263,6 +269,9 @@ export class ProxyClient {
       sessionId?: string;
       renew?: () => void;
       progress?: (received: number, total: number) => void;
+      parts?: string[];
+      following?: ServerMessage[];
+      done?: Promise<Response>;
     }
   >();
   getSnapshot = () => this.state;
@@ -474,6 +483,80 @@ export class ProxyClient {
         socket.close();
         return;
       }
+      receive(message);
+    };
+    const receive = (message: ServerMessage) => {
+      if (message.type === 'session.history.part') {
+        const request = this.pending.get(message.requestId);
+        if (
+          !request ||
+          !['session.subscribe', 'session.history'].includes(request.type) ||
+          request.sessionId !== message.sessionId
+        )
+          return;
+        request.renew?.();
+        request.parts ??= [];
+        request.parts.push(message.data);
+        if (request.parts.length > 4096) {
+          this.update({ error: '历史单页过大，已停止读取，请检查服务端。' });
+          this.credentials = null;
+          socket.close();
+          return;
+        }
+        socket.send(JSON.stringify({ type: 'session.history.next', requestId: message.requestId }));
+        if (!message.last) return;
+        const partSessionId = message.sessionId;
+        const following = request.following ?? [];
+        let page: ServerMessage[];
+        try {
+          if (request.parts.length > 4096) throw new Error('History page too large');
+          page = JSON.parse(request.parts.join('')).map((value: unknown) =>
+            clientServerMessageSchema.parse(value),
+          );
+          if (
+            page[0]?.type !== 'session.snapshot' ||
+            page[0].requestId !== message.requestId ||
+            page[0].session.id !== message.sessionId ||
+            page.some(
+              (item, index) =>
+                index > 0 && (item.type !== 'session.fragment' || item.sessionId !== partSessionId),
+            )
+          )
+            throw new Error('History page does not match request');
+        } catch {
+          this.update({ error: '历史消息格式不兼容，已断开连接。' });
+          this.credentials = null;
+          socket.close();
+          return;
+        }
+        request.parts = undefined;
+        request.following = undefined;
+        for (const item of [...page, ...following]) receive(item);
+        return;
+      }
+      if (message.type === 'session.deleted') this.cancelHistory(message.sessionId);
+      // A subscribing snapshot replaces live state. Preserve the events which followed its
+      // captured boundary until the whole snapshot and its unfinished fragment have arrived.
+      const sessionId =
+        message.type === 'session.event'
+          ? message.event.sessionId
+          : message.type === 'session.updated'
+            ? message.session.id
+            : message.type === 'session.fragment'
+              ? message.sessionId
+              : undefined;
+      if (sessionId) {
+        const reading = [...this.pending.values()].find(
+          (request) =>
+            request.type === 'session.subscribe' &&
+            request.sessionId === sessionId &&
+            request.parts,
+        );
+        if (reading) {
+          (reading.following ??= []).push(message);
+          return;
+        }
+      }
       if (message.type === 'session.snapshot.part') {
         const requestId = message.requestId;
         const pending = this.pending.get(requestId);
@@ -632,6 +715,9 @@ export class ProxyClient {
       } else if (message.type === 'pool.state') {
         const { type: _type, ...pool } = message;
         this.update({ pool });
+      } else if (message.type === 'account.token.created') {
+        const { type: _type, ...setupToken } = message;
+        this.update({ setupToken });
       } else if (message.type === 'account.state') {
         const { type: _type, ...account } = message;
         // A signed-out account must not keep showing the previous one's identity and quota.
@@ -676,8 +762,9 @@ export class ProxyClient {
           return;
         }
         this.flushStream();
+        const request = this.pending.get(message.requestId);
         if (
-          !this.pending.has(message.requestId) ||
+          !request ||
           !this.cacheOrder.includes(message.session.id) ||
           !this.state.sessions.some((session) => session.id === message.session.id)
         )
@@ -698,6 +785,7 @@ export class ProxyClient {
         }
         const previous = this.state.history[id];
         const history = {
+          ...(message.mode === 'prepend' && previous?.needsReload ? { needsReload: true } : {}),
           firstSequence:
             message.mode === 'append'
               ? (previous?.firstSequence ?? message.firstSequence)
@@ -712,6 +800,16 @@ export class ProxyClient {
           loadingEarlier: false,
         };
         this.merge(id, [...message.events, ...tail], history, message.mode === 'replace');
+        if (request.type === 'session.history') {
+          clearTimeout(request.timer);
+          this.pending.delete(message.requestId);
+          request.resolve({
+            type: 'response',
+            requestId: message.requestId,
+            ok: true,
+            sessionId: id,
+          });
+        }
       } else if (message.type === 'session.event') {
         const payload = message.event.payload;
         const at = Date.parse(message.event.createdAt);
@@ -759,6 +857,7 @@ export class ProxyClient {
           retry: null,
           connectionId: null,
           error: this.state.error ?? (nativeClosed ? '原生连接已结束，请重新连接。' : null),
+          setupToken: null,
         });
         return;
       }
@@ -771,6 +870,7 @@ export class ProxyClient {
         status: 'reconnecting',
         connectionId: null,
         devices: [],
+        setupToken: null,
         retry: { attempt: this.state.retry?.attempt ?? 0, nextAt: Date.now() + delay },
       });
     };
@@ -800,7 +900,7 @@ export class ProxyClient {
     socket?.close();
     this.rejectPending();
     this.retryAttempt = 0;
-    this.update({ status: 'disconnected', connectionId: null, retry: null });
+    this.update({ status: 'disconnected', connectionId: null, retry: null, setupToken: null });
   }
   private rejectPending() {
     for (const [id, request] of this.pending) {
@@ -916,7 +1016,7 @@ export class ProxyClient {
   private load(sessionId: string) {
     this.historyEpoch.set(sessionId, {});
     const previous = this.state.history[sessionId];
-    const afterSequence = previous?.lastSequence ?? 0;
+    const afterSequence = previous?.needsReload ? 0 : (previous?.lastSequence ?? 0);
     this.update({
       history: {
         ...this.state.history,
@@ -934,11 +1034,15 @@ export class ProxyClient {
     });
     void this.request({ type: 'session.subscribe', sessionId, afterSequence }).catch(
       (error: Error) => {
+        if (error.name === 'AbortError' || this.state.selectedId !== sessionId) return;
         const history = this.state.history[sessionId];
         if (history)
           this.update({
             error: error.message,
-            history: { ...this.state.history, [sessionId]: { ...history, loading: false } },
+            history: {
+              ...this.state.history,
+              [sessionId]: { ...history, loading: false, needsReload: true },
+            },
           });
       },
     );
@@ -1005,6 +1109,8 @@ export class ProxyClient {
     }
   }
   select(sessionId: string) {
+    if (this.state.selectedId === sessionId && this.state.history[sessionId]?.loading) return;
+    this.cancelHistory();
     this.flushStream();
     this.cacheOrder = [...this.cacheOrder.filter((id) => id !== sessionId), sessionId];
     const events = { ...this.state.events };
@@ -1048,11 +1154,13 @@ export class ProxyClient {
       throw new Error('服务未连接。');
     const requestId = crypto.randomUUID();
     const historyRead = ['session.subscribe', 'session.history'].includes(command.type);
-    return new Promise<Response>((resolve, reject) => {
+    const done = new Promise<Response>((resolve, reject) => {
       const timeout = () => {
         this.pending.delete(requestId);
         this.results.delete(requestId);
         this.historyParts.delete(requestId);
+        if (historyRead && (this.state.serviceProtocol ?? 0) >= 26)
+          this.socket?.send(JSON.stringify({ type: 'session.history.cancel', requestId }));
         reject(
           new RequestTimeoutError(
             historyRead
@@ -1100,5 +1208,44 @@ export class ProxyClient {
         }),
       );
     }).finally(() => this.historyParts.delete(requestId));
+    const pending = this.pending.get(requestId);
+    if (pending) pending.done = done;
+    return done;
+  }
+  async waitForHistory(sessionId: string) {
+    await Promise.all(
+      [...this.pending.values()]
+        .filter((request) => request.sessionId === sessionId)
+        .map((request) => request.done),
+    );
+    if (this.state.selectedId !== sessionId) throw new Error('已切换会话，读取取消。');
+    if (this.state.history[sessionId]?.needsReload)
+      throw new Error('会话历史尚未完整加载，请重新打开会话后重试。');
+  }
+  private cancelHistory(sessionId?: string) {
+    for (const [requestId, request] of this.pending) {
+      if (request.type !== 'session.subscribe' && request.type !== 'session.history') continue;
+      if (sessionId && request.sessionId !== sessionId) continue;
+      clearTimeout(request.timer);
+      this.pending.delete(requestId);
+      this.historyParts.delete(requestId);
+      if (this.socket?.readyState === WebSocket.OPEN && (this.state.serviceProtocol ?? 0) >= 26)
+        this.socket.send(JSON.stringify({ type: 'session.history.cancel', requestId }));
+      const id = request.sessionId!;
+      const history = this.state.history[id];
+      if (history)
+        this.update({
+          history: {
+            ...this.state.history,
+            [id]: {
+              ...history,
+              loading: false,
+              loadingEarlier: false,
+              ...(request.type === 'session.subscribe' ? { needsReload: true } : {}),
+            },
+          },
+        });
+      request.reject(Object.assign(new Error('历史读取已取消。'), { name: 'AbortError' }));
+    }
   }
 }

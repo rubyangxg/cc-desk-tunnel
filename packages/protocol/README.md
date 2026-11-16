@@ -8,6 +8,7 @@
 
 ## 连接与消息
 
+- `account.login` 的 `method` 可选 `browser`（省略时默认）或 `setup-token`，分别启动官方普通登录或令牌生成；两者共用 `account.code/cancel`，`account.state.login.method` 标出进行中的方式。`account.token` 直接保存已有的非空单行 token。生成与粘贴均写官方用户设置；`account.logout` 清除两种登录，状态不回传令牌。生成后另以 `account.token.created` 只向发起连接发送一次 `{token,saved,error?}`，不缓存或广播；保存失败也提供该结果及具体错误。账号变更沿用运行 / 终端互斥，只允许桌面连接；浏览器工作台无此权限。
 - WebSocket `/ws` 建立后，首帧必须是 `auth`：协议版本、代理服务 token、设备名称。5 秒内不认证则关闭；token 不进入会话事件。服务回传 `ready`、连接 ID 和会话目录。
 - `requestId`、会话/运行/消息/审批 ID 为 UUID；工具 ID 保留原生 opaque ID。请求收到 `response` 只表示接纳/拒绝，不表示运行完成。
 - 请求包括 `session.create/delete/rename/move/subscribe/history/configure/compact/status`、`message.send`、`run.cancel`、`approval.reply`；`instructions.get/update` 读写云端 CLI 的用户级 `CLAUDE.md`，以 `instructions.state` 回复，更新带上读取时的版本，文件已变则拒绝。`message.send.scenario` 是模拟器专用场景选择，原生适配不据此构造虚假能力。
@@ -43,8 +44,8 @@
 
 同一连接的相同 requestId 返回已缓存响应；不同内容返回冲突。`session.create` 和同一会话内 `message.send` 的 requestId 在记录存续期间持久去重，即使跨连接或服务重启也不重复创建/发送；删除记录后该去重信息也删除。其他请求不跨连接自动重试。超时/断连可能发生在服务已接纳请求之后，客户端以恢复历史确认结果，不自动重发。
 
-入站控制请求上限 256 KiB，用户输入最多 16000 字符；历史快照不套用入站命令上限，桌面接收使用 `ws` 的默认上限。分页软预算为 1000 原始事件 / 512 KiB，单个过大轮次仍完整返回，极长单轮仍需后续优化。上游特有内容由服务适配层处理，不复制上游私有控制协议。
+入站控制请求上限 256 KiB，用户输入最多 16000 字符。个人版历史分页软预算为 1000 原始事件 / 128 KiB；较小轮次尽量完整，超大轮次可分多页且不丢内容，单个超大事件由传输分片承载。较大历史通过 `session.history.part` 交付，`data` 是原快照及捕获的未完成片段组成的 JSON 数组的一段文本。每块最多 32 Ki UTF-16 code units，接收端拼接全部文本后解析；`last` 标记末块。
 
-个人版 0.4.49 使用协议 24，新增设备 Shell 能力及选择设置。先升级服务端，再升级客户端和 ccdt；客户端保留协议 23 的 0.4.48 服务端升级入口，不向旧服务端发送 Shell 凭据字段。
+每个已认证连接同时交付一页历史，最多 4 块在途；接收端以同一 `requestId` 发送 `session.history.next` 确认每块，或以 `session.history.cancel` 取消。它们只作用于本连接的该次读取，不创建普通请求响应。末块确认后才发送原请求的成功 `response`；连续 30 秒没有确认则返回 `history_stalled`。客户端仅由该读取的新块续期，不以无关消息续期。订阅快照组装期间保留同会话的后续事件，应用快照和捕获片段后再按顺序处理；切换时取消旧读取，迟到消息不进入新请求。
 
-个人版 0.4.53 使用协议 25；保留协议 24（0.4.49—0.4.52）的升级握手，新增权限设置仅向协议 25 服务端发送。
+个人版 0.4.55 使用协议 26，新增历史传输控制及 Setup token 授权；先升级服务端，再升级客户端和 ccdt。客户端保留协议 16—25 的旧服务端升级握手，以及旧 `session.snapshot.part` 的读取兼容。0.4.53—0.4.54 使用协议 25，0.4.49—0.4.52 使用 24，0.4.48 使用 23。新控制只发往协议 26 服务端，旧服务端仍通过现有入口升级。

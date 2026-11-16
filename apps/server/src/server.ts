@@ -25,13 +25,19 @@ import {
 } from './account-pool.ts';
 import { poolHandoff, handoffBlockReason } from './pool-handoff.ts';
 import { goalCommand, setsGoal } from './native-goal.ts';
-import { accountStatus, accountLogout, NativeLogin } from './native-account.ts';
+import {
+  accountStatus,
+  accountLogout,
+  NativeLogin,
+  configureSetupToken,
+} from './native-account.ts';
 import {
   authSchema,
   commandSchema,
   continues,
   deviceIdentitySchema,
   isFragment,
+  historyControlSchema,
   leaveSchema,
   MAX_FRAME_BYTES,
   pathKey,
@@ -74,6 +80,7 @@ import {
   probeFailureMessages,
   trackTask,
 } from './diagnostics.ts';
+import { HistoryDelivery } from './history-delivery.ts';
 import { IdleCompactions } from './idle-compaction.ts';
 import { NativeInput } from './native-input.ts';
 import { statusLineQuota } from './native-controls.ts';
@@ -120,6 +127,7 @@ type Peer = {
   // The client keeps the plan quota current on its screen, so the service reads it while runs go on.
   quotaWanted?: boolean;
   subscriptions: Set<string>;
+  history?: HistoryDelivery;
   responses: Map<string, { command: string; response: Promise<ServerMessage> }>;
   poolClient?: boolean;
 };
@@ -291,8 +299,7 @@ export function createProxyServer(options: ServerOptions) {
   // or changes the state the CLI keeps for all of them — a status read or session change (`mutations`), an
   // account change — waits until none is going.
   const runs = new Map<string, Run>();
-  const mutations = new Set<string>();
-  // Read-only native prefix copies may coexist with active runs and their controls.
+  const mutations = new Map<string, 'status' | 'session'>();
   const forkReaders = new Set<string>();
   const terminals = new Map<string, Terminal>();
   const pool = options.claude
@@ -407,7 +414,11 @@ export function createProxyServer(options: ServerOptions) {
         handler,
       )
     : createServer(handler);
-  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
+  const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_FRAME_BYTES,
+    perMessageDeflate: { serverNoContextTakeover: true, clientNoContextTakeover: true },
+  });
   server.on('upgrade', (request, socket, head) => {
     if (!closing && web.matchesUpgrade(request)) {
       const address = web.address(request);
@@ -450,48 +461,11 @@ export function createProxyServer(options: ServerOptions) {
   });
 
   function send(peer: Peer, message: ServerMessage) {
-    if (peer.socket.readyState === WebSocket.OPEN) peer.socket.send(JSON.stringify(message));
-  }
-  async function sendHistory(
-    peer: Peer,
-    message: Extract<ServerMessage, { type: 'session.snapshot' }>,
-    chunked = false,
-  ) {
-    const text = JSON.stringify(message);
-    if (Buffer.byteLength(text) <= 128 * 1024) {
-      send(peer, message);
-      return;
-    }
-    if (!chunked) {
-      if (Buffer.byteLength(text) > 2 * 1024 * 1024)
-        throw new DomainError(
-          'history_upgrade_required',
-          '历史中有较大记录，请升级客户端后重新打开会话；记录和草稿均保留。',
-        );
-      send(peer, message);
-      return;
-    }
-    const total = Math.ceil(text.length / 32768);
-    if (total > 4096)
-      throw new DomainError(
-        'history_too_large',
-        '单条历史记录过大，未自动交接；请保留原会话并查看服务端日志。',
-      );
-    for (let index = 0; index < total; index++) {
-      if (peer.socket.readyState !== WebSocket.OPEN) throw new Error('History connection closed');
-      const part: ServerMessage = {
-        type: 'session.snapshot.part',
-        requestId: message.requestId,
-        sessionId: message.session.id,
-        index,
-        total,
-        data: text.slice(index * 32768, (index + 1) * 32768),
-      };
-      // Respect socket backpressure and allow heartbeat/control traffic between pieces.
-      await new Promise<void>((resolve, reject) =>
-        peer.socket.send(JSON.stringify(part), (error) => (error ? reject(error) : resolve())),
-      );
-    }
+    // History benefits from compression; small live events and control replies do not need it.
+    if (peer.socket.readyState === WebSocket.OPEN)
+      peer.socket.send(JSON.stringify(message), {
+        compress: message.type === 'session.snapshot' || message.type === 'session.history.part',
+      });
   }
   function broadcast(message: ServerMessage, sessionId?: string) {
     for (const peer of peers) {
@@ -588,13 +562,15 @@ export function createProxyServer(options: ServerOptions) {
   }
   function accountBusy(id: string) {
     if (pool?.locked.has(id)) return true;
-    return [...runs.keys(), ...terminals.keys(), ...mutations, ...forkReaders].some((sessionId) => {
-      try {
-        return (store.get(sessionId).session.accountId ?? 'default') === id;
-      } catch {
-        return false;
-      }
-    });
+    return [...runs.keys(), ...terminals.keys(), ...mutations.keys(), ...forkReaders].some(
+      (sessionId) => {
+        try {
+          return (store.get(sessionId).session.accountId ?? 'default') === id;
+        } catch {
+          return false;
+        }
+      },
+    );
   }
   function publishPool(target?: Peer) {
     if (!pool || closing) return;
@@ -672,6 +648,7 @@ export function createProxyServer(options: ServerOptions) {
           loggedIn: identity.loggedIn,
           email: identity.email,
           subscriptionType: identity.subscriptionType,
+          authMethod: identity.authMethod,
           loginExpiresAt: identity.loginExpiresAt,
         });
         if (!identity.loggedIn) {
@@ -815,18 +792,40 @@ export function createProxyServer(options: ServerOptions) {
       await logoutAccount(id);
       return;
     }
+    if (command.type === 'pool.account.token') {
+      configureSetupToken(command.token, settingsPath(claude.environment?.CLAUDE_CONFIG_DIR));
+      pool.update(id, { error: undefined, limits: null, checkedAt: null, blockedUntil: null });
+      publishPool();
+      track(refreshPool());
+      return;
+    }
     pool.update(id, { error: undefined, limits: null });
     const signing: Login = {
       owner: peer,
       process: new NativeLogin(
         claude.executable,
-        (succeeded) => {
+        (succeeded, token) => {
+          let notice = succeeded || signing.process.cancelled ? undefined : signing.process.error;
+          if (succeeded && token && !signing.process.cancelled) {
+            try {
+              configureSetupToken(token, settingsPath(claude.environment?.CLAUDE_CONFIG_DIR));
+            } catch {
+              succeeded = false;
+              notice = '令牌已生成但无法保存，请检查服务端账号设置目录。';
+            }
+            if (!closing)
+              send(signing.owner, {
+                type: 'account.token.created',
+                token,
+                saved: succeeded,
+                error: notice,
+              });
+          }
           if (poolLogins.get(id) === signing) poolLogins.delete(id);
           if (closing) return;
           pool.update(id, {
             login: null,
-            error:
-              succeeded || signing.process.cancelled ? undefined : '登录未完成，请重新获取授权链接',
+            error: notice,
           });
           if (succeeded) completeOnboarding(claude.environment?.CLAUDE_CONFIG_DIR);
           publishPool();
@@ -838,9 +837,10 @@ export function createProxyServer(options: ServerOptions) {
             publishPool();
           }
         },
-        undefined,
-        undefined,
-        claude.environment,
+        {
+          method: command.type === 'pool.account.login' ? command.method : undefined,
+          environment: claude.environment,
+        },
       ),
     };
     poolLogins.set(id, signing);
@@ -850,7 +850,7 @@ export function createProxyServer(options: ServerOptions) {
       logFailure(`account pool ${id} login`, error);
       throw new DomainError('login_failed', '官方登录命令未返回链接，请检查 CLI 和网络。');
     }
-    pool.update(id, { login: { url: signing.url } });
+    pool.update(id, { login: { url: signing.url, method: signing.process.method } });
     publishPool();
   }
 
@@ -1338,7 +1338,7 @@ export function createProxyServer(options: ServerOptions) {
     const { accountStatus } = await import('./native-account.ts');
     const state: AccountState = {
       ...(await accountStatus(options.claude!.executable, options.claude!.environment)),
-      login: login?.url ? { url: login.url } : null,
+      login: login?.url ? { url: login.url, method: login.process.method } : null,
       notice,
     };
     if (pool)
@@ -1346,6 +1346,7 @@ export function createProxyServer(options: ServerOptions) {
         loggedIn: state.loggedIn,
         email: state.email,
         subscriptionType: state.subscriptionType,
+        authMethod: state.authMethod,
       });
     if (target) send(target, { type: 'account.state', ...state });
     else broadcast({ type: 'account.state', ...state });
@@ -1378,6 +1379,23 @@ export function createProxyServer(options: ServerOptions) {
       pool?.locked.has('default')
     )
       throw new DomainError('native_busy', '请先结束原生运行或终端，再管理账号。');
+    if (command.type === 'account.token') {
+      if (login) throw new DomainError('login_active', '请先取消正在进行的浏览器登录。');
+      try {
+        configureSetupToken(
+          command.token,
+          settingsPath(options.claude.environment?.CLAUDE_CONFIG_DIR),
+        );
+      } catch (error) {
+        throw new DomainError(
+          'token_save_failed',
+          `无法保存 setup token：${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      quotas.clear();
+      await publishAccount();
+      return;
+    }
     if (command.type === 'account.logout') {
       login?.process.cancel();
       try {
@@ -1386,6 +1404,7 @@ export function createProxyServer(options: ServerOptions) {
         logFailure('account logout', error);
         throw new DomainError('logout_failed', '退出登录失败，请在ccdt执行 /logout 确认。');
       }
+      quotas.clear();
       await publishAccount();
       return;
     }
@@ -1394,26 +1413,39 @@ export function createProxyServer(options: ServerOptions) {
         owner: peer,
         process: new NativeLogin(
           options.claude.executable,
-          (succeeded) => {
+          (succeeded, token) => {
             if (login === current) login = undefined;
             if (closing) return;
+            let notice = succeeded || current.process.cancelled ? undefined : current.process.error;
+            if (succeeded && token && !current.process.cancelled) {
+              try {
+                configureSetupToken(
+                  token,
+                  settingsPath(options.claude?.environment?.CLAUDE_CONFIG_DIR),
+                );
+                quotas.clear();
+              } catch (error) {
+                succeeded = false;
+                notice = `令牌已生成但无法保存：${error instanceof Error ? error.message : String(error)}`;
+              }
+              send(current.owner, {
+                type: 'account.token.created',
+                token,
+                saved: succeeded,
+                error: notice,
+              });
+            }
             if (succeeded) completeOnboarding(options.claude?.environment?.CLAUDE_CONFIG_DIR);
-            track(
-              publishAccount(
-                undefined,
-                succeeded || current.process.cancelled
-                  ? undefined
-                  : '登录未完成；请重新获取链接后再试。',
-              ).catch(() => {}),
-            );
+            track(publishAccount(undefined, notice).catch(() => {}));
           },
           (text) => {
             if (closing || login !== current) return;
             track(publishAccount(undefined, text).catch(() => {}));
           },
-          undefined,
-          undefined,
-          options.claude.environment,
+          {
+            method: command.type === 'account.login' ? command.method : undefined,
+            environment: options.claude.environment,
+          },
         ),
       };
       login = current;
@@ -1421,7 +1453,10 @@ export function createProxyServer(options: ServerOptions) {
         current.url = await current.process.url;
       } catch (error) {
         logFailure('account login', error);
-        throw new DomainError('login_failed', '官方登录命令没有给出授权链接，请检查 CLI 与网络。');
+        throw new DomainError(
+          'login_failed',
+          error instanceof Error ? error.message : String(error),
+        );
       }
     }
     await publishAccount();
@@ -1448,7 +1483,7 @@ export function createProxyServer(options: ServerOptions) {
       throw new DomainError('native_busy', '运行结束后再刷新原生状态。');
     const resume = !terminals.has(command.sessionId);
     const last = resume ? null : store.lastMetrics(command.sessionId);
-    mutations.add(command.sessionId);
+    mutations.set(command.sessionId, 'status');
     const controller = new AbortController();
     const closed = () => controller.abort();
     peer.socket.once('close', closed);
@@ -1912,7 +1947,7 @@ export function createProxyServer(options: ServerOptions) {
     session: Session,
   ) {
     if (session.activeRun) throw new DomainError('run_active', '请先结束当前运行再管理会话。');
-    mutations.add(command.sessionId);
+    mutations.set(command.sessionId, 'session');
     try {
       if (options.claude) {
         const segments =
@@ -1985,7 +2020,8 @@ export function createProxyServer(options: ServerOptions) {
     let id: string = randomUUID();
     let resumable = false;
     const readers = active ? forkReaders : mutations;
-    readers.add(command.sessionId);
+    if (active) forkReaders.add(command.sessionId);
+    else mutations.set(command.sessionId, 'session');
     try {
       if (
         options.claude &&
@@ -2421,6 +2457,7 @@ export function createProxyServer(options: ServerOptions) {
       case 'pool.configure':
       case 'pool.account.update':
       case 'pool.account.login':
+      case 'pool.account.token':
       case 'pool.account.logout':
       case 'pool.account.cancel':
       case 'pool.account.code':
@@ -2436,6 +2473,7 @@ export function createProxyServer(options: ServerOptions) {
       }
       case 'account.status':
       case 'account.login':
+      case 'account.token':
       case 'account.code':
       case 'account.cancel':
       case 'account.logout':
@@ -2597,8 +2635,11 @@ export function createProxyServer(options: ServerOptions) {
       }
     }
     const { session } = store.get(command.sessionId);
+    const readingHistory =
+      command.type === 'session.subscribe' || command.type === 'session.history';
     if (
-      mutations.has(command.sessionId) ||
+      (mutations.has(command.sessionId) &&
+        !(readingHistory && mutations.get(command.sessionId) === 'status')) ||
       (forkReaders.has(command.sessionId) &&
         [
           'session.fork',
@@ -2659,38 +2700,38 @@ export function createProxyServer(options: ServerOptions) {
       case 'terminal.open':
         await openTerminal(peer, command, session);
         return command.sessionId;
-      case 'session.subscribe':
+      case 'session.subscribe': {
         peer.subscriptions.clear();
         peer.subscriptions.add(command.sessionId);
-        await sendHistory(
-          peer,
+        const messages: ServerMessage[] = [
           {
             type: 'session.snapshot',
             ...store.history(command.sessionId, command.requestId, command.afterSequence),
           },
-          command.chunked,
-        );
+        ];
         // The history ends where the run's unfinished output begins.
         {
           const run = runs.get(command.sessionId);
           if (run?.open)
-            send(peer, {
+            messages.push({
               type: 'session.fragment',
               sessionId: run.sessionId,
               runId: run.id,
               payload: run.open,
             });
         }
+        peer.history ??= new HistoryDelivery((message) => send(peer, message));
+        await peer.history.deliver(command.requestId, command.sessionId, messages);
         return command.sessionId;
+      }
       case 'session.history':
-        await sendHistory(
-          peer,
+        peer.history ??= new HistoryDelivery((message) => send(peer, message));
+        await peer.history.deliver(command.requestId, command.sessionId, [
           {
             type: 'session.snapshot',
             ...store.history(command.sessionId, command.requestId, 0, command.beforeSequence),
           },
-          command.chunked,
-        );
+        ]);
         return command.sessionId;
       case 'run.cancel':
       case 'run.task.stop':
@@ -3067,9 +3108,13 @@ export function createProxyServer(options: ServerOptions) {
   // A request ID is answered once: a resend gets the same response, never a second execution.
   function dispatch(peer: Peer, command: Command) {
     // Reauthentication proofs and imported private keys must not stay in the request cache.
-    const serialized = command.type.startsWith('web.')
-      ? createHash('sha256').update(JSON.stringify(command)).digest('hex')
-      : JSON.stringify(command);
+    const serialized =
+      command.type.startsWith('web.') ||
+      ['account.token', 'pool.account.token', 'account.code', 'pool.account.code'].includes(
+        command.type,
+      )
+        ? createHash('sha256').update(JSON.stringify(command)).digest('hex')
+        : JSON.stringify(command);
     const previous = peer.responses.get(command.requestId);
     if (previous) {
       if (previous.command === serialized)
@@ -3155,6 +3200,7 @@ export function createProxyServer(options: ServerOptions) {
   // to come back, unless the client said it was leaving; nothing is replayed for a later connection either way.
   function release(peer: Peer) {
     peers.delete(peer);
+    peer.history?.cancel();
     if (login?.owner === peer) login.process.cancel();
     for (const item of poolLogins.values()) if (item.owner === peer) item.process.cancel();
     for (const terminal of terminals.values())
@@ -3328,6 +3374,13 @@ export function createProxyServer(options: ServerOptions) {
         if (control.success) {
           if (peer.browser && control.data.type === 'terminal.input') web.touch(peer.browser);
           controlTerminal(peer, control.data);
+          return;
+        }
+        const historyControl = historyControlSchema.safeParse(value);
+        if (historyControl.success) {
+          if (historyControl.data.type === 'session.history.next')
+            peer.history?.next(historyControl.data.requestId);
+          else peer.history?.cancel(historyControl.data.requestId);
           return;
         }
         const command = commandSchema.safeParse(value);

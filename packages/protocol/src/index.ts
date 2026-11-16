@@ -4,7 +4,7 @@ import { webCertificateStateSchema } from './web-certificate.ts';
 export * from './web.ts';
 export * from './web-certificate.ts';
 
-export const PROTOCOL_VERSION = 25;
+export const PROTOCOL_VERSION = 26;
 // The release each protocol version began with, from 0.2.4 on: a client newer than its service signs in with
 // the service's number to have it upgrade (see the README). A new number adds its line here.
 export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
@@ -27,6 +27,7 @@ export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
   '0.4.48': 23,
   '0.4.49': 24,
   '0.4.53': 25,
+  '0.4.55': 26,
 };
 export const MAX_FRAME_BYTES = 256 * 1024;
 // The longest global instructions edited here, in characters; it keeps a frame of them within MAX_FRAME_BYTES.
@@ -95,10 +96,18 @@ export const accountStateSchema = z.object({
   // token does not move it, and the real end can be up to three days earlier. Absent for any other credential.
   loginExpiresAt: z.string().optional(),
   // Present while the official sign-in command waits for the code shown after browser authorization.
-  login: z.object({ url: z.url() }).nullable(),
+  login: z
+    .object({ url: z.url(), method: z.enum(['browser', 'setup-token']).optional() })
+    .nullable(),
   notice: z.string().optional(),
 });
 export type AccountState = z.infer<typeof accountStateSchema>;
+const setupTokenResultSchema = z.object({
+  token: z.string(),
+  saved: z.boolean(),
+  error: z.string().optional(),
+});
+export type SetupTokenResult = z.infer<typeof setupTokenResultSchema>;
 // The part of the official CLI's user settings the GUI edits. null means unset: the CLI's own default applies.
 const toggle = z.boolean().nullable();
 export const nativeSettingsSchema = z.object({
@@ -205,7 +214,10 @@ export const serverPoolAccountSchema = z.object({
     .array(z.object({ name: z.string(), requests: z.number(), costUsd: z.number() }))
     .optional(),
   error: z.string().optional(),
-  login: z.object({ url: z.url() }).nullable(),
+  authMethod: z.string().optional(),
+  login: z
+    .object({ url: z.url(), method: z.enum(['browser', 'setup-token']).optional() })
+    .nullable(),
   busy: z.boolean(),
 });
 // Shared by project menus and the service's persisted project settings.
@@ -711,7 +723,28 @@ export const commandSchema = z.discriminatedUnion('type', [
       enabled: z.boolean().optional(),
     })
     .strict(),
-  ...(['pool.account.login', 'pool.account.logout', 'pool.account.cancel'] as const).map((type) =>
+  z
+    .object({
+      type: z.literal('pool.account.login'),
+      ...request,
+      accountId: poolAccountIdSchema,
+      method: z.enum(['browser', 'setup-token']).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('pool.account.token'),
+      ...request,
+      accountId: poolAccountIdSchema,
+      token: z
+        .string()
+        .trim()
+        .min(1)
+        .max(8192)
+        .regex(/^[\x21-\x7e]+$/),
+    })
+    .strict(),
+  ...(['pool.account.logout', 'pool.account.cancel'] as const).map((type) =>
     z.object({ type: z.literal(type), ...request, accountId: poolAccountIdSchema }).strict(),
   ),
   z
@@ -742,7 +775,25 @@ export const commandSchema = z.discriminatedUnion('type', [
     })
     .strict(),
   z.object({ type: z.literal('account.status'), ...request }).strict(),
-  z.object({ type: z.literal('account.login'), ...request }).strict(),
+  z
+    .object({
+      type: z.literal('account.login'),
+      ...request,
+      method: z.enum(['browser', 'setup-token']).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('account.token'),
+      ...request,
+      token: z
+        .string()
+        .trim()
+        .min(1)
+        .max(8192)
+        .regex(/^[\x21-\x7e]+$/),
+    })
+    .strict(),
   z
     .object({
       type: z.literal('account.code'),
@@ -1078,6 +1129,13 @@ export const deviceIdentitySchema = z
 // The client is closing the connection on purpose. Without it a connection that ends is taken for a fault on
 // the way, and what the device was running is kept for it to come back to.
 export const leaveSchema = z.object({ type: z.literal('leave') }).strict();
+// These controls only advance or discard a history owned by this authenticated connection.
+export const historyControlSchema = z
+  .object({
+    type: z.enum(['session.history.next', 'session.history.cancel']),
+    requestId: id,
+  })
+  .strict();
 const readyMessageSchema = z.object({
   type: z.literal('ready'),
   protocolVersion: z.literal(PROTOCOL_VERSION),
@@ -1096,6 +1154,16 @@ const readyMessageSchema = z.object({
 export const serverMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('pool.state'), ...serverPoolStateSchema.shape }),
   readyMessageSchema,
+  z.object({
+    type: z.literal('session.history.part'),
+    requestId: id,
+    sessionId: id,
+    data: z
+      .string()
+      .min(1)
+      .max(32 * 1024),
+    last: z.boolean(),
+  }),
   z.object({
     type: z.literal('web.settings.state'),
     requestId: id,
@@ -1135,6 +1203,8 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
     payload: eventPayloadSchema,
   }),
   z.object({ type: z.literal('account.state'), ...accountStateSchema.shape }),
+  // One-time result for the connection that generated it; never part of broadcast account state or history.
+  z.object({ type: z.literal('account.token.created'), ...setupTokenResultSchema.shape }),
   z.object({ type: z.literal('settings.state'), requestId: id, values: nativeSettingsSchema }),
   // Sent to every connection when it changes; the one that asked finds its request ID.
   z.object({
@@ -1256,6 +1326,7 @@ export const clientServerMessageSchema = z.union([
       z.literal(22),
       z.literal(23),
       z.literal(24),
+      z.literal(25),
     ]),
   }),
 ]);
@@ -1301,7 +1372,8 @@ export function fallbackServerProtocol(message: ClientServerMessage, attempted: 
   )
     return 22;
   if (attempted > 23 && attempted <= PROTOCOL_VERSION && message.service === '0.4.48') return 23;
-  if (attempted === 25 && /^0\.4\.(?:49|5[0-2])$/.test(message.service ?? '')) return 24;
+  if (attempted > 24 && /^0\.4\.(?:49|5[0-2])$/.test(message.service ?? '')) return 24;
+  if (attempted > 25 && /^0\.4\.5[3-4]$/.test(message.service ?? '')) return 25;
   return null;
 }
 

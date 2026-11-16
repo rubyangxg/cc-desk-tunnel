@@ -852,6 +852,7 @@ export default function Conversation({
     },
   };
   const scroll = useRef<HTMLDivElement>(null);
+  const pullStart = useRef<{ x: number; y: number } | null>(null);
   // The view follows new output until the reader moves up from the end, and again once they come back down to it.
   const follow = useRef(true);
   // Shown while not following, as the way back to the end.
@@ -888,11 +889,13 @@ export default function Conversation({
     void loadEarlier().catch((error: unknown) => {
       if (loadEpoch.current !== epoch) return;
       prependAnchor.current = null;
+      if (error instanceof Error && error.name === 'AbortError') return;
       setLoadError(error instanceof Error ? error.message : '更早记录加载失败，请重试');
     });
   };
   useLayoutEffect(() => {
     prependAnchor.current = null;
+    setLoadError('');
     rejoin();
     toEnd();
   }, [session?.id]);
@@ -1039,6 +1042,24 @@ export default function Conversation({
           // Reading on upwards past what is loaded brings the page before it; a failed load waits for the button.
           if (top < lastTop.current && top < 240 && !loadError) loadMore();
           lastTop.current = top;
+        }}
+        onTouchStart={(event) => {
+          const touch = event.touches[0];
+          pullStart.current =
+            event.touches.length === 1 && history?.hasEarlier
+              ? { x: touch.clientX, y: touch.clientY }
+              : null;
+        }}
+        onTouchEnd={(event) => {
+          const start = pullStart.current;
+          pullStart.current = null;
+          if (!start || event.currentTarget.scrollTop > 0) return;
+          const touch = event.changedTouches[0];
+          const down = touch.clientY - start.y;
+          if (down > 40 && down > Math.abs(touch.clientX - start.x) * 1.5) {
+            leave();
+            loadMore();
+          }
         }}
         onPointerDown={(event) => {
           // Steps opened or closed are being read where they are.

@@ -62,21 +62,10 @@ export async function exportSession(
   profile?: ConnectionProfile,
 ) {
   if (client.state.selectedId !== session.id) client.select(session.id);
-  const settled = () =>
-    new Promise<void>((resolve, reject) => {
-      const started = Date.now();
-      const check = () => {
-        const history = client.state.history[session.id];
-        if (history && !history.loading && !history.loadingEarlier) resolve();
-        else if (Date.now() - started > 30000) reject(new Error('读取会话历史超时。'));
-        else setTimeout(check, 50);
-      };
-      check();
-    });
-  await settled();
+  await client.waitForHistory(session.id);
   while (client.state.history[session.id]?.hasEarlier) {
     await client.loadEarlier(session.id);
-    await settled();
+    await client.waitForHistory(session.id);
   }
   const archive = profile ? await sharedHistory(historyKey(profile, session.id)) : null;
   const text = markdown(session, joinedHistory(archive, client.shown(session.id)));

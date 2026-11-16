@@ -12,6 +12,7 @@ import {
   Info,
   Keyboard,
   Languages,
+  LogOut,
   Palette,
   Search,
   Settings,
@@ -62,7 +63,13 @@ export type Section =
 // The groups say where their settings are kept and what they apply to: this computer, the service (for every device
 // connected to it), or Claude Code's own files on the cloud host. `words` is what the search box matches besides the
 // name: the settings found inside.
-const sections: { id: Section; name: string; group: string; icon: typeof Bell; words: string }[] = [
+export const sections: {
+  id: Section;
+  name: string;
+  group: string;
+  icon: typeof Bell;
+  words: string;
+}[] = [
   {
     id: 'general',
     name: '常规',
@@ -859,6 +866,7 @@ function About({
 export default function SettingsPage({
   client,
   section,
+  indexOnly = false,
   go,
   native,
   account,
@@ -872,6 +880,7 @@ export default function SettingsPage({
   updates,
   showNotes,
   back,
+  disconnect,
   browser = false,
   here,
 }: {
@@ -880,9 +889,11 @@ export default function SettingsPage({
   here?: ConnectedDevice;
   // Given before a connection exists: only this computer's own settings are shown, and this leaves them.
   back?: () => void;
+  disconnect?: () => void;
   browser?: boolean;
   client: ProxyClient;
   section: Section;
+  indexOnly?: boolean;
   go: (section: Section) => void;
   native: boolean;
   // The account page is rendered by the caller, which owns its data.
@@ -947,7 +958,7 @@ export default function SettingsPage({
               <button
                 type="button"
                 className="side-action"
-                aria-current={item.id === section ? 'page' : undefined}
+                aria-current={!indexOnly && item.id === section ? 'page' : undefined}
                 onClick={() => go(item.id)}
               >
                 <item.icon />
@@ -957,9 +968,19 @@ export default function SettingsPage({
           ))}
           {shown.length === 0 && <p className="list-empty">没有匹配的设置</p>}
         </nav>
+        {disconnect && (
+          <button
+            type="button"
+            className="side-action settings-logout mobile-only"
+            onClick={disconnect}
+          >
+            <LogOut />
+            {browser ? '退出登录' : '断开连接'}
+          </button>
+        )}
       </aside>
       <main className="workspace">
-        {section === 'account' ? (
+        {indexOnly ? null : section === 'account' ? (
           account
         ) : section === 'claude' ? (
           native ? (

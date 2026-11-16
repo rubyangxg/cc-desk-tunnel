@@ -746,7 +746,7 @@ export class SessionStore {
         fits = true;
       for (const row of this.database
         .prepare(
-          'SELECT length(CAST(data AS BLOB)) AS bytes FROM events WHERE session_id = ? AND sequence > ? ORDER BY sequence LIMIT ?',
+          'SELECT octet_length(data) AS bytes FROM events WHERE session_id = ? AND sequence > ? ORDER BY sequence LIMIT ?',
         )
         .iterate(sessionId, afterSequence, pageEvents + 1)) {
         count++;
@@ -777,7 +777,7 @@ export class SessionStore {
     for (const row of this.database
       .prepare(
         `
-      SELECT sequence, run_id, length(CAST(data AS BLOB)) AS bytes
+      SELECT sequence, run_id, octet_length(data) AS bytes
       FROM events WHERE session_id = ? AND sequence < ? ORDER BY sequence DESC LIMIT ?
     `,
       )
