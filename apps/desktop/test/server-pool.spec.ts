@@ -155,3 +155,67 @@ test('one-service account dashboard logs in independent accounts, saves policy a
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(errors).toEqual([]);
 });
+
+test('account pool delete asks for confirmation, keeps history, and protects the built-in account', async ({
+  page,
+}) => {
+  test.setTimeout(60000);
+  await page.addInitScript(() =>
+    localStorage.setItem('proxy-account-pool', JSON.stringify({ enabled: false })),
+  );
+  await page.goto('/');
+  await page.getByLabel('服务地址', { exact: true }).fill(url);
+  await page.getByLabel('服务凭据', { exact: true }).fill(token);
+  await page.getByRole('button', { name: '连接选中的服务', exact: true }).click();
+  await page.getByRole('button', { name: 'Claude 账号池', exact: true }).click();
+  const main = page.getByRole('region', { name: 'Claude 账号池', exact: true });
+  const original = page.getByRole('article', {
+    name: 'Claude 账号 · 原有 Claude 账号',
+    exact: true,
+  });
+  await expect(original.getByText('内置账号，不能删除', { exact: true })).toBeVisible();
+  await expect(
+    original.getByRole('button', { name: '删除账号，原有 Claude 账号是内置账号不能删除' }),
+  ).toBeDisabled();
+
+  await page.getByRole('button', { name: '添加 Claude 账号', exact: true }).click();
+  await page.getByLabel('Claude 账号名称', { exact: true }).fill('待删除账号');
+  await page.getByRole('button', { name: '添加账号', exact: true }).click();
+  const extra = page.getByRole('article', { name: 'Claude 账号 · 待删除账号', exact: true });
+  await expect(extra).toBeVisible();
+  await extra.getByRole('button', { name: '删除 待删除账号' }).click();
+  const dialog = page
+    .getByRole('dialog')
+    .filter({ has: page.getByRole('heading', { name: '删除 待删除账号', exact: true }) });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText(/不会注销或删除/)).toBeVisible();
+  await expect(dialog.getByText(/会话历史会保留/)).toBeVisible();
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(extra).toBeVisible();
+
+  await extra.getByRole('button', { name: '登录账号', exact: true }).click();
+  await extra.getByLabel('待删除账号 的授权码', { exact: true }).fill('offline-test-authorization');
+  await extra.getByRole('button', { name: '完成登录', exact: true }).click();
+  await expect(extra.getByText('new-account@example.test', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '会话', exact: true }).click();
+  const title = await createSession(page, '删除后仍保留');
+  const accountId = await page
+    .getByLabel('当前会话 Claude 账号', { exact: true })
+    .locator('option')
+    .filter({ hasText: '待删除账号' })
+    .getAttribute('value');
+  await page.getByLabel('当前会话 Claude 账号', { exact: true }).selectOption(accountId!);
+  await expect(page.getByLabel('当前会话 Claude 账号', { exact: true })).toHaveValue(accountId!);
+  await page.getByRole('button', { name: '管理账号池', exact: true }).click();
+  await extra.getByRole('button', { name: '删除 待删除账号' }).click();
+  await dialog.getByRole('button', { name: '确认删除', exact: true }).click();
+  await expect(
+    page.getByRole('article', { name: 'Claude 账号 · 待删除账号', exact: true }),
+  ).toHaveCount(0);
+  await expect(original).toBeVisible();
+  await page.getByRole('button', { name: '会话', exact: true }).click();
+  await expect(page.locator('.session-row').filter({ hasText: title })).toHaveCount(1);
+  await page.locator('.session-row').filter({ hasText: title }).click();
+  await expect(page.getByLabel('当前会话 Claude 账号', { exact: true })).toHaveValue('default');
+});

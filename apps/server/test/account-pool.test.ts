@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs';
+import {
+  mkdtempSync,
+  rmSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  realpathSync,
+  existsSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
@@ -431,4 +439,38 @@ test('background task confirmation is explicit, complete and cannot override unk
     handoffBlockReason([...history, event({ type: 'native.tasks', tasks: [] })], runId),
     null,
   );
+});
+
+test('removing a pool account deletes isolated credentials and leaves the built-in account', (t) => {
+  const { pool, dir } = fixture(t);
+  const id = randomUUID();
+  pool.add(id, 'B');
+  pool.configure({ enabled: true, strategy: 'order', order: [id, 'default'], preferredId: id });
+  const marker = join(pool.configDirectory(id), 'settings.json');
+  mkdirSync(pool.configDirectory(id), { recursive: true });
+  writeFileSync(
+    marker,
+    JSON.stringify({ env: { CLAUDE_CODE_OAUTH_TOKEN: 'test-only-isolated-secret' } }),
+  );
+  const builtIn = pool.configDirectory('default');
+  mkdirSync(builtIn, { recursive: true });
+  const builtInMarker = join(builtIn, 'settings.json');
+  writeFileSync(builtInMarker, JSON.stringify({ kept: true }));
+  assert.throws(
+    () => pool.remove('default'),
+    (error: Error & { code?: string }) => error.code === 'account_protected',
+  );
+  assert.equal(pool.get('default').id, 'default');
+  assert.equal(existsSync(builtInMarker), true);
+  pool.remove(id);
+  assert.throws(
+    () => pool.get(id),
+    (error: Error & { code?: string }) => error.code === 'account_missing',
+  );
+  assert.equal(existsSync(join(dir, 'accounts', id)), false);
+  assert.equal(existsSync(builtInMarker), true);
+  assert.deepEqual(pool.settings.order, ['default']);
+  assert.equal(pool.settings.preferredId, 'default');
+  assert.equal(pool.accounts.length, 1);
+  assert.equal(pool.accounts[0].id, 'default');
 });

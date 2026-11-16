@@ -391,3 +391,12 @@ test('a run is at work while a turn goes or waits on the user, or the CLI of a t
   assert.equal(commandSchema.safeParse({ ...install, force: true }).success, true);
   assert.equal(commandSchema.safeParse({ ...install, force: 'yes' }).success, false);
 });
+
+test('pool account removal is a client command with an account id', () => {
+  const requestId = randomUUID();
+  const accountId = randomUUID();
+  const command = { type: 'pool.account.remove', requestId, accountId };
+  assert.equal(commandSchema.safeParse(command).success, true);
+  assert.equal(commandSchema.safeParse({ ...command, accountId: 'default' }).success, true);
+  assert.equal(commandSchema.safeParse({ type: 'pool.account.remove', requestId }).success, false);
+});

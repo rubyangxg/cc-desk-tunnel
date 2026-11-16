@@ -771,6 +771,30 @@ export function createProxyServer(options: ServerOptions) {
       publishPool();
       return;
     }
+    if (command.type === 'pool.account.remove') {
+      if (id === 'default')
+        throw new DomainError(
+          'account_protected',
+          '原有 Claude 账号是内置账号，不能从账号池删除。',
+        );
+      if (poolLogins.has(id) || (id === 'default' && login))
+        throw new DomainError('login_active', '请先结束该账号的登录，再删除。');
+      if (accountBusy(id) || pool.refreshing || poolProbes.has(id))
+        throw new DomainError('account_busy', '请等待该账号的任务或额度检测结束，再删除。');
+      const name = account.name;
+      for (const session of store.list()) {
+        if ((session.accountId ?? 'default') !== id) continue;
+        store.selectAccount(session.id, 'default');
+        record(session.id, command.requestId, {
+          type: 'native.notice',
+          text: `「${name}」已从账号池删除。会话记录已保留，下一条消息将使用「原有 Claude 账号」继续。`,
+        });
+        updated(session.id);
+      }
+      pool.remove(id);
+      publishPool();
+      return;
+    }
     if (id === 'default' && login)
       throw new DomainError('login_active', '原有账号正在其他页面登录，请先完成该流程。');
     const current = poolLogins.get(id);
@@ -2460,6 +2484,7 @@ export function createProxyServer(options: ServerOptions) {
       case 'pool.account.token':
       case 'pool.account.logout':
       case 'pool.account.cancel':
+      case 'pool.account.remove':
       case 'pool.account.code':
         await poolCommand(peer, command);
         return undefined;
@@ -2984,6 +3009,7 @@ export function createProxyServer(options: ServerOptions) {
         ...(pool
           ? [
               'account-pool',
+              'account-pool-remove',
               'goal-continuation',
               'project-quota-resume',
               'cross-server-handoff',
