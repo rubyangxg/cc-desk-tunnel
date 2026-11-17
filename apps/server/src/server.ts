@@ -1985,6 +1985,13 @@ export function createProxyServer(options: ServerOptions) {
                 },
               ];
         for (const segment of segments) {
+          // Removing an isolated account already deletes its native config/history directory.
+          // Retained proxy segments still count toward usage, but have no native files to delete.
+          if (
+            command.type === 'session.delete' &&
+            !pool!.accounts.some((account) => account.id === segment.accountId)
+          )
+            continue;
           const claude = pool!.options(segment.accountId);
           const nativeOptions = { dir: nativeDirectory(store.directory, segment.root) };
           if (!(await nativeStore(claude, 'info', segment.id, nativeOptions))) continue;

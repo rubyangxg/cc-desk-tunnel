@@ -2103,6 +2103,21 @@ nativeTest(
         message.event.payload.type === 'run.status' &&
         message.event.payload.status === 'completed',
     );
+    const nativeId = f.server.store.get(sessionId).session.nativeSessionId!;
+    f.server.store.database
+      .prepare(
+        `INSERT INTO api_requests
+      (at, session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+       cost_usd, duration_ms, source, request_id, prompt_id)
+      VALUES (?, ?, 'removed-account-test', 100, 321, 0, 0, 0.1, 1000, 'sdk', ?, ?)`,
+      )
+      .run(Date.now(), nativeId, randomUUID(), randomUUID());
+    await f.request({ type: 'session.stats', sessionId });
+    const statsBefore = await f.wait(
+      (m) => m.type === 'session.stats' && m.sessionId === sessionId,
+    );
+    assert.ok(statsBefore.type === 'session.stats');
+    assert.equal(statsBefore.outputTokens, 321, 'the original native id contributes to totals');
     const before = f.server.store.snapshot(sessionId).events.length;
     assert.ok(before > 0);
     assert.equal(f.server.store.get(sessionId).session.accountId, f.id);
@@ -2189,6 +2204,18 @@ nativeTest(
         ),
       true,
     );
+    await f.request({ type: 'session.stats', sessionId });
+    const statsAfter = await f.wait((m) => m.type === 'session.stats' && m.sessionId === sessionId);
+    assert.ok(statsBefore.type === 'session.stats' && statsAfter.type === 'session.stats');
+    const { requestId: _beforeId, ...beforeStats } = statsBefore;
+    const { requestId: _afterId, ...afterStats } = statsAfter;
+    assert.deepEqual(
+      afterStats,
+      beforeStats,
+      'removing an account retains all native segment usage',
+    );
+    await f.request({ type: 'session.delete', sessionId });
+    assert.throws(() => f.server.store.get(sessionId));
   },
 );
 
