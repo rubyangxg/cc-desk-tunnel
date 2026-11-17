@@ -48,6 +48,7 @@ import { CertificateWarning } from './WebGate.tsx';
 import { hostCapabilities } from './host-capabilities.ts';
 import AccountPanel from './AccountPanel.tsx';
 import UnifiedAccountPool from './UnifiedAccountPool.tsx';
+import { QuotaSummary } from './QuotaSummary.tsx';
 import { ProxyClient, RequestInterruptedError } from './client.ts';
 import Composer from './Composer.tsx';
 import SessionBar from './SessionBar.tsx';
@@ -188,6 +189,9 @@ export function App({
   const [busy, setBusy] = useState(false);
   const [dismissedFork, setDismissedFork] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const statusPending = useRef(false);
+  const [quotaError, setQuotaError] = useState<string | null>(null);
+  const quotaPrimed = useRef<string | null>(null);
   const [findRequest, setFindRequest] = useState(0);
   // Which of this computer's settings is open on the login page.
   const [localSettings, setLocalSettings] = useState<Section | null>(null);
@@ -518,6 +522,7 @@ export function App({
     lastStatus.surface !== 'terminal' &&
     (lastStatus.status === 'cancelled' || lastStatus.status === 'failed');
   const signedOut = !serverPool && state.account?.loggedIn === false;
+  const quotaSession = selected ?? state.sessions[0];
   const actionError = error instanceof RequestInterruptedError ? error.describe(connected) : error;
   const currentError = actionError ?? state.error;
   // Offered when the service holds a newer installer than the running client.
@@ -766,6 +771,37 @@ export function App({
     statusBusy,
     rotation.working,
   ]);
+  // The browser has no local sessions; before it opens a conversation it shows the quota the service holds, as the
+  // desktop account page does. Only the refresh button asks the service to read it anew.
+  useEffect(() => {
+    if (!connected || signedOut) quotaPrimed.current = null;
+    if (
+      !inBrowser ||
+      !nativeMode ||
+      !connected ||
+      (selected && !accountOpen) ||
+      !quotaSession ||
+      state.account?.loggedIn !== true ||
+      quota?.rateLimits ||
+      refreshing ||
+      statusPending.current ||
+      quotaPrimed.current === quotaSession.id
+    )
+      return;
+    quotaPrimed.current = quotaSession.id;
+    refreshQuota(false);
+  }, [
+    inBrowser,
+    nativeMode,
+    connected,
+    signedOut,
+    selected?.id,
+    accountOpen,
+    quotaSession?.id,
+    state.account?.loggedIn,
+    !!quota?.rateLimits,
+    refreshing,
+  ]);
   useEffect(() => {
     if (nativeMode && connected && state.features.includes('idle-compaction'))
       void client.request({ type: 'compaction.get' }).catch(() => {});
@@ -781,6 +817,7 @@ export function App({
   useEffect(() => {
     if (
       !accountOpen ||
+      inBrowser ||
       !nativeMode ||
       !connected ||
       state.capabilities ||
@@ -967,7 +1004,7 @@ export function App({
     if (!host.schedules && page === 'schedules') return;
     if (
       (!host.nativeSettings &&
-        ['connection', 'context', 'account', 'claude', 'instructions'].includes(section)) ||
+        ['connection', 'context', 'claude', 'instructions'].includes(section)) ||
       (section === 'connection' && !window.desktop)
     )
       section = 'general';
@@ -988,8 +1025,13 @@ export function App({
     });
   }
   // `quota`: asked for on the account page, which reads the plan quota anew.
-  async function refreshStatus(sessionId = selected?.id ?? sessions[0]?.id, quota = false) {
-    if (!sessionId || refreshing) return;
+  async function refreshStatus(
+    sessionId = selected?.id ?? sessions[0]?.id,
+    quota = false,
+    reportError: (error: string | RequestInterruptedError) => void = setError,
+  ) {
+    if (!sessionId || statusPending.current) return;
+    statusPending.current = true;
     setRefreshing(true);
     try {
       await client.request({
@@ -998,7 +1040,7 @@ export function App({
         ...(quota && client.state.features.includes('quota-watch') ? { quota } : {}),
       });
     } catch (error) {
-      setError(
+      reportError(
         error instanceof RequestInterruptedError
           ? error
           : error instanceof Error
@@ -1006,8 +1048,21 @@ export function App({
             : '原生状态读取失败',
       );
     } finally {
+      statusPending.current = false;
       setRefreshing(false);
     }
+  }
+  // `quota`: read the plan quota anew (the refresh button); without it the service answers with what it holds.
+  function refreshQuota(quota = true) {
+    if (!connected || signedOut || !quotaSession || statusPending.current) return;
+    setQuotaError(null);
+    void refreshStatus(quotaSession.id, quota, (error) =>
+      setQuotaError(
+        error instanceof RequestInterruptedError
+          ? error.describe(client.state.status === 'connected')
+          : error,
+      ),
+    );
   }
   async function createSession(projectPath: string) {
     const response = await client.request({ type: 'session.create', title: '新会话', projectPath });
@@ -1881,6 +1936,15 @@ export function App({
                     label: menu.label,
                     items: barMenus.find((item) => item.label === menu.label)?.items ?? [],
                   };
+  const quotaFooter =
+    inBrowser && nativeMode ? (
+      <QuotaSummary
+        metrics={signedOut ? null : accountMetrics}
+        connected={connected}
+        emptyMessage={signedOut ? '尚未登录 Claude' : undefined}
+        onOpen={() => open('settings', 'account')}
+      />
+    ) : undefined;
   return (
     <div
       className={`shell page-${place.page} ${sideOpen ? '' : 'side-closed'} ${selfSigned ? 'web-self-signed' : ''}`}
@@ -1896,7 +1960,9 @@ export function App({
               ? '定时任务'
               : place.settingsIndex && narrow()
                 ? '设置'
-                : (sections.find((item) => item.id === place.section)?.name ?? '设置')
+                : inBrowser && place.section === 'account'
+                  ? '订阅用量'
+                  : (sections.find((item) => item.id === place.section)?.name ?? '设置')
         }
         back={
           !inBrowser && narrow() && place.page === 'settings'
@@ -1989,6 +2055,10 @@ export function App({
                     legacyService={state.serviceProtocol === 16}
                   />
                 }
+                usageOnly={!!browser}
+                quotaUnavailable={
+                  inBrowser && !state.sessions.length ? '开始会话后可读取额度' : undefined
+                }
                 client={client}
                 account={nativeMode ? state.account : null}
                 capabilities={signedOut ? null : capabilities}
@@ -2001,9 +2071,10 @@ export function App({
                   (anyTerminal && !state.features.includes('terminal-quota')) ||
                   rotation.working
                 }
-                error={currentError}
+                error={inBrowser ? quotaError : currentError}
                 refresh={() => {
-                  void refreshStatus(undefined, true);
+                  if (inBrowser) refreshQuota();
+                  else void refreshStatus(undefined, true);
                 }}
               />
             )
@@ -2066,6 +2137,7 @@ export function App({
               setMenu({ kind: 'session', sessionId: session.id, ...position })
             }
             projectMenu={(path, position) => setMenu({ kind: 'project', path, ...position })}
+            footer={quotaFooter}
           />
           <main className="workspace">
             {selected?.forkSnapshot && dismissedFork !== selected.id && (

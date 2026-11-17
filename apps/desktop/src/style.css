@@ -949,6 +949,87 @@ button.chip.danger:hover:not(:disabled) {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+/* The service's address, with the services signed in to before to choose from. */
+.login-account {
+  position: relative;
+}
+.login-account input {
+  padding-right: 40px;
+}
+.login-account-toggle {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 32px;
+  height: 30px;
+  color: var(--muted);
+}
+.login-account-toggle[aria-expanded='true'] svg {
+  transform: rotate(180deg);
+}
+.login-accounts {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  max-height: 280px;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  list-style: none;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.14);
+}
+.login-accounts li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 6px;
+}
+.login-accounts li:hover {
+  background: var(--hover);
+}
+.login-account-choice {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 7px 8px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.login-account-name,
+.login-account-detail {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.login-account-detail {
+  color: var(--muted);
+  font-size: 12px;
+}
+.login-account-detail:empty {
+  display: none;
+}
+.login-accounts .icon-button {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  color: var(--muted);
+}
+.login-accounts .icon-button svg {
+  width: 14px;
+  height: 14px;
+}
 .login-options {
   display: flex;
   gap: 20px;
@@ -3663,7 +3744,7 @@ details[open] > summary > .fold-chevron {
   font-size: 12px;
   text-align: left;
 }
-.quota-period:hover {
+button.quota-period:hover {
   color: var(--accent);
 }
 .account-body.usage-body {
@@ -4351,6 +4432,18 @@ dialog::backdrop {
     width: 44px;
     height: 44px;
   }
+  /* Keep the same page action, aligned with the mobile titlebar's empty right slot. */
+  .page-settings .page-header:has(> .quota-page-refresh) {
+    display: contents;
+  }
+  .page-settings .quota-page-refresh {
+    position: fixed;
+    top: calc(8px + env(safe-area-inset-top));
+    right: 12px;
+    z-index: 3;
+    width: 44px;
+    height: 44px;
+  }
   .page-settings:not([data-settings-index]) > .sidebar,
   .page-settings[data-settings-index] > .workspace {
     display: none;
@@ -4425,6 +4518,9 @@ dialog::backdrop {
   .setting-row,
   .settings-list label {
     flex-wrap: wrap;
+  }
+  .quota-card > .setting-row {
+    flex-wrap: nowrap;
   }
   .account-heading {
     padding: 13px 14px;

@@ -10,7 +10,12 @@ import { screenshots } from './helpers.ts';
 const webScreenshots = resolve(screenshots, 'web');
 mkdirSync(webScreenshots, { recursive: true });
 
-async function browserFixture(page: Page, authenticated = false, withHistory = false) {
+async function browserFixture(
+  page: Page,
+  authenticated = false,
+  withHistory = false,
+  withQuota = false,
+) {
   let loggedIn = authenticated;
   let offline = false;
   const commands: Record<string, unknown>[] = [];
@@ -91,6 +96,7 @@ async function browserFixture(page: Page, authenticated = false, withHistory = f
             version: '0.3.4',
             connectionId: randomUUID(),
             adapter: 'claude-code',
+            features: withQuota ? ['quota-watch'] : [],
             sessions,
             browser: { sessionId, serverDeviceId, selfSigned: true },
           }),
@@ -101,7 +107,42 @@ async function browserFixture(page: Page, authenticated = false, withHistory = f
             devices: [{ id: serverDeviceId, name: '服务端', ready: true, platform: 'linux' }],
           }),
         );
+        if (withQuota)
+          socket.send(JSON.stringify({ type: 'account.state', loggedIn: true, login: null }));
       } else if (command.requestId) {
+        if (withQuota && command.type === 'session.status')
+          socket.send(
+            JSON.stringify({
+              type: 'session.event',
+              event: {
+                sessionId: sessions[0].id,
+                runId: randomUUID(),
+                sequence: 1,
+                createdAt: now,
+                payload: {
+                  type: 'native.metrics',
+                  context: null,
+                  usage: null,
+                  rateLimits: {
+                    available: true,
+                    measuredAt: now,
+                    windows: [
+                      {
+                        name: 'five_hour',
+                        utilization: 32,
+                        resetsAt: new Date(Date.now() + 3600000).toISOString(),
+                      },
+                      {
+                        name: 'seven_day',
+                        utilization: 14,
+                        resetsAt: new Date(Date.now() + 86400000).toISOString(),
+                      },
+                    ],
+                  },
+                },
+              },
+            }),
+          );
         if (command.type === 'session.subscribe' || command.type === 'session.history')
           socket.send(
             JSON.stringify({
@@ -877,4 +918,70 @@ test('user input in the browser reports activity at most once a minute; pushed u
   await page.clock.runFor(61_000);
   await page.keyboard.press('ArrowUp');
   await expect.poll(() => activity().length).toBe(2);
+});
+
+test('Web quota summary uses held readings and only manual refresh asks for a fresh query', async ({
+  page,
+}) => {
+  const f = await browserFixture(page, true, true, true);
+  const summary = page.getByRole('button', { name: '查看订阅用量', exact: true });
+  await expect(summary).toContainText('32%');
+  await expect(summary).toContainText('14%');
+  expect(
+    f.commands.some((command) => command.type === 'session.status' && command.quota === true),
+  ).toBe(false);
+  await summary.click();
+  await expect(
+    page
+      .getByRole('region', { name: '订阅用量', exact: true })
+      .getByRole('heading', { name: '订阅用量', exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole('region', { name: '账号池', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Setup token 登录', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '刷新订阅用量', exact: true }).click();
+  await expect
+    .poll(() =>
+      f.commands.some((command) => command.type === 'session.status' && command.quota === true),
+    )
+    .toBe(true);
+});
+
+test('mobile Web installation name and badge persist at their own service entry', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'userAgent', {
+      value: 'Mozilla/5.0 (Linux; Android 14) Chrome/130.0 Mobile Safari/537.36',
+    });
+    localStorage.setItem(
+      'web-app:/other/',
+      JSON.stringify({ name: 'Other', label: 'B', badge: true }),
+    );
+  });
+  await browserFixture(page, true);
+  await page.getByRole('button', { name: '设置与账号', exact: true }).click();
+  await page.getByRole('menuitem', { name: '设置', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: '设置分类' })
+    .getByRole('button', { name: '手机应用', exact: true })
+    .click();
+  await page.getByLabel('应用名称', { exact: true }).fill('工作站');
+  await page.getByRole('switch', { name: '图标右上角显示角标', exact: true }).click();
+  await page.getByLabel('角标内容', { exact: true }).fill('一号');
+  await expect
+    .poll(() => page.locator('link[rel="manifest"]').getAttribute('href'))
+    .toContain('appLabel=');
+  expect(
+    await page.evaluate(() => JSON.parse(localStorage.getItem('web-app:/web-fixture/')!)),
+  ).toEqual({ name: '工作站', label: '一号', badge: true });
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('web-app:/other/')!).name)).toBe(
+    'Other',
+  );
+  await page.reload();
+  const manifest = new URL(
+    (await page.locator('link[rel="manifest"]').getAttribute('href')) ?? '',
+    page.url(),
+  );
+  expect(manifest.searchParams.get('appName')).toBe('工作站');
+  expect(manifest.searchParams.get('appLabel')).toBe('一号');
 });

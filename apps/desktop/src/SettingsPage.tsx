@@ -17,11 +17,13 @@ import {
   Search,
   Settings,
   SlidersHorizontal,
+  Smartphone,
   SquareTerminal,
   UserRound,
 } from 'lucide-react';
 import type { ConnectedDevice, ProxyClient } from './client.ts';
 import WebAccessSettings from './WebAccessSettings.tsx';
+import InstallAppSettings from './InstallAppSettings.tsx';
 import Help from './Help.tsx';
 import type { ConnectionForm } from './LoginPage.tsx';
 import { connectionWaits, setPrefs, themes, usePrefs, waitRange } from './prefs.ts';
@@ -58,6 +60,7 @@ export type Section =
   | 'account'
   | 'claude'
   | 'instructions'
+  | 'install'
   | 'help'
   | 'about';
 // The groups say where their settings are kept and what they apply to: this computer, the service (for every device
@@ -160,6 +163,13 @@ export const sections: {
     group: 'Claude Code',
     icon: FileText,
     words: 'CLAUDE.md AGENTS.md 提示词 说明',
+  },
+  {
+    id: 'install',
+    name: '手机应用',
+    group: '其他',
+    icon: Smartphone,
+    words: '添加至手机 安装 名称 图标 角标',
   },
   { id: 'help', name: '帮助', group: '其他', icon: CircleHelp, words: '说明 常见问题' },
   {
@@ -912,23 +922,32 @@ export default function SettingsPage({
   const term = search.trim().toLowerCase();
   // Before a connection only this computer's; in a browser no computer's own nor Claude Code's files; the service's
   // where there is one to keep them. A page with nothing to set where it is shown is not listed.
-  const shown = sections.filter(
-    (item) =>
-      (!back || item.group === '本机') &&
-      (item.id !== 'connection' || window.desktop) &&
-      (item.id !== 'translation' || (!browser && !!translator())) &&
-      (!browser || !['context', 'account', 'claude', 'instructions'].includes(item.id)) &&
-      (item.id !== 'context' || (native && client.state.features.includes('idle-compaction'))) &&
-      (item.id !== 'web' || ((native || browser) && (client.state.serviceProtocol ?? 0) >= 20)) &&
-      (item.id !== 'instructions' || (client.state.serviceProtocol ?? 0) >= 18) &&
-      (item.id !== 'shell' ||
-        (native &&
-          !browser &&
-          !!here &&
-          platformOf(here) === 'win32' &&
-          (client.state.serviceProtocol ?? 0) >= 24)) &&
-      `${item.name} ${item.words}`.toLowerCase().includes(term),
-  );
+  const shown = sections
+    .map((item) =>
+      browser && item.id === 'account'
+        ? { ...item, name: '订阅用量', words: '订阅 用量 额度 周期统计 重置 自动读取额度' }
+        : item,
+    )
+    .filter(
+      (item) =>
+        (!back || item.group === '本机') &&
+        (item.id !== 'connection' || window.desktop) &&
+        (item.id !== 'install' ||
+          (browser && /Android.*Mobile|iPhone|iPod/i.test(navigator.userAgent))) &&
+        (item.id !== 'account' || native || !browser) &&
+        (item.id !== 'translation' || (!browser && !!translator())) &&
+        (!browser || !['context', 'claude', 'instructions'].includes(item.id)) &&
+        (item.id !== 'context' || (native && client.state.features.includes('idle-compaction'))) &&
+        (item.id !== 'web' || ((native || browser) && (client.state.serviceProtocol ?? 0) >= 20)) &&
+        (item.id !== 'instructions' || (client.state.serviceProtocol ?? 0) >= 18) &&
+        (item.id !== 'shell' ||
+          (native &&
+            !browser &&
+            !!here &&
+            platformOf(here) === 'win32' &&
+            (client.state.serviceProtocol ?? 0) >= 24)) &&
+        `${item.name} ${item.words}`.toLowerCase().includes(term),
+    );
   return (
     <>
       <aside className="sidebar">
@@ -1013,6 +1032,8 @@ export default function SettingsPage({
           <Page title="浏览器访问" intro={everyDevice}>
             <WebAccessSettings client={client} browser={browser} connectionUrl={form.url} />
           </Page>
+        ) : section === 'install' && browser ? (
+          <InstallAppSettings />
         ) : section === 'general' ? (
           <General
             browser={browser}

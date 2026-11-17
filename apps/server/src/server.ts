@@ -915,11 +915,21 @@ export function createProxyServer(options: ServerOptions) {
   // Compacts an idle session before its prompt cache lapses, as the compact button does; see idle-compaction.ts. It
   // runs here whether or not a window or the session's computer is there. A session that runs is left alone, and so
   // is one a terminal holds: the terminal's CLI compacts it by the same setting (see `terminalSettings`), and when the
-  // terminal ends first, its last turn is looked at again.
+  // terminal ends first, its last turn is looked at again. An account known to be out of quota would only refuse it,
+  // leaving the session a /compact and an error: it is not sent, and the cache lapses as it would have.
   function compactIdle(sessionId: string) {
     if (closing || !options.claude) return;
     try {
       const { session } = store.get(sessionId);
+      const accountId = session.accountId ?? 'default';
+      // A refusal on another account must not suppress this account's idle work.
+      if (
+        quotas.exhausted(
+          Date.now(),
+          settingsPath(pool!.options(accountId).environment?.CLAUDE_CONFIG_DIR),
+        )
+      )
+        return;
       if (
         session.activeRun ||
         runs.has(sessionId) ||
