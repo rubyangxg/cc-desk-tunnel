@@ -4,6 +4,7 @@ import { RequestTimeoutError, RequestRejectedError, RequestInterruptedError } fr
 import type { ProxyClient } from './client.ts';
 import {
   cacheKey,
+  historyVersion,
   progressKey,
   clearHistoryProgress,
   holdHistoryWarmup,
@@ -210,8 +211,8 @@ async function readCompleteHistory(
   const candidates: HistoryCheckpoint[] = [];
   if (profile && client.state.service) {
     const snapshots = await Promise.allSettled([
-      readHistoryCache(cacheKey(profile, sessionId), client.state.service),
-      readHistoryCache(progressKey(profile, sessionId), client.state.service),
+      readHistoryCache(cacheKey(profile, sessionId), historyVersion(client)),
+      readHistoryCache(progressKey(profile, sessionId), historyVersion(client)),
     ]);
     for (const snapshot of snapshots)
       if (snapshot.status === 'fulfilled' && snapshot.value?.events.length)
@@ -360,7 +361,7 @@ async function readCompleteHistory(
         // app can continue from this range even if the preceding attempt never completed.
         await saveHistoryCache(
           progressKey(profile, sessionId),
-          client.state.service,
+          historyVersion(client),
           ordered,
           hasEarlier,
           replaceCache && !progressReplaced,
@@ -378,7 +379,7 @@ async function readCompleteHistory(
           if (
             await saveHistoryCache(
               cacheKey(profile, sessionId),
-              client.state.service,
+              historyVersion(client),
               ordered,
               false,
               replaceCache,

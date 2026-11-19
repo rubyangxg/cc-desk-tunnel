@@ -2743,12 +2743,21 @@ export function createProxyServer(options: ServerOptions) {
         await openTerminal(peer, command, session);
         return command.sessionId;
       case 'session.subscribe': {
+        // History a client kept goes on from its last event only while that event is still the one stored.
+        const reset =
+          !!command.afterCreatedAt &&
+          !store.holds(command.sessionId, command.afterSequence, command.afterCreatedAt);
         peer.subscriptions.clear();
         peer.subscriptions.add(command.sessionId);
         const messages: ServerMessage[] = [
           {
             type: 'session.snapshot',
-            ...store.history(command.sessionId, command.requestId, command.afterSequence),
+            ...store.history(
+              command.sessionId,
+              command.requestId,
+              reset ? 0 : command.afterSequence,
+            ),
+            ...(reset ? { reset: true as const } : {}),
           },
         ];
         // The history ends where the run's unfinished output begins.
@@ -2771,7 +2780,13 @@ export function createProxyServer(options: ServerOptions) {
         await peer.history.deliver(command.requestId, command.sessionId, [
           {
             type: 'session.snapshot',
-            ...store.history(command.sessionId, command.requestId, 0, command.beforeSequence),
+            ...store.history(
+              command.sessionId,
+              command.requestId,
+              0,
+              command.beforeSequence,
+              command.afterSequence,
+            ),
           },
         ]);
         return command.sessionId;
@@ -2958,6 +2973,7 @@ export function createProxyServer(options: ServerOptions) {
         model: options.claude?.model,
         version,
         sessions: store.list(),
+        historyId: store.historyId,
         browser: {
           sessionId: peer.browser,
           serverDeviceId: serverDevice.id,
@@ -3036,6 +3052,7 @@ export function createProxyServer(options: ServerOptions) {
             ]
           : []),
       ],
+      historyId: store.historyId,
     });
     send(peer, devices());
     // Every connection that asks has an execution channel of its own, to the computer it comes from.

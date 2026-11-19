@@ -880,6 +880,7 @@ export function App({
                 waits: getPrefs().connection,
               })
             ).url,
+          JSON.stringify([profileId, new URL(form.url).href, form.fingerprint]),
         );
       } else {
         client.connect(form.url, form.token, device);
@@ -1355,6 +1356,12 @@ export function App({
             await exportSession(client, session, profiles.initial);
           });
         },
+      },
+      {
+        label: '重新同步记录',
+        icon: <RefreshCw />,
+        disabled: !connected,
+        run: () => client.resync(session.id),
       },
       // A session on another computer is taken over first, with a directory here.
       ...(onThis(session)

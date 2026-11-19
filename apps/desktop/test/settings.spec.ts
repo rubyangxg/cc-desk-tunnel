@@ -4,8 +4,9 @@ import { resolve } from 'node:path';
 import { PROTOCOL_VERSION } from '@cc-desk-tunnel/protocol';
 import type { NativeSettings } from '@cc-desk-tunnel/protocol';
 
-for (const legacy of [false, true]) {
-  test(`Claude Code settings load and save without unsupported fields (${legacy ? 'protocol 24' : 'current'})`, async ({
+for (const protocol of [PROTOCOL_VERSION, 24, 26]) {
+  const legacy = protocol < PROTOCOL_VERSION;
+  test(`Claude Code settings load and save without unsupported fields (${legacy ? `protocol ${protocol}` : 'current'})`, async ({
     page,
   }) => {
     const values: NativeSettings = {
@@ -28,6 +29,7 @@ for (const legacy of [false, true]) {
       bashOutputMaxChars: 45_000,
       attribution: null,
       includeGitInstructions: null,
+      enableArtifact: null,
       toolSearch: null,
       denyInsteadOfPrompting: null,
       blockWritesOutsideWorkingDirectories: null,
@@ -39,18 +41,18 @@ for (const legacy of [false, true]) {
         const message = JSON.parse(String(raw));
         if (message.type === 'device') return;
         if (message.type === 'auth') {
-          if (legacy && message.protocolVersion !== 24) {
+          if (legacy && message.protocolVersion !== protocol) {
             send({
               type: 'connection.error',
               code: 'version_mismatch',
-              service: '0.4.52',
+              service: protocol === 24 ? '0.4.52' : '0.4.57',
               message: 'upgrade required',
             });
             return;
           }
           send({
             type: 'ready',
-            protocolVersion: legacy ? 24 : PROTOCOL_VERSION,
+            protocolVersion: protocol,
             version: '0.0.1',
             connectionId: randomUUID(),
             adapter: 'claude-code',
@@ -63,11 +65,21 @@ for (const legacy of [false, true]) {
           Object.assign(values, message.values);
         }
         if (message.type.startsWith('settings.')) {
-          const { denyInsteadOfPrompting, blockWritesOutsideWorkingDirectories, ...old } = values;
+          const {
+            enableArtifact,
+            denyInsteadOfPrompting,
+            blockWritesOutsideWorkingDirectories,
+            ...old
+          } = values;
           send({
             type: 'settings.state',
             requestId: message.requestId,
-            values: legacy ? old : values,
+            values:
+              protocol < 25
+                ? old
+                : protocol < 27
+                  ? { ...old, denyInsteadOfPrompting, blockWritesOutsideWorkingDirectories }
+                  : values,
           });
         }
         send({ type: 'response', requestId: message.requestId, ok: true });
@@ -87,10 +99,13 @@ for (const legacy of [false, true]) {
       .click();
     const panel = page.getByRole('region', { name: 'CLI 设置' });
     await expect(panel.getByLabel('不等审批，直接拒绝', { exact: true })).toHaveCount(
-      legacy ? 0 : 1,
+      protocol < 25 ? 0 : 1,
     );
     await expect(panel.getByLabel('禁止在工作目录外写文件', { exact: true })).toHaveCount(
-      legacy ? 0 : 1,
+      protocol < 25 ? 0 : 1,
+    );
+    await expect(panel.getByLabel('Artifact 网页', { exact: true })).toHaveCount(
+      protocol < 27 ? 0 : 1,
     );
     await expect(panel.getByLabel('自动压缩窗口', { exact: true })).toHaveValue('250000');
     await expect(panel.getByLabel('快速模式', { exact: true })).toHaveValue('false');

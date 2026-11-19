@@ -5,7 +5,9 @@ import {
   clientServerMessageSchema,
   fallbackServerProtocol,
 } from '@cc-desk-tunnel/protocol';
-import type { EventPayload } from '@cc-desk-tunnel/protocol';
+import type { EventPayload, HistoryPage } from '@cc-desk-tunnel/protocol';
+import { HistoryCache } from './historyCache.ts';
+import type { Range } from './historyCache.ts';
 import type {
   AccountState,
   SetupTokenResult,
@@ -22,6 +24,19 @@ import type {
 } from '@cc-desk-tunnel/protocol';
 
 type Response = Extract<ServerMessage, { type: 'response' }>;
+// What a page from the service holds whole: every event of the session in (after, through].
+function covered(page: HistoryPage, command?: NewCommand): Range {
+  if (command?.type === 'session.subscribe' && page.mode === 'append')
+    return [command.afterSequence ?? 0, page.lastSequence];
+  if (command?.type === 'session.history' && page.mode === 'prepend')
+    return [
+      page.hasEarlier ? page.firstSequence - 1 : (command.afterSequence ?? 0),
+      command.beforeSequence - 1,
+    ];
+  if (page.mode === 'replace')
+    return [page.hasEarlier ? page.firstSequence - 1 : 0, page.lastSequence];
+  return [0, 0];
+}
 type DataMessage = Extract<
   ServerMessage,
   {
@@ -64,7 +79,9 @@ type Replies = {
 
 type NewCommand = Command extends infer C
   ? C extends Command
-    ? Omit<C, 'requestId'>
+    ? C extends { type: 'session.history' }
+      ? Omit<C, 'requestId' | 'afterSequence'> & { afterSequence?: number }
+      : Omit<C, 'requestId'>
     : never
   : never;
 // Android supplies a pinned native TLS socket; the desktop/browser keep their existing transport.
@@ -152,6 +169,7 @@ export type ClientState = {
   // The service's version and where it stands against the published releases, if it follows them.
   service: string | null;
   serviceProtocol: number | null;
+  historyId: string | null;
   features: string[];
   pool: ServerPoolState | null;
   update: ServiceUpdate | null;
@@ -197,6 +215,7 @@ export class ProxyClient {
     release: null,
     service: null,
     serviceProtocol: null,
+    historyId: null,
     features: [],
     pool: null,
     update: null,
@@ -235,6 +254,7 @@ export class ProxyClient {
     // connection, so every attempt asks for a new one.
     bridge?: () => Promise<string>;
     transport?: () => ClientSocket;
+    cacheScope?: string;
   } | null = null;
   retryTimer: ReturnType<typeof setTimeout> | undefined;
   retryAttempt = 0;
@@ -272,8 +292,12 @@ export class ProxyClient {
       parts?: string[];
       following?: ServerMessage[];
       done?: Promise<Response>;
+      command?: NewCommand;
     }
   >();
+  // The history read before, kept on disk; and the sessions being shown from it while the service is asked.
+  disk = new HistoryCache();
+  private opening = new Map<string, Promise<void>>();
   getSnapshot = () => this.state;
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
@@ -291,6 +315,7 @@ export class ProxyClient {
     device: Device,
     reconnect = true,
     bridge?: () => Promise<string>,
+    cacheScope = url,
   ) {
     const address = new URL(url);
     if (
@@ -307,7 +332,14 @@ export class ProxyClient {
     )
       throw new Error('当前离线原型仅连接本机环回服务。');
     if (token.trim().length < 24) throw new Error('服务凭据至少 24 个字符。');
-    this.start({ url: address.toString(), token: token.trim(), device, reconnect, bridge });
+    this.start({
+      url: address.toString(),
+      token: token.trim(),
+      device,
+      reconnect,
+      bridge,
+      cacheScope,
+    });
   }
   // A controller has its own identity and never claims the project's computer or opens a tunnel.
   // Its native transport supplies the credential without exposing it to the page.
@@ -317,6 +349,8 @@ export class ProxyClient {
   private start(credentials: NonNullable<ProxyClient['credentials']>) {
     this.disconnect();
     this.credentials = credentials;
+    this.disk = new HistoryCache(`history:${credentials.cacheScope ?? credentials.url}`);
+    this.opening.clear();
     const device = credentials.device;
     this.established = false;
     this.cacheOrder = [];
@@ -330,6 +364,7 @@ export class ProxyClient {
       release: null,
       service: null,
       serviceProtocol: null,
+      historyId: null,
       features: [],
       pool: null,
       update: null,
@@ -361,6 +396,8 @@ export class ProxyClient {
     )
       throw new Error('浏览器只能连接当前服务。');
     this.disconnect();
+    this.disk = new HistoryCache(`history:${address.href}`);
+    this.opening.clear();
     this.credentials = {
       url: address.href,
       token: '',
@@ -623,6 +660,8 @@ export class ProxyClient {
         this.established = true;
         clearTimeout(timeout);
         this.retryAttempt = 0;
+        const historyChanged = this.state.historyId !== (message.historyId ?? null);
+        if (historyChanged) this.update({ events: {}, live: {}, history: {} });
         const selectedId = message.sessions.some((session) => session.id === this.state.selectedId)
           ? this.state.selectedId
           : null;
@@ -638,13 +677,18 @@ export class ProxyClient {
           release: message.client?.version ?? null,
           service: message.version,
           serviceProtocol: message.protocolVersion,
+          historyId: message.historyId ?? null,
           features: message.features ?? [],
           pool: null,
           mismatch: false,
           update: message.update ?? null,
           model: message.model ?? null,
         });
-        if (selectedId) this.load(selectedId);
+        if (message.historyId) {
+          this.disk.use(message.historyId);
+          this.disk.retain(message.sessions.map((session) => session.id));
+        } else this.disk.historyId = null;
+        if (selectedId) this.present(selectedId);
       } else if (message.type === 'response') {
         const request = this.pending.get(message.requestId);
         if (!request) return;
@@ -729,6 +773,7 @@ export class ProxyClient {
       } else if (message.type === 'session.updated') {
         this.upsert(message.session);
       } else if (message.type === 'session.deleted') {
+        this.disk.drop(message.sessionId);
         const events = { ...this.state.events };
         const live = { ...this.state.live };
         const history = { ...this.state.history };
@@ -774,7 +819,7 @@ export class ProxyClient {
           this.upsert(message.session);
         const id = message.session.id;
         // Chunked history may overlap new live output; retain events newer than the snapshot.
-        const tail = (this.state.events[id] ?? []).filter(
+        const tail = (message.reset ? [] : (this.state.events[id] ?? [])).filter(
           (event) => event.sequence > message.lastSequence,
         );
         const newer = tail.length > 0 || (current?.updatedAt ?? '') > message.session.updatedAt;
@@ -784,6 +829,9 @@ export class ProxyClient {
           this.update({ live });
         }
         const previous = this.state.history[id];
+        // A page fetched above what is kept on disk goes on there.
+        const above =
+          request.command?.type === 'session.history' && !!request.command.afterSequence;
         const history = {
           ...(message.mode === 'prepend' && previous?.needsReload ? { needsReload: true } : {}),
           firstSequence:
@@ -795,11 +843,15 @@ export class ProxyClient {
               ? (previous?.lastSequence ?? message.lastSequence)
               : (tail.at(-1)?.sequence ?? message.lastSequence),
           hasEarlier:
-            message.mode === 'append' ? (previous?.hasEarlier ?? false) : message.hasEarlier,
+            message.mode === 'append'
+              ? (previous?.hasEarlier ?? false)
+              : message.hasEarlier || above,
           loading: false,
           loadingEarlier: false,
         };
         this.merge(id, [...message.events, ...tail], history, message.mode === 'replace');
+        if (message.reset) this.disk.drop(id);
+        this.disk.write(id, message.events, covered(message, request.command));
         if (request.type === 'session.history') {
           clearTimeout(request.timer);
           this.pending.delete(message.requestId);
@@ -967,7 +1019,13 @@ export class ProxyClient {
     this.streamEvents = [];
     if (progress !== this.state.progress) this.update({ progress });
     if (moved) this.update({ live });
-    for (const [id, events] of grouped) this.merge(id, events);
+    for (const [id, events] of grouped) {
+      const held = this.state.history[id];
+      this.merge(id, events);
+      // Once its page is in, the shown session's events follow what it holds without a gap.
+      if (held && !held.loading && !held.needsReload)
+        this.disk.write(id, events, [held.lastSequence, this.state.history[id]!.lastSequence]);
+    }
   }
   private merge(
     sessionId: string,
@@ -1032,20 +1090,29 @@ export class ProxyClient {
         },
       },
     });
-    void this.request({ type: 'session.subscribe', sessionId, afterSequence }).catch(
-      (error: Error) => {
-        if (error.name === 'AbortError' || this.state.selectedId !== sessionId) return;
-        const history = this.state.history[sessionId];
-        if (history)
-          this.update({
-            error: error.message,
-            history: {
-              ...this.state.history,
-              [sessionId]: { ...history, loading: false, needsReload: true },
-            },
-          });
-      },
-    );
+    // The service checks that the history held still ends with the event it has there.
+    const last = this.state.events[sessionId]?.at(-1);
+    void this.request({
+      type: 'session.subscribe',
+      sessionId,
+      afterSequence,
+      ...((this.state.serviceProtocol ?? 0) >= 27 &&
+      afterSequence &&
+      last?.sequence === afterSequence
+        ? { afterCreatedAt: last.createdAt }
+        : {}),
+    }).catch((error: Error) => {
+      if (error.name === 'AbortError' || this.state.selectedId !== sessionId) return;
+      const history = this.state.history[sessionId];
+      if (history)
+        this.update({
+          error: error.message,
+          history: {
+            ...this.state.history,
+            [sessionId]: { ...history, loading: false, needsReload: true },
+          },
+        });
+    });
   }
   async loadEarlier(sessionId: string) {
     const history = this.state.history[sessionId];
@@ -1062,16 +1129,42 @@ export class ProxyClient {
       history: { ...this.state.history, [sessionId]: { ...history, loadingEarlier: true } },
     });
     try {
+      const held = this.disk.ready
+        ? await this.disk.earlier(sessionId, history.firstSequence)
+        : null;
+      if (!current()) return;
+      if (held && 'events' in held && held.events.length) {
+        this.merge(sessionId, held.events, {
+          ...this.state.history[sessionId]!,
+          firstSequence: held.events[0]!.sequence,
+          hasEarlier: held.hasEarlier,
+          loadingEarlier: false,
+        });
+        return;
+      }
+      let after = held && 'after' in held ? held.after : 0;
       for (let attempt = 0; attempt < 3; attempt++) {
         if (!current()) return;
         try {
           // Keep the page separate until its read is confirmed; late attempts cannot prepend twice.
-          const page = await this.fetch({
+          let page = await this.fetch({
             type: 'session.history',
             sessionId,
             beforeSequence: history.firstSequence,
+            ...((this.state.serviceProtocol ?? 0) >= 27 ? { afterSequence: after } : {}),
           });
           if (!current()) return;
+          // Sequences are global: a gap above the cached stretch may contain no events for
+          // this session. Fall back to a bounded normal page rather than setting its cursor to zero.
+          if (!page.events.length && after > 0) {
+            after = 0;
+            page = await this.fetch({
+              type: 'session.history',
+              sessionId,
+              beforeSequence: history.firstSequence,
+            });
+            if (!current()) return;
+          }
           if (
             page.session.id !== sessionId ||
             page.mode !== 'prepend' ||
@@ -1087,9 +1180,19 @@ export class ProxyClient {
           this.merge(sessionId, page.events, {
             ...latest,
             firstSequence: page.firstSequence,
-            hasEarlier: page.hasEarlier,
+            hasEarlier: page.hasEarlier || after > 0,
             loadingEarlier: false,
           });
+          this.disk.write(
+            sessionId,
+            page.events,
+            covered(page, {
+              type: 'session.history',
+              sessionId,
+              beforeSequence: history.firstSequence,
+              afterSequence: after,
+            }),
+          );
           return;
         } catch (error) {
           if (!current()) return;
@@ -1124,7 +1227,66 @@ export class ProxyClient {
       this.historyEpoch.delete(evicted);
     }
     this.update({ selectedId: sessionId, events, live, history });
-    if (this.state.status === 'connected') this.load(sessionId);
+    this.present(sessionId);
+  }
+  // A session not in memory shows what is kept of it at once; the service is then asked for what came since.
+  private present(sessionId: string) {
+    if (this.state.history[sessionId] || !this.disk.ready) {
+      if (this.state.status === 'connected') this.load(sessionId);
+      return;
+    }
+    const reading: HistoryState = {
+      firstSequence: 0,
+      lastSequence: 0,
+      hasEarlier: false,
+      loading: true,
+      loadingEarlier: false,
+    };
+    this.update({ history: { ...this.state.history, [sessionId]: reading } });
+    const opening = this.disk.latest(sessionId).then((page) => {
+      // Shown elsewhere, read again or loaded in the meantime: what the disk had is not wanted.
+      if (this.state.history[sessionId] !== reading) return;
+      if (page?.events.length)
+        this.merge(
+          sessionId,
+          page.events,
+          {
+            firstSequence: page.events[0]!.sequence,
+            lastSequence: page.events.at(-1)!.sequence,
+            hasEarlier: page.hasEarlier,
+            loading: false,
+            loadingEarlier: false,
+          },
+          true,
+        );
+      else {
+        const { [sessionId]: _none, ...history } = this.state.history;
+        this.update({ history });
+      }
+      if (this.state.selectedId === sessionId && this.state.status === 'connected')
+        this.load(sessionId);
+    });
+    this.opening.set(sessionId, opening);
+    void opening.finally(() => {
+      if (this.opening.get(sessionId) === opening) this.opening.delete(sessionId);
+    });
+  }
+  // Read a session, or all of them, from the service again: what is kept of it goes, from disk and memory.
+  resync(sessionId?: string) {
+    this.flushStream();
+    this.cancelHistory(sessionId);
+    if (sessionId) this.disk.drop(sessionId);
+    else this.disk.clear();
+    const keep = <T>(map: Record<string, T>) =>
+      sessionId ? Object.fromEntries(Object.entries(map).filter(([id]) => id !== sessionId)) : {};
+    this.cacheOrder = sessionId ? this.cacheOrder.filter((id) => id !== sessionId) : [];
+    this.update({
+      events: keep(this.state.events),
+      live: keep(this.state.live),
+      history: keep(this.state.history),
+    });
+    const selected = this.state.selectedId;
+    if (selected && (!sessionId || selected === sessionId)) this.select(selected);
   }
 
   // A browser's user is still there; its login's idle time starts over.
@@ -1194,13 +1356,19 @@ export class ProxyClient {
         timer,
         type: command.type,
         capture,
+        command,
         ...('sessionId' in command ? { sessionId: command.sessionId } : {}),
         renew,
         progress,
       });
+      const wire = { ...command };
+      if ((this.state.serviceProtocol ?? 0) < 27) {
+        if (wire.type === 'session.history') delete wire.afterSequence;
+        if (wire.type === 'session.subscribe') delete wire.afterCreatedAt;
+      }
       this.socket!.send(
         JSON.stringify({
-          ...command,
+          ...wire,
           ...(historyRead && this.state.features.includes('chunked-history')
             ? { chunked: true }
             : {}),
@@ -1213,6 +1381,8 @@ export class ProxyClient {
     return done;
   }
   async waitForHistory(sessionId: string) {
+    const opening = this.opening.get(sessionId);
+    if (opening) await opening;
     await Promise.all(
       [...this.pending.values()]
         .filter((request) => request.sessionId === sessionId)

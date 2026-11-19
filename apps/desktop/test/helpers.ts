@@ -65,3 +65,6 @@ export async function settled(page: Page) {
   await expect(page.getByRole('textbox', { name: '消息' })).toBeEnabled();
   await expect(page.getByRole('button', { name: '停止运行', exact: true })).not.toBeVisible();
 }
+
+// Personal desktop keeps the original root-profile launcher.
+export const connectionArgs = (profile: string, _fresh = false) => [`--user-data-dir=${profile}`];

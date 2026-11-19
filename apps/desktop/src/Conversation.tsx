@@ -30,7 +30,9 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
+import { isWindowsPath } from '@cc-desk-tunnel/protocol';
 import type { Session, SessionEvent } from '@cc-desk-tunnel/protocol';
+import { fileName, pieces } from './attachments.ts';
 import { describe, duration, summarize } from './activity.ts';
 import type { Category } from './activity.ts';
 import type { HistoryState, TaskProgress } from './client.ts';
@@ -45,13 +47,14 @@ import { CopyButton, copyText } from './copy.tsx';
 import { messageTime } from './messageTime.ts';
 import TurnStats from './TurnStats.tsx';
 import ConversationFind, { SearchExpanded } from './ConversationFind.tsx';
-import { IconButton, Menu } from './ui.tsx';
+import { IconButton, Menu, Modal } from './ui.tsx';
+import { isMac } from './platform.ts';
 import type { MenuItem, MenuPosition } from './ui.tsx';
-import { LinkPlace, linkTarget } from './links.ts';
+import { isPicture, LinkPlace, linkTarget, localPicture } from './links.ts';
 import type { Link } from './links.ts';
 import { followLink, linkMenu } from './linkActions.ts';
 import { pictureUrl, toolPictures } from './pictures.ts';
-import { Picture } from './Picture.tsx';
+import { Picture, PictureDialog } from './Picture.tsx';
 import ReplyTranslation from './ReplyTranslation.tsx';
 import { autoTranslate, loadTranslationSettings, useTranslationSettings } from './translation.ts';
 import { translatable } from './translation-text.ts';
@@ -137,7 +140,7 @@ function LinkCardView({ card }: { card: LinkCard }) {
         : link.path;
   const hint =
     link.kind === 'web'
-      ? '点击在浏览器中打开 · 右键可复制地址'
+      ? `单击确认后打开 · ${commandKey ? '⌘' : 'Ctrl'} + 单击直接打开 · 右键可复制地址`
       : link.kind === 'path'
         ? '点击打开 · 右键查看更多操作'
         : `${link.reason}右键可复制路径。`;
@@ -154,6 +157,39 @@ function LinkCardView({ card }: { card: LinkCard }) {
         <small className={link.kind === 'elsewhere' ? 'link-card-warn' : undefined}>{hint}</small>
       )}
     </div>
+  );
+}
+
+// The key held to open a web link at once: ⌘ on a Mac, in the desktop client or a browser, Ctrl elsewhere.
+const commandKey =
+  isMac || (typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform));
+
+// A web address is left for only when asked twice: a reply's link may read as one place and lead to another, so a
+// plain click shows the whole address first. The address is as the browser will take it, so a look-alike name shows
+// as the xn-- it really is.
+function LeaveDialog({ url, open, close }: { url: string; open: () => void; close: () => void }) {
+  return (
+    <Modal title="打开外部链接" onClose={close}>
+      <p className="leave-lead">
+        {url.startsWith('mailto:') ? '将用邮件程序打开：' : '将在浏览器中打开：'}
+      </p>
+      <p className="leave-url">{url}</p>
+      <div className="dialog-actions">
+        <button type="button" className="button" onClick={close}>
+          取消
+        </button>
+        <button
+          type="button"
+          className="button primary"
+          onClick={() => {
+            close();
+            open();
+          }}
+        >
+          打开
+        </button>
+      </div>
+    </Modal>
   );
 }
 
@@ -397,6 +433,56 @@ function WorkGroup({
 // closes a turn: copy, the turn's figures and the time, always shown on the latest. Replies said along the way have
 // nothing under them. A delivery that did not plainly arrive stays in sight. Replies of the simulated service keep the
 // heading, which says they are not real.
+// A file put in a question, where it stands in the words, as it stood in the box. A picture on this computer shows
+// small and opens whole; any other file, or a picture that cannot be shown here, is a link to it by name, with the
+// conversation's link menu and the card that tells where it leads.
+function FileInText({ path }: { path: string }) {
+  const place = useContext(LinkPlace);
+  const [broken, setBroken] = useState(false);
+  const [open, setOpen] = useState(false);
+  if (!broken && isPicture(path) && linkTarget(path, place)?.kind === 'path')
+    return (
+      <>
+        <button
+          type="button"
+          className="path-chip"
+          title={path}
+          data-link={path}
+          onClick={() => setOpen(true)}
+        >
+          <img src={localPicture(path)} alt="" onError={() => setBroken(true)} />
+          <span className="path-chip-name">{fileName(path)}</span>
+        </button>
+        {open && (
+          <PictureDialog
+            src={localPicture(path)}
+            alt={fileName(path)}
+            onClose={() => setOpen(false)}
+          />
+        )}
+      </>
+    );
+  return (
+    <a className="path-chip file" href={path} data-link={path}>
+      <span className="path-chip-name">{fileName(path)}</span>
+    </a>
+  );
+}
+
+// A question as it was sent; the files in it are shown as files (see attachments.ts).
+function Question({ text }: { text: string }) {
+  const place = useContext(LinkPlace);
+  const windows = isWindowsPath(place?.projectPath ?? 'C:\\');
+  const parts = useMemo(() => pieces(text, windows), [text, windows]);
+  return (
+    <p>
+      {parts.map((piece, index) =>
+        'path' in piece ? <FileInText key={index} path={piece.path} /> : piece.text,
+      )}
+    </p>
+  );
+}
+
 function Message({
   item,
   native,
@@ -433,7 +519,7 @@ function Message({
         </div>
       )}
       <div className="message-content" data-search-content data-copy-text={item.text}>
-        {user ? <p>{item.text}</p> : <Rich text={item.text} />}
+        {user ? <Question text={item.text} /> : <Rich text={item.text} />}
       </div>
       {!user && native && <ReplyTranslation id={item.id} text={item.text} />}
       {user && (
@@ -734,6 +820,8 @@ export default function Conversation({
     [session?.projectPath, here],
   );
   const [linkCard, setLinkCard] = useState<LinkCard | null>(null);
+  // The web address a plain click asks about.
+  const [leaving, setLeaving] = useState<string | null>(null);
   const resting = useRef<ReturnType<typeof setTimeout>>(undefined);
   const showLink = (element: Element, link: Link, note?: string) => {
     const box = element.getBoundingClientRect();
@@ -760,6 +848,7 @@ export default function Conversation({
     setContextMenu(null);
     setCopyStatus('');
     setLinkCard(null);
+    setLeaving(null);
   }, [session?.id]);
   // What came of a click stays a while, then goes.
   useEffect(() => {
@@ -1011,7 +1100,10 @@ export default function Conversation({
           event.preventDefault();
           const link = anchor.dataset.link ? linkTarget(anchor.dataset.link, place) : null;
           clearTimeout(resting.current);
-          if (link) void followLink(link, (note) => showLink(anchor, link, note));
+          if (link?.kind === 'web' && !(commandKey ? event.metaKey : event.ctrlKey)) {
+            setLinkCard(null);
+            setLeaving(link.url);
+          } else if (link) void followLink(link, (note) => showLink(anchor, link, note));
         }}
         onPointerOver={(event) => {
           const anchor = (event.target as HTMLElement).closest<HTMLElement>('a[data-link]');
@@ -1256,6 +1348,13 @@ export default function Conversation({
         <Menu label="对话文字操作" {...contextMenu} onClose={() => setContextMenu(null)} />
       )}
       {linkCard && !contextMenu && <LinkCardView card={linkCard} />}
+      {leaving && (
+        <LeaveDialog
+          url={leaving}
+          close={() => setLeaving(null)}
+          open={() => void followLink({ kind: 'web', url: leaving }, setCopyStatus)}
+        />
+      )}
     </SearchExpanded.Provider>
   );
 }

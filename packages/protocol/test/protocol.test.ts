@@ -323,11 +323,11 @@ test('a turn report names the message it answered, or none for a turn a backgrou
   assert.equal(eventSchema.safeParse(event({ ...stats, partial: undefined })).success, false);
 });
 
-test('personal releases retain protocol 22/23/24 and current releases require 26', () => {
+test('personal releases retain protocol 22/23/24 and current releases require 27', () => {
   assert.equal(PROTOCOL_HISTORY['0.4.48'], 23);
   assert.equal(PROTOCOL_HISTORY['0.4.49'], 24);
   assert.equal(PROTOCOL_HISTORY['0.4.53'], 25);
-  assert.equal(PROTOCOL_VERSION, 26);
+  assert.equal(PROTOCOL_VERSION, 27);
   assert.equal(PROTOCOL_HISTORY['0.4.55'], 26);
   for (const service of ['0.4.53', '0.4.54'])
     assert.equal(
@@ -357,7 +357,12 @@ test('legacy settings remain readable without adding new permission writes', () 
   const old = Object.fromEntries(
     Object.keys(nativeSettingsSchema.shape)
       .filter(
-        (k) => !['denyInsteadOfPrompting', 'blockWritesOutsideWorkingDirectories'].includes(k),
+        (k) =>
+          ![
+            'enableArtifact',
+            'denyInsteadOfPrompting',
+            'blockWritesOutsideWorkingDirectories',
+          ].includes(k),
       )
       .map((k) => [k, null]),
   );
@@ -399,4 +404,25 @@ test('pool account removal is a client command with an account id', () => {
   assert.equal(commandSchema.safeParse(command).success, true);
   assert.equal(commandSchema.safeParse({ ...command, accountId: 'default' }).success, true);
   assert.equal(commandSchema.safeParse({ type: 'pool.account.remove', requestId }).success, false);
+});
+
+test('protocol 27 keeps the personal 26 upgrade handshake and adds safe history cursors', () => {
+  for (const service of ['0.4.55', '0.4.56', '0.4.57', '0.3.15'])
+    assert.equal(
+      fallbackServerProtocol(
+        { type: 'connection.error', code: 'version_mismatch', service, message: 'upgrade' },
+        27,
+      ),
+      26,
+    );
+  assert.equal(PROTOCOL_HISTORY['0.4.58'], 27);
+  const ready = {
+    type: 'ready',
+    protocolVersion: 26,
+    connectionId: randomUUID(),
+    adapter: 'simulation',
+    version: '0.4.57',
+    sessions: [],
+  };
+  assert.equal(clientServerMessageSchema.safeParse(ready).success, true);
 });

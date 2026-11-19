@@ -15,6 +15,7 @@ import {
   Square,
   SquareSlash,
 } from 'lucide-react';
+import { isWindowsPath } from '@cc-desk-tunnel/protocol';
 import type {
   Effort,
   NativeCapabilities,
@@ -25,6 +26,8 @@ import type {
 } from '@cc-desk-tunnel/protocol';
 import { slashCommands } from './commands.ts';
 import ComposerControls from './ComposerControls.tsx';
+import MessageInput, { messageLimit } from './MessageInput.tsx';
+import type { MessageInputHandle } from './MessageInput.tsx';
 import PermissionMenu from './PermissionMenu.tsx';
 import { usePopover } from './usePopover.ts';
 import { IconButton } from './ui.tsx';
@@ -137,7 +140,8 @@ export default function Composer({
   }) => Promise<void>;
   stop: () => void;
 }) {
-  const input = useRef<HTMLTextAreaElement>(null);
+  const input = useRef<MessageInputHandle>(null);
+  const tooLong = draft.length > messageLimit;
   const sendMenu = usePopover();
   const queue = session.messageQueue;
   const queued = queue?.items ?? [];
@@ -237,25 +241,10 @@ export default function Composer({
     setSlashOpen(false);
     input.current?.focus();
   }
-  useLayoutEffect(() => {
-    // Grow with the draft; the stylesheet's max-height decides when scrolling takes over.
-    if (!input.current) return;
-    input.current.style.height = 'auto';
-    input.current.style.height = `${input.current.scrollHeight}px`;
-  }, [draft, session.id]);
-  // A file reaches Claude as its Windows path in the message: Claude reads it through the execution channel,
-  // the same way it reads the project.
+  // A file reaches Claude as its Windows path in the message, where it was put: Claude reads it through the
+  // execution channel, the same way it reads the project. The box shows it as the file (see MessageInput).
   function attach(paths: string[]) {
-    if (!paths.length) return;
-    const box = input.current;
-    // The box holds what is typed right now; a picture is attached a moment after it was pasted.
-    const current = box ? box.value : draft;
-    const at = box ? box.selectionStart : current.length;
-    const before = current.slice(0, at);
-    const text = paths.map((path) => `"${path}"`).join(' ');
-    const lead = before && !/\s$/.test(before) ? ' ' : '';
-    setDraft(`${before}${lead}${text} ${current.slice(at)}`);
-    box?.focus();
+    if (paths.length) input.current?.insert(paths);
   }
   const shown = useRef(session.id);
   shown.current = session.id;
@@ -416,13 +405,14 @@ export default function Composer({
           void paste([...event.dataTransfer.files]);
         }}
       >
-        <textarea
+        <MessageInput
           ref={input}
           aria-label="消息"
           aria-controls={menuShown ? 'slash-commands' : undefined}
           aria-expanded={menuShown}
           aria-autocomplete="list"
           aria-activedescendant={menuShown ? `slash-command-${at}` : undefined}
+          windows={isWindowsPath(session.projectPath)}
           placeholder={
             session.activeRun?.surface === 'terminal'
               ? '会话在终端中打开，关闭终端后可以在这里接着聊'
@@ -430,11 +420,9 @@ export default function Composer({
           }
           value={draft}
           disabled={inputDisabled}
-          maxLength={16000}
-          rows={2}
-          onChange={(event) => {
-            setDraft(event.target.value);
-            setSlashOpen(native && slashDraft.test(event.target.value));
+          onChange={(text) => {
+            setDraft(text);
+            setSlashOpen(native && slashDraft.test(text));
             setPick(null);
           }}
           onPaste={(event) => {
@@ -470,8 +458,9 @@ export default function Composer({
             if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
               const mode = queueEnabled && !event.ctrlKey && !event.metaKey ? 'queue' : 'direct';
-              if (!menuShown) send(undefined, mode);
-              else if (!items[at].disabled) items[at].run(mode);
+              if (!menuShown) {
+                if (!tooLong) send(undefined, mode);
+              } else if (!items[at].disabled) items[at].run(mode);
             }
           }}
         />
@@ -548,7 +537,7 @@ export default function Composer({
                 className="icon-button send-button"
                 aria-label={sendMode === 'queue' ? '排队发送' : '发送消息'}
                 title={sendMode === 'queue' ? '排队发送（Enter）' : '直接发送（Ctrl+Enter）'}
-                disabled={!draft.trim() || inputDisabled}
+                disabled={!draft.trim() || tooLong || inputDisabled}
               >
                 {sendMode === 'queue' ? <ListOrdered /> : <ArrowUp />}
               </button>

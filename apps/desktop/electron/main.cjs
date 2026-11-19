@@ -1002,17 +1002,6 @@ app.whenReady().then(() => {
         },
         { type: 'separator' },
         { label: '退出', click: () => app.quit() },
-        ...(others().length
-          ? [
-              {
-                label: '退出全部连接',
-                click: () => {
-                  dismissOthers();
-                  app.quit();
-                },
-              },
-            ]
-          : []),
       ]),
     );
   tray.on('click', showWindow);

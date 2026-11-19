@@ -142,6 +142,10 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      # The runner's Ubuntu mirror now and then stops sending in the middle of a file, and apt would wait until the
+      # job times out: a download that sends nothing for 30 seconds is dropped and tried again, from the next
+      # mirror in the runner's list.
+      - run: printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "5";\n' | sudo tee /etc/apt/apt.conf.d/90retry-stalled
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb imagemagick
       # Electron and the packaging tools, kept from one run to the next: they are fetched from release pages
       # that now and then time out, and change only with the versions the lock file names.
@@ -161,7 +165,9 @@ jobs:
         shell: bash
       - run: npm run package:linux || (sleep 60 && npm run package:linux)
         shell: bash
-      - run: sudo apt-get install -y ./artifacts/linux/*.deb
+      # Without what it only recommends: that is the Chinese font, 61 MB that the runner's Ubuntu mirror has more
+      # than once sent so slowly the job timed out, and a start of the app does not need it.
+      - run: sudo apt-get install -y --no-install-recommends ./artifacts/linux/*.deb
       - run: xvfb-run -a -s "-screen 0 1280x900x24" node scripts/smoke-posix-package.mjs "/opt/CC Desk Tunnel/cc-desk-tunnel"
         env:
           SMOKE_SCREENSHOT: artifacts/linux/window-x64.png

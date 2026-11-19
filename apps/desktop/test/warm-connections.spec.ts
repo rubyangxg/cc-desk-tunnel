@@ -190,10 +190,10 @@ for (const slow of [false, true])
     await expect(quota).toHaveText('5 小时剩余 40% · 周剩余 20%');
     await page.getByRole('button', { name: /任务1 · 服务1/ }).click();
     await expect(page.getByText('切换后任务1仍继续输出', { exact: true })).toBeVisible();
-    await expect(input).toHaveValue('服务器1的草稿');
+    await expect(input).toHaveText('服务器1的草稿');
     await expect(quota).toHaveText('5 小时剩余 50% · 周剩余 55%');
     await page.getByRole('button', { name: /任务2 · 服务2/ }).click();
-    await expect(input).toHaveValue('服务器2的草稿');
+    await expect(input).toHaveText('服务器2的草稿');
     await expect(quota).toHaveText('5 小时剩余 40% · 周剩余 20%');
     await expect
       .poll(async () =>

@@ -3,6 +3,11 @@ import type { SessionEvent } from '@cc-desk-tunnel/protocol';
 import type { ProxyClient } from './client.ts';
 import type { ConnectionProfile } from './connections.ts';
 
+export const historyVersion = (client: ProxyClient) =>
+  client.state.historyId
+    ? JSON.stringify([client.state.service, client.state.historyId])
+    : client.state.service!;
+
 // Separate from the permanent cross-service archive. This cache can always be rebuilt from the source.
 type Meta = { service: string; first: number; last: number; hasEarlier: boolean };
 const namespace = (key: string) => `incremental:${key}`;
@@ -213,7 +218,7 @@ export async function warmHistoryCache(
   warming = true;
   try {
     const key = cacheKey(profile, id);
-    const meta = await metadata(key, service);
+    const meta = await metadata(key, historyVersion(client));
     if (!meta?.hasEarlier || !idle()) return false;
     const page = await client.fetch({
       type: 'session.history',
@@ -236,7 +241,13 @@ export async function warmHistoryCache(
       )
     )
       throw new Error('后台历史分页不一致。');
-    return await prependCache(key, service, meta.first, page.events, page.hasEarlier);
+    return await prependCache(
+      key,
+      historyVersion(client),
+      meta.first,
+      page.events,
+      page.hasEarlier,
+    );
   } finally {
     warming = false;
   }
@@ -266,7 +277,7 @@ export function startHistoryCache(client: ProxyClient, profile: ConnectionProfil
           events.at(-1)!.sequence !== history.lastSequence
         )
           continue;
-        const service = client.state.service!;
+        const service = historyVersion(client);
         const signature = JSON.stringify([
           service,
           history.firstSequence,
@@ -309,3 +320,6 @@ export function useHistoryCache(client: ProxyClient, profile: ConnectionProfile,
     [client, profile.id, profile.url, profile.fingerprint, enabled],
   );
 }
+
+export { HistoryCache, addRange, heldBelow, heldUnder } from './displayHistoryCache.ts';
+export type { Range } from './displayHistoryCache.ts';

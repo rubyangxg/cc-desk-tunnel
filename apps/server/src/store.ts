@@ -98,6 +98,7 @@ export class SessionStore {
         native_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         context TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS history_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS native_roots (
         device_id TEXT NOT NULL, path_key TEXT NOT NULL, root TEXT NOT NULL,
         PRIMARY KEY (device_id, path_key)
@@ -110,6 +111,7 @@ export class SessionStore {
         device_id TEXT PRIMARY KEY, shells TEXT NOT NULL, preferred TEXT
       );
     `);
+    this.database.prepare("INSERT OR IGNORE INTO history_meta VALUES ('id', ?)").run(randomUUID());
     try {
       this.importJson();
       this.restoreUpdatedAt();
@@ -345,6 +347,7 @@ export class SessionStore {
         close();
       }
       this.database.prepare("INSERT INTO migrations VALUES ('merged-fragments')").run();
+      this.renameHistory();
       this.database.exec('COMMIT');
     } catch (error) {
       this.database.exec('ROLLBACK');
@@ -413,6 +416,25 @@ export class SessionStore {
       .prepare('SELECT data FROM events WHERE session_id = ? AND run_id = ? ORDER BY sequence')
       .all(sessionId, runId)
       .map((row) => JSON.parse(String(row.data)) as SessionEvent);
+  }
+  // Clients keep the history they have read under this name. Whatever rewrites stored events gives it a new one,
+  // in the same transaction, so that what they kept is not taken for the history as it is now.
+  get historyId() {
+    return String(
+      this.database.prepare("SELECT value FROM history_meta WHERE key = 'id'").get()!.value,
+    );
+  }
+  private renameHistory() {
+    this.database.prepare("UPDATE history_meta SET value = ? WHERE key = 'id'").run(randomUUID());
+  }
+  // Whether the session still has the event a client holds as its last, recorded when it says.
+  holds(sessionId: string, sequence: number, createdAt: string) {
+    const row = this.database
+      .prepare(
+        "SELECT json_extract(data, '$.createdAt') AS at FROM events WHERE session_id = ? AND sequence = ?",
+      )
+      .get(sessionId, sequence);
+    return !!row && String(row.at) === createdAt;
   }
   private lastSequence(sessionId: string) {
     return Number(
@@ -735,6 +757,8 @@ export class SessionStore {
     requestId: string,
     afterSequence = 0,
     beforeSequence?: number,
+    // An earlier page stops here: the client holds what is at or before it.
+    lower = 0,
   ): HistoryPage {
     const { session } = this.get(sessionId);
     const last = this.lastSequence(sessionId);
@@ -778,10 +802,10 @@ export class SessionStore {
       .prepare(
         `
       SELECT sequence, run_id, octet_length(data) AS bytes
-      FROM events WHERE session_id = ? AND sequence < ? ORDER BY sequence DESC LIMIT ?
+      FROM events WHERE session_id = ? AND sequence > ? AND sequence < ? ORDER BY sequence DESC LIMIT ?
     `,
       )
-      .iterate(sessionId, beforeSequence ?? last + 1, pageEvents + 1)) {
+      .iterate(sessionId, lower, beforeSequence ?? last + 1, pageEvents + 1)) {
       rows.push(row as (typeof rows)[number]);
       if (count >= pageEvents || (count && bytes + Number(row.bytes) > pageBytes)) break;
       count++;
@@ -807,8 +831,10 @@ export class SessionStore {
       hasEarlier:
         !!first &&
         !!this.database
-          .prepare('SELECT 1 FROM events WHERE session_id = ? AND sequence < ? LIMIT 1')
-          .get(sessionId, first),
+          .prepare(
+            'SELECT 1 FROM events WHERE session_id = ? AND sequence > ? AND sequence < ? LIMIT 1',
+          )
+          .get(sessionId, lower, first),
     };
   }
 

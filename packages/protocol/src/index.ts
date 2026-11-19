@@ -4,7 +4,7 @@ import { webCertificateStateSchema } from './web-certificate.ts';
 export * from './web.ts';
 export * from './web-certificate.ts';
 
-export const PROTOCOL_VERSION = 26;
+export const PROTOCOL_VERSION = 27;
 // The release each protocol version began with, from 0.2.4 on: a client newer than its service signs in with
 // the service's number to have it upgrade (see the README). A new number adds its line here.
 export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
@@ -28,6 +28,7 @@ export const PROTOCOL_HISTORY: Readonly<Record<string, number>> = {
   '0.4.49': 24,
   '0.4.53': 25,
   '0.4.55': 26,
+  '0.4.58': 27,
 };
 export const MAX_FRAME_BYTES = 256 * 1024;
 // The longest global instructions edited here, in characters; it keeps a frame of them within MAX_FRAME_BYTES.
@@ -134,6 +135,9 @@ export const nativeSettingsSchema = z.object({
   // anything else as unset.
   attribution: z.literal(false).nullable(),
   includeGitInstructions: toggle,
+  // The Artifact tool, which publishes pages to claude.ai. The CLI turns it on by default once it is available to
+  // the account; off in the user's settings keeps it off.
+  enableArtifact: toggle,
   // Not a key of its own in the file: ENABLE_TOOL_SEARCH under `env`. Tools are then described to the model
   // only when it looks for them, instead of all of them with every request.
   toolSearch: toggle,
@@ -665,6 +669,8 @@ export const historyPageSchema = snapshotSchema.extend({
   firstSequence: z.number().int().nonnegative(),
   lastSequence: z.number().int().nonnegative(),
   hasEarlier: z.boolean(),
+  // The service's history no longer goes on from the events the client said it held: they are to be dropped.
+  reset: z.literal(true).optional(),
 });
 export type HistoryPage = z.infer<typeof historyPageSchema>;
 
@@ -973,6 +979,8 @@ export const commandSchema = z.discriminatedUnion('type', [
       sessionId: id,
       afterSequence: z.number().int().nonnegative().default(0),
       chunked: z.boolean().optional(),
+      // When the event at `afterSequence` was recorded, as the client holds it: one that is no longer there resets.
+      afterCreatedAt: timestamp.optional(),
     })
     .strict(),
   z
@@ -982,6 +990,8 @@ export const commandSchema = z.discriminatedUnion('type', [
       sessionId: id,
       beforeSequence: z.number().int().positive(),
       chunked: z.boolean().optional(),
+      // Events at or before this one are held already: the page stops there.
+      afterSequence: z.number().int().nonnegative().default(0),
     })
     .strict(),
   z
@@ -1149,6 +1159,7 @@ const readyMessageSchema = z.object({
   client: installerSchema.optional(),
   sessions: z.array(sessionSchema),
   features: z.array(z.string()).optional(),
+  historyId: id.optional(),
   browser: z.object({ sessionId: id, serverDeviceId: id, selfSigned: z.boolean() }).optional(),
 });
 export const serverMessageSchema = z.discriminatedUnion('type', [
@@ -1311,6 +1322,7 @@ export const clientServerMessageSchema = z.union([
     type: z.literal('settings.state'),
     requestId: id,
     values: nativeSettingsSchema.extend({
+      enableArtifact: toggle.default(null),
       denyInsteadOfPrompting: toggle.default(null),
       blockWritesOutsideWorkingDirectories: toggle.default(null),
     }),
@@ -1327,6 +1339,7 @@ export const clientServerMessageSchema = z.union([
       z.literal(23),
       z.literal(24),
       z.literal(25),
+      z.literal(26),
     ]),
   }),
 ]);
@@ -1374,6 +1387,7 @@ export function fallbackServerProtocol(message: ClientServerMessage, attempted: 
   if (attempted > 23 && attempted <= PROTOCOL_VERSION && message.service === '0.4.48') return 23;
   if (attempted > 24 && /^0\.4\.(?:49|5[0-2])$/.test(message.service ?? '')) return 24;
   if (attempted > 25 && /^0\.4\.5[3-4]$/.test(message.service ?? '')) return 25;
+  if (attempted > 26 && /^(?:0\.4\.5[5-7]|0\.3\.15)$/.test(message.service ?? '')) return 26;
   return null;
 }
 

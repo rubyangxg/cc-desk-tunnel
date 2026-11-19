@@ -135,10 +135,11 @@ export default function SettingsPanel({ client }: { client: ProxyClient }) {
               {group.fields
                 .filter(
                   (field) =>
-                    (client.state.serviceProtocol ?? 0) >= 25 ||
-                    !['denyInsteadOfPrompting', 'blockWritesOutsideWorkingDirectories'].includes(
-                      field.key,
-                    ),
+                    ((client.state.serviceProtocol ?? 0) >= 27 || field.key !== 'enableArtifact') &&
+                    ((client.state.serviceProtocol ?? 0) >= 25 ||
+                      !['denyInsteadOfPrompting', 'blockWritesOutsideWorkingDirectories'].includes(
+                        field.key,
+                      )),
                 )
                 .map((field) => (
                   <label key={field.key}>

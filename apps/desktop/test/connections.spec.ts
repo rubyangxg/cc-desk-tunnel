@@ -44,7 +44,7 @@ test('Electron: a second connection is a window of its own and shares what is th
     await expect(page.getByRole('heading', { name: '连接代理服务', exact: true })).toBeVisible();
     await login(page);
     // One connection has no name to show.
-    await expect(page.locator('.brand-connection')).toHaveCount(0);
+    await expect(page.locator('.connection-name')).toHaveCount(0);
     expect(await title(first)).toBe('CC Desk Tunnel');
     await settings(page, '连接');
     await page.getByRole('textbox', { name: '新连接的名称', exact: true }).fill('工作');
@@ -73,13 +73,13 @@ test('Electron: a second connection is a window of its own and shares what is th
     second = await _electron.launch({ args: [...args, `--connection=${id}`], env });
     const other = await second.firstWindow();
     await expect(other.getByRole('heading', { name: '连接代理服务', exact: true })).toBeVisible();
-    await expect(other.locator('.brand-connection')).toHaveText('工作');
+    await expect(other.locator('.connection-name')).toHaveText('工作');
     expect(await title(second)).toBe('CC Desk Tunnel · 工作');
     expect(await second.evaluate(({ app }) => app.getPath('userData'))).toBe(own);
     const device = (target: Page) => target.evaluate(() => window.desktop!.device());
     expect(await device(other)).toEqual(await device(page));
     await login(other);
-    await expect(other.locator('.brand-connection')).toHaveText('工作');
+    await expect(other.locator('.connection-name')).toHaveText('工作');
 
     // What runs here is told with its folder. Another connection's session in that folder, or above it, is
     // warned of over the conversation.
