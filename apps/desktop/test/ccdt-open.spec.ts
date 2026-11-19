@@ -144,7 +144,7 @@ test('a session opens in ccdt signed in as the window is, or the window says how
       .filter(Boolean)
       .map((line) => JSON.parse(line));
     expect(login).toEqual({
-      args: ['login', url, '--token-stdin'],
+      args: ['login', url, '--token-stdin', '--no-verify'],
       cwd: expect.any(String),
       input: token,
     });
