@@ -83,7 +83,7 @@ jobs:
       # Source Electron checks run before packaging, with its pristine development runtime.
       - run: npm run build
       - run: node --test apps/desktop/test-main/ccdt.test.mjs
-      - run: npx playwright test ccdt-open.spec.ts
+      - run: npx playwright test ccdt-open.spec.ts connections.spec.ts
       - uses: actions/upload-artifact@v7
         if: failure()
         with:

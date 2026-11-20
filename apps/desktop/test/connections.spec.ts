@@ -73,7 +73,7 @@ test('Electron: a second connection is a window of its own and shares what is th
     second = await _electron.launch({ args: [...args, `--connection=${id}`], env });
     const other = await second.firstWindow();
     await expect(other.getByRole('heading', { name: '连接代理服务', exact: true })).toBeVisible();
-    await expect(other.locator('.connection-name')).toHaveText('工作');
+    await expect(other.locator('.brand-connection')).toHaveText('工作');
     expect(await title(second)).toBe('CC Desk Tunnel · 工作');
     expect(await second.evaluate(({ app }) => app.getPath('userData'))).toBe(own);
     const device = (target: Page) => target.evaluate(() => window.desktop!.device());

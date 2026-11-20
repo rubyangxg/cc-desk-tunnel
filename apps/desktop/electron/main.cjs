@@ -59,6 +59,9 @@ if (connectionId) {
 // connection has no window, there is nothing to do.
 const leaving = process.argv.includes('--quit-connection');
 const ownsInstance = app.requestSingleInstanceLock({ leaving }) && !leaving;
+// Duplicate starts and quit helpers draw no window. Avoid opening the running instance's
+// Chromium shader cache even during their short startup; normal profiles remain isolated.
+if (!ownsInstance) app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
 if (!ownsInstance) app.quit();
 function showWindow() {
   const window = BrowserWindow.getAllWindows()[0];
