@@ -127,7 +127,18 @@ test('Electron: a second connection is a window of its own and shares what is th
       .poll(() => JSON.parse(readFileSync(resolve(profile, 'settings.json'), 'utf8')).closeToTray)
       .toBe(false);
     // The connection's own settings hold its sign-in and nothing of the computer's.
-    expect(JSON.parse(readFileSync(resolve(own, 'settings.json'), 'utf8'))).toEqual({});
+    const { connectionProfiles, ...computerFields } = JSON.parse(
+      readFileSync(resolve(own, 'settings.json'), 'utf8'),
+    );
+    expect(computerFields).toEqual({});
+    expect(connectionProfiles.activeId).toBe('default');
+    expect(connectionProfiles.profiles).toHaveLength(1);
+    expect(connectionProfiles.profiles[0]).toMatchObject({
+      id: 'default',
+      mode: 'local',
+      autoLogin: false,
+    });
+    expect(connectionProfiles.profiles[0]).not.toHaveProperty('token');
     await section(other, '连接');
     await other.getByRole('button', { name: '改名 主连接', exact: true }).click();
     await other.getByRole('textbox', { name: '连接的名称', exact: true }).fill('个人');
