@@ -323,11 +323,11 @@ test('a turn report names the message it answered, or none for a turn a backgrou
   assert.equal(eventSchema.safeParse(event({ ...stats, partial: undefined })).success, false);
 });
 
-test('personal releases retain protocol 22/23/24 and current releases require 27', () => {
+test('personal releases retain protocol 22/23/24 and current releases require 28', () => {
   assert.equal(PROTOCOL_HISTORY['0.4.48'], 23);
   assert.equal(PROTOCOL_HISTORY['0.4.49'], 24);
   assert.equal(PROTOCOL_HISTORY['0.4.53'], 25);
-  assert.equal(PROTOCOL_VERSION, 27);
+  assert.equal(PROTOCOL_VERSION, 28);
   assert.equal(PROTOCOL_HISTORY['0.4.55'], 26);
   for (const service of ['0.4.53', '0.4.54'])
     assert.equal(
@@ -425,4 +425,50 @@ test('protocol 27 keeps the personal 26 upgrade handshake and adds safe history 
     sessions: [],
   };
   assert.equal(clientServerMessageSchema.safeParse(ready).success, true);
+});
+
+test("an answer to Claude's plan carries a mode it may be carried out in, the plan changed or feedback", () => {
+  const reply = {
+    type: 'approval.reply',
+    requestId: randomUUID(),
+    sessionId: randomUUID(),
+    runId: randomUUID(),
+    approvalId: randomUUID(),
+    allowed: true,
+  };
+  const parsed = commandSchema.parse({
+    ...reply,
+    plan: { mode: 'acceptEdits', edited: '# 计划\n\n1. 改\n' },
+  });
+  assert.ok(parsed.type === 'approval.reply' && parsed.plan?.mode === 'acceptEdits');
+  assert.ok(
+    commandSchema.safeParse({ ...reply, allowed: false, plan: { feedback: '再想想' } }).success,
+  );
+  // The mode that asks about nothing needs a run started in it; plan mode is what is being left.
+  for (const mode of ['bypassPermissions', 'plan'])
+    assert.equal(commandSchema.safeParse({ ...reply, plan: { mode } }).success, false, mode);
+  assert.equal(commandSchema.safeParse({ ...reply, plan: { edited: '  ' } }).success, false);
+  // What the CLI says of its mode is one of the modes the session may be in.
+  assert.ok(
+    eventSchema.safeParse({
+      sessionId: randomUUID(),
+      runId: randomUUID(),
+      sequence: 1,
+      createdAt: new Date().toISOString(),
+      payload: { type: 'native.mode', permissionMode: 'plan' },
+    }).success,
+  );
+});
+
+test('protocol 28 retains the personal 27 upgrade handshake', () => {
+  for (const service of ['0.4.58', '0.4.59', '0.3.16']) {
+    assert.equal(
+      fallbackServerProtocol(
+        { type: 'connection.error', code: 'version_mismatch', service, message: 'upgrade' },
+        28,
+      ),
+      27,
+    );
+  }
+  assert.equal(PROTOCOL_HISTORY['0.4.60'], 28);
 });

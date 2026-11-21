@@ -88,6 +88,9 @@ export class NativeLogin {
   private timer: ReturnType<typeof setTimeout>;
   private errorTimer?: ReturnType<typeof setTimeout>;
   private tokenTimer?: ReturnType<typeof setTimeout>;
+  private enterTimer?: ReturnType<typeof setTimeout>;
+  private answerTimer?: ReturnType<typeof setTimeout>;
+  private answerMs: number;
   private submitted?: { code: string; reply: string; timer?: ReturnType<typeof setTimeout> };
   cancelled = false;
   // `reply` carries what the command prints after a code and keeps waiting, such as its invalid-code message.
@@ -101,6 +104,7 @@ export class NativeLogin {
           spawn?: TerminalSpawner;
           timeoutMs?: number;
           tokenGraceMs?: number;
+          answerMs?: number;
           environment?: NodeJS.ProcessEnv;
         }
       | TerminalSpawner = {},
@@ -112,6 +116,7 @@ export class NativeLogin {
         ? { spawn: options, timeoutMs, environment }
         : { timeoutMs, environment, ...options };
     this.method = options.method ?? 'browser';
+    this.answerMs = options.answerMs ?? 90_000;
     // setup-token uses Ink screen redraws, so stripping ANSI codes would lose cursor-inserted spaces and edits.
     const screen =
       this.method === 'setup-token'
@@ -202,6 +207,8 @@ export class NativeLogin {
       clearTimeout(this.timer);
       clearTimeout(this.errorTimer);
       clearTimeout(this.tokenTimer);
+      clearTimeout(this.enterTimer);
+      clearTimeout(this.answerTimer);
       clearTimeout(this.submitted?.timer);
       const token = setupToken;
       // The command shows a token only once it has been created, however it ends afterwards.
@@ -233,8 +240,40 @@ export class NativeLogin {
   }
   submit(code: string) {
     clearTimeout(this.submitted?.timer);
+    clearTimeout(this.enterTimer);
     this.submitted = { code, reply: '' };
-    this.process.write(`${code}\r`);
+    // `auth login` reads a line, and takes the code with its Enter. setup-token's text input on a Linux terminal
+    // takes the two written together as pasted text, and the code is never submitted: there Enter goes as a key
+    // of its own, as a person presses it after pasting and as the CLI writes its own replies.
+    if (this.method !== 'setup-token') {
+      this.process.write(`${code}\r`);
+      return;
+    }
+    this.process.write(code);
+    this.enterTimer = setTimeout(() => {
+      try {
+        this.process.write('\r');
+      } catch {}
+    }, 100);
+
+    // setup-token answers a code with its token or an error; one that shows neither is ended and what it last
+    // showed told, rather than leaving the window waiting.
+    clearTimeout(this.answerTimer);
+    this.answerTimer = setTimeout(() => {
+      const shown = this.output
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line && !/[█░▓▄]/.test(line))
+        .slice(-4)
+        .join(' ')
+        .replace(/https:\/\/\S+/g, '[链接]')
+        .replaceAll(code, '[授权码已省略]')
+        .replace(/sk-ant-oat01-[A-Za-z0-9_-]+/g, '[令牌已省略]');
+      this.error = `${Math.round(this.answerMs / 1000)} 秒未拿到令牌，请重新生成链接。${shown ? `（官方命令：${shown.slice(0, 300)}）` : ''}`;
+      try {
+        this.process.kill();
+      } catch {}
+    }, this.answerMs);
   }
   cancel() {
     this.cancelled = true;

@@ -28,23 +28,29 @@ async function fixture(t, protocolVersion, { deny = false, refuseAgain = false }
                 ? {}
                 : {
                     service:
-                      protocolVersion === 24
-                        ? '0.4.52'
-                        : protocolVersion === 23
-                          ? '0.4.48'
-                          : protocolVersion === 22
-                            ? '0.4.47'
-                            : protocolVersion === 21
-                              ? '0.4.34'
-                              : protocolVersion === 20
-                                ? '0.4.29'
-                                : protocolVersion === 19
-                                  ? '0.4.20'
-                                  : protocolVersion === 18
-                                    ? '0.4.10'
-                                    : protocolVersion === 17
-                                      ? '0.4.9'
-                                      : '0.3.1',
+                      protocolVersion === 27
+                        ? '0.4.59'
+                        : protocolVersion === 26
+                          ? '0.4.57'
+                          : protocolVersion === 25
+                            ? '0.4.54'
+                            : protocolVersion === 24
+                              ? '0.4.52'
+                              : protocolVersion === 23
+                                ? '0.4.48'
+                                : protocolVersion === 22
+                                  ? '0.4.47'
+                                  : protocolVersion === 21
+                                    ? '0.4.34'
+                                    : protocolVersion === 20
+                                      ? '0.4.29'
+                                      : protocolVersion === 19
+                                        ? '0.4.20'
+                                        : protocolVersion === 18
+                                          ? '0.4.10'
+                                          : protocolVersion === 17
+                                            ? '0.4.9'
+                                            : '0.3.1',
                   }),
             }),
           );
@@ -101,7 +107,7 @@ async function fixture(t, protocolVersion, { deny = false, refuseAgain = false }
   return { client, seen, sockets, waitFor, bridges: () => bridges };
 }
 
-for (const version of [16, 17, 18, 19, 20, 21, 22, 23, 24]) {
+for (const version of [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]) {
   test(`connects to protocol ${version}, creates a fresh bridge if needed and sends each command once`, async (t) => {
     const f = await fixture(t, version);
     await f.waitFor('connected');
@@ -116,6 +122,15 @@ for (const version of [16, 17, 18, 19, 20, 21, 22, 23, 24]) {
     assert.equal(f.seen.filter((m) => m.type === 'service.update.check').length, 1);
     await f.client.request({ type: 'session.create', title: 'test', projectPath: 'D:\\project' });
     assert.equal(f.seen.filter((m) => m.type === 'session.create').length, 1);
+    await f.client.request({
+      type: 'approval.reply',
+      sessionId: randomUUID(),
+      runId: randomUUID(),
+      approvalId: randomUUID(),
+      allowed: true,
+      plan: { mode: 'default' },
+    });
+    assert.equal('plan' in f.seen.find((m) => m.type === 'approval.reply'), false);
     // A protocol error after readiness is not an invitation to restart/replay work.
     f.sockets.at(-1).send(
       JSON.stringify({

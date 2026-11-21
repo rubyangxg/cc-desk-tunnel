@@ -8,7 +8,7 @@ RUN if [ -n "$APT_MIRROR" ]; then \
       sed -i -E "s#^URIs: .*#URIs: ${APT_MIRROR}#" /etc/apt/sources.list.d/ubuntu.sources; \
     fi \
     && apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl wget openssl openssh-client git rsync \
+    ca-certificates curl wget openssl openssh-client openssh-sftp-server git rsync \
     bash tini tar xz-utils unzip zip jq ripgrep file less vim-tiny \
     python3 python3-pip python3-venv build-essential pkg-config \
     procps lsof iproute2 dnsutils netcat-openbsd sqlite3 \

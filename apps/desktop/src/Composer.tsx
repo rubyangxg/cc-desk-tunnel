@@ -35,7 +35,7 @@ import { CopyButton } from './copy.tsx';
 import type { MenuPosition } from './ui.tsx';
 
 export type SendMode = 'direct' | 'queue';
-export type Scenario = 'chat' | 'tool' | 'question' | 'error';
+export type Scenario = 'chat' | 'tool' | 'question' | 'plan' | 'error';
 // A draft that is only a slash and an optional command name opens the command menu.
 const slashDraft = /^[/\\][^ \n]*$/;
 
@@ -456,6 +456,8 @@ export default function Composer({
               return;
             }
             if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+              // A touch keyboard has no Shift+Enter: there Enter starts a new line and the send button sends.
+              if (!menuShown && matchMedia('(pointer: coarse)').matches) return;
               event.preventDefault();
               const mode = queueEnabled && !event.ctrlKey && !event.metaKey ? 'queue' : 'direct';
               if (!menuShown) {
@@ -487,6 +489,7 @@ export default function Composer({
                 <option value="chat">对话</option>
                 <option value="tool">工具审批</option>
                 <option value="question">提问</option>
+                <option value="plan">计划</option>
                 <option value="error">上游错误</option>
               </select>
             </label>

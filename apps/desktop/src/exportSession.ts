@@ -2,7 +2,7 @@ import type { Session, SessionEvent } from '@cc-desk-tunnel/protocol';
 import type { ProxyClient } from './client.ts';
 import type { ConnectionProfile } from './connections.ts';
 import { historyKey, joinedHistory, sharedHistory } from './sharedHistory.ts';
-import { conversation } from './transcript.ts';
+import { conversation, planOf } from './transcript.ts';
 import type { Step } from './transcript.ts';
 import { pictureNote, toolPictures } from './pictures.ts';
 
@@ -35,6 +35,14 @@ export function markdown(session: Session, events: SessionEvent[]) {
       return [
         `> ${item.endedAt ? '上下文已压缩' : '上下文压缩未完成'}${item.previousTokens == null ? '' : ` · 压缩前 ${item.previousTokens.toLocaleString()} tokens`}`,
       ];
+    if (item.kind === 'tool') {
+      const found = planOf(item.input);
+      return found
+        ? [`### 计划 · ${item.status}\n\n${found.plan}`]
+        : [
+            `<details>\n<summary>工具 ${item.name} · ${item.status}</summary>\n\n${fenced(item.input)}\n</details>`,
+          ];
+    }
     if (item.kind !== 'work') return [];
     return item.items.map((work) =>
       work.kind === 'tool'

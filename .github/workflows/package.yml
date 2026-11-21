@@ -52,7 +52,7 @@ jobs:
       tag: ${{ inputs.release }}
   windows:
     runs-on: windows-2022
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -135,7 +135,7 @@ jobs:
   linux:
     if: inputs.target == 'all'
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -309,7 +309,7 @@ jobs:
        (inputs.target != 'all' && needs.linux.result == 'skipped'))
     needs: [windows, linux, server, server-prebuilt, android, images]
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

@@ -1,0 +1,31 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { FilePool } from '../electron/file-pool.cjs';
+
+test('file channels stay on their profile across reconnects and reject stale opens', async () => {
+  const bridges = new Map();
+  const closed = [];
+  const bridge = (id) => ({ openFiles: () => id });
+  bridges.set('a', bridge('server A'));
+  bridges.set('b', bridge('server B'));
+  const pool = new FilePool(bridges);
+  const create = ({ open }) => ({ open, close: () => closed.push(open) });
+  const a = pool.get('a', create);
+  const b = pool.get('b', create);
+  assert.equal(a.open(), 'server A');
+  assert.equal(b.open(), 'server B');
+  bridges.set('a', bridge('server A reconnected'));
+  assert.throws(() => a.open(), /还没有连上/);
+  const replacement = pool.get('a', create);
+  assert.equal(replacement.open(), 'server A reconnected');
+  assert.deepEqual(closed, [a.open]);
+  assert.equal(pool.get('b', create), b);
+  assert.equal(b.open(), 'server B');
+  pool.close('a');
+  assert.equal(b.open(), 'server B');
+  bridges.delete('b');
+  assert.throws(() => b.open(), /还没有连上/);
+  assert.throws(() => pool.get('missing', create).open(), /还没有连上/);
+  pool.closeAll();
+  assert.equal(pool.entries.size, 0);
+});

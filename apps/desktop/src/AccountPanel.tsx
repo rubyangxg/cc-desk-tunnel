@@ -10,6 +10,7 @@ import {
   Check,
   ListOrdered,
   KeyRound,
+  LoaderCircle,
 } from 'lucide-react';
 import type {
   AccountState,
@@ -63,6 +64,9 @@ export default function AccountPanel({
   const [working, setWorking] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [code, setCode] = useState('');
+  // A code handed to the official command, until it answers: a new link, an end, or something to say.
+  const [codeSent, setCodeSent] = useState(false);
+  useEffect(() => setCodeSent(false), [state?.login?.url, state?.notice]);
   const [token, setToken] = useState('');
   const [tokenOpen, setTokenOpen] = useState(false);
   const [confirmLogout, setConfirmLogout] = useState(false);
@@ -287,7 +291,10 @@ export default function AccountPanel({
               aria-label="登录 Claude 账号"
               onSubmit={(event) => {
                 event.preventDefault();
-                void act({ type: 'account.code', code: code.trim() }).then(() => setCode(''));
+                void act({ type: 'account.code', code: code.trim() }).then((sent) => {
+                  setCode('');
+                  setCodeSent(sent);
+                });
               }}
             >
               {state.login.method === 'setup-token' && (
@@ -350,9 +357,9 @@ export default function AccountPanel({
                 >
                   取消
                 </button>
-                <button className="button primary" disabled={working || !code.trim()}>
-                  <Check />
-                  完成登录
+                <button className="button primary" disabled={working || codeSent || !code.trim()}>
+                  {codeSent ? <LoaderCircle className="spinning" /> : <Check />}
+                  {codeSent ? '确认中…' : '完成登录'}
                 </button>
               </div>
             </form>

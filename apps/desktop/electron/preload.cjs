@@ -1,4 +1,28 @@
 const { contextBridge, ipcRenderer, webFrame, webUtils } = require('electron');
+
+const filesFor = (profileId = 'default') => ({
+  list: (target, directory) => ipcRenderer.invoke('panel:list', target, directory, profileId),
+  home: (target) => ipcRenderer.invoke('panel:home', target, profileId),
+  chooseFolder: () => ipcRenderer.invoke('panel:choose-folder'),
+  stat: (target, file) => ipcRenderer.invoke('panel:stat', target, file, profileId),
+  read: (target, file, limit) => ipcRenderer.invoke('panel:read', target, file, limit, profileId),
+  mkdir: (target, directory) => ipcRenderer.invoke('panel:mkdir', target, directory, profileId),
+  rename: (target, from, to) => ipcRenderer.invoke('panel:rename', target, from, to, profileId),
+  remove: (target, files) => ipcRenderer.invoke('panel:remove', target, files, profileId),
+  exists: (target, directory, names) =>
+    ipcRenderer.invoke('panel:exists', target, directory, names, profileId),
+  transfer: (id, request) => ipcRenderer.invoke('panel:transfer', id, request, profileId),
+  cancel: (id) => ipcRenderer.invoke('panel:cancel', id, profileId),
+  changes: (directory) => ipcRenderer.invoke('panel:changes', directory),
+  drag: (file) => ipcRenderer.send('panel:drag', file),
+  onProgress: (callback) => {
+    const listener = (_event, id, report, source = 'default') => {
+      if (source === profileId) callback(id, report);
+    };
+    ipcRenderer.on('panel:progress', listener);
+    return () => ipcRenderer.removeListener('panel:progress', listener);
+  },
+});
 contextBridge.exposeInMainWorld('desktop', {
   dev: process.argv.includes('--cc-desk-tunnel-dev'),
   platform: process.platform,
@@ -30,6 +54,8 @@ contextBridge.exposeInMainWorld('desktop', {
   openLogs: () => ipcRenderer.invoke('log:open'),
   openDevTools: () => ipcRenderer.invoke('devtools:open'),
   gitBranch: (directory) => ipcRenderer.invoke('git:branch', directory),
+  files: filesFor(),
+  filesFor,
   copyText: (text) => ipcRenderer.invoke('clipboard:write', text),
   openExternal: (url) => ipcRenderer.invoke('external:open', url),
   openWeb: (url) => ipcRenderer.invoke('web:open', url),

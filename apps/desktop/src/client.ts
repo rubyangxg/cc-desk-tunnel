@@ -152,6 +152,8 @@ export type ClientState = {
   // The computer this client signed in as; a session's commands run on the one it is on.
   device: Device | null;
   browser: Extract<ServerMessage, { type: 'ready' }>['browser'] | null;
+  // The service's files as the file panel reaches them, where it offers them (see FilePanel.tsx).
+  files: NonNullable<Extract<ServerMessage, { type: 'ready' }>['files']> | null;
   // The user's computers connected to the service now, and whether commands reach each yet. Another
   // computer's sessions can be worked on from here while it is listed and ready.
   devices: ConnectedDevice[];
@@ -204,6 +206,7 @@ export class ProxyClient {
     connectionId: null,
     device: null,
     browser: null,
+    files: null,
     devices: [],
     sessions: [],
     events: {},
@@ -359,6 +362,7 @@ export class ProxyClient {
       status: 'connecting',
       device,
       browser: null,
+      files: null,
       devices: [],
       error: null,
       release: null,
@@ -413,6 +417,7 @@ export class ProxyClient {
       status: 'connecting',
       device: null,
       browser: null,
+      files: null,
       devices: [],
       error: null,
       sessions: [],
@@ -670,6 +675,7 @@ export class ProxyClient {
           retry: null,
           connectionId: message.connectionId,
           browser: message.browser ?? null,
+          files: message.files ?? null,
           sessions: message.sessions,
           selectedId,
           error: null,
@@ -1362,6 +1368,8 @@ export class ProxyClient {
         progress,
       });
       const wire = { ...command };
+      if ((this.state.serviceProtocol ?? 0) < 28 && wire.type === 'approval.reply')
+        delete wire.plan;
       if ((this.state.serviceProtocol ?? 0) < 27) {
         if (wire.type === 'session.history') delete wire.afterSequence;
         if (wire.type === 'session.subscribe') delete wire.afterCreatedAt;
