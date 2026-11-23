@@ -76,3 +76,23 @@ test('a damaged list and a shared value that is not there are passed over', (con
     { id: 'abcd1234', name: '好' },
   ]);
 });
+
+test('legacy projects acknowledge each service and generation independently without deleting the backup', (t) => {
+  const base = profile(t);
+  connections.writeShared(base, 'projects', ['D:\\work', 12]);
+  connections.writeShared(base, 'prefs', { projectNames: { 'd:\\work': '工作', x: 7 } });
+  const expected = { projects: ['D:\\work'], names: { 'd:\\work': '工作' } };
+  connections.snapshotLegacyProjects(base);
+  connections.writeShared(base, 'prefs', { theme: 'dark' });
+  assert.deepEqual(connections.legacyProjects(base, 'A/history1'), expected);
+  // An interrupted import has not acknowledged completion, so a retry retains the full list.
+  assert.deepEqual(connections.legacyProjects(base, 'A/history1'), expected);
+  connections.projectsMoved(base, 'A/history1');
+  assert.equal(connections.legacyProjects(base, 'A/history1'), null);
+  assert.deepEqual(connections.legacyProjects(base, 'B/history1'), expected);
+  assert.deepEqual(connections.legacyProjects(base, 'A/history2'), expected);
+  assert.deepEqual(connections.readShared(base, 'projects'), ['D:\\work', 12]);
+  connections.projectsMoved(base, 'B/history1');
+  assert.equal(connections.legacyProjects(base, 'B/history1'), null);
+  assert.deepEqual(connections.legacyProjects(base, 'A/history2'), expected);
+});

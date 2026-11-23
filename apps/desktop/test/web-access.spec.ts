@@ -97,6 +97,7 @@ async function browserFixture(
             connectionId: randomUUID(),
             adapter: 'claude-code',
             features: withQuota ? ['quota-watch'] : [],
+            projects: [],
             sessions,
             browser: { sessionId, serverDeviceId, selfSigned: true },
           }),

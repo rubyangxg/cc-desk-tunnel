@@ -78,6 +78,7 @@ async function open(
           version: '0.0.1',
           connectionId,
           adapter: 'claude-code',
+          projects: [],
           sessions: [session],
           features: quota.pool ? ['account-pool'] : [],
         });

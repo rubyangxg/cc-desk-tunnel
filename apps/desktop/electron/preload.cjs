@@ -29,6 +29,10 @@ contextBridge.exposeInMainWorld('desktop', {
   // Read once, before the page draws: see `boot` in main.cjs.
   boot: ipcRenderer.sendSync('boot'),
   saveShared: (key, value) => ipcRenderer.invoke('shared:save', key, value),
+  legacyProjects: (profileId, historyId) =>
+    ipcRenderer.invoke('projects:legacy', profileId, historyId),
+  legacyProjectsMoved: (profileId, historyId, key) =>
+    ipcRenderer.invoke('projects:moved', profileId, historyId, key),
   onSharedChanged: (callback) => {
     const listener = (_event, key, value) => callback(key, value);
     ipcRenderer.on('shared:changed', listener);

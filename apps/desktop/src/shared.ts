@@ -8,8 +8,8 @@ export type ListedConnection = Connection & { current: boolean; open: boolean };
 // A running session of a connection and the folder on this computer it works in.
 export type Run = { id: string; folder: string };
 export type Shared = {
-  prefs?: unknown;
   projects?: unknown;
+  prefs?: unknown;
   connections: Connection[];
   // What the other connections have running now, by their names.
   busy: { name: string; runs: Run[] }[];

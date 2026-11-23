@@ -29,6 +29,7 @@ export type QuotaSnapshot = {
 };
 export type Quotas = Record<string, QuotaSnapshot>;
 export type Handoff = {
+  plain?: boolean;
   source: string;
   session: Pick<Session, 'title' | 'projectPath' | 'permissionMode' | 'model' | 'effort' | 'goal'>;
   prompt: string;

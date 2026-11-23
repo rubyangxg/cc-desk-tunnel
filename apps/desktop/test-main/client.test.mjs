@@ -52,6 +52,7 @@ function fixture(t) {
     version: '0.0.1',
     connectionId: randomUUID(),
     adapter: 'simulation',
+    projects: [],
     sessions,
   });
   t.after(() => {
@@ -681,6 +682,7 @@ test('a remote connection that breaks is made again through a new bridge, and on
       version: '0.0.1',
       connectionId: randomUUID(),
       adapter: 'claude-code',
+      projects: [],
       sessions: [session],
     });
   const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
@@ -844,3 +846,18 @@ for (const deleted of [false, true])
       assert.equal(f.client.state.sessions.find((s) => s.id === f.session.id).title, 'new title');
     }
   });
+
+test('switching the service clears its registered projects before the next ready frame', (t) => {
+  const f = fixture(t);
+  const project = {
+    device: { id: randomUUID(), name: 'server A' },
+    path: '/server-A',
+    root: randomUUID(),
+    createdAt: new Date().toISOString(),
+  };
+  f.socket.message({ type: 'projects', projects: [project] });
+  assert.deepEqual(f.client.state.projects, [project]);
+  f.client.connect('ws://127.0.0.1:2/ws', 'test-token-with-enough-characters');
+  assert.equal(f.client.state.status, 'connecting');
+  assert.deepEqual(f.client.state.projects, []);
+});

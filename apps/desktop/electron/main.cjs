@@ -561,7 +561,9 @@ handle('service:upgrade', async (event, config) => {
 });
 handle('ccdt:open', async (_event, request) => {
   const { openSession } = await import(pathToFileURL(path.join(__dirname, 'ccdt.mjs')).href);
-  return openSession(request, { version: app.getVersion() });
+  // The ccdt this client carries, where its package has one (Windows).
+  const own = app.isPackaged ? path.join(process.resourcesPath, 'ccdt', 'ccdt.cmd') : undefined;
+  return openSession(request, { version: app.getVersion(), own });
 });
 // Each token uses the current OS account's secure storage. The old single login becomes the default profile.
 handle('profiles:load', () => loadProfiles(readSettings(), safeStorage));
@@ -773,6 +775,7 @@ function dismissOthers() {
 }
 // The page's choices that are the computer's (see prefs.ts) and the list of connections, as last read. Every
 // connection's window looks at the files every two seconds and takes what another one wrote.
+connections.snapshotLegacyProjects(base);
 const sharedKeys = ['prefs', 'projects'];
 const snapshot = (key) =>
   key === 'connections'
@@ -813,6 +816,31 @@ handle('shared:save', (_event, key, value) => {
   connections.writeShared(base, key, value);
   seen[key] = text;
   if (key === 'prefs') followTheme(value);
+});
+// The project list from before the service kept them, for this connection to hand over (see connections.cjs).
+function legacyProjectKey(profileId = 'default', historyId = '') {
+  const profile = loadProfiles(readSettings(), safeStorage)?.profiles.find(
+    (item) => item.id === profileId,
+  );
+  if (!profile) return null;
+  return JSON.stringify([
+    connectionId,
+    profile.id,
+    profile.url,
+    profile.fingerprint ?? '',
+    String(historyId).slice(0, 128),
+  ]);
+}
+handle('projects:legacy', (_event, profileId, historyId) => {
+  const key = legacyProjectKey(profileId, historyId);
+  const legacy = connections.legacyProjects(base, key);
+  return legacy ? { ...legacy, key } : null;
+});
+handle('projects:moved', (_event, profileId, historyId, expectedKey) => {
+  const key = legacyProjectKey(profileId, historyId);
+  if (expectedKey && key !== expectedKey)
+    throw new Error('服务配置已改变，项目迁移将在下次连接时重试。');
+  connections.projectsMoved(base, key);
 });
 // The window's own parts, its ground before the page draws and the system's buttons over the title bar, take
 // the colours the page chose (`theme` in prefs.ts); the system's menus and dialogs follow the same choice.

@@ -118,6 +118,7 @@ export default function FilePanel({
   noticeKey,
   project,
   request,
+  aliasOf,
 }: {
   profileId?: string;
   places: FilePlace[];
@@ -135,11 +136,18 @@ export default function FilePanel({
   project: string | null;
   // A path to show, from a link in the conversation; a new `at` asks again.
   request?: { place: string; path: string; at: number } | null;
+  // What a directory of the service's is for, where its name does not tell (see `nativeLabels`).
+  aliasOf: (name: string) => string | undefined;
 }) {
   const api = () => window.desktop!.filesFor?.(profileId) ?? window.desktop!.files;
   const [placeId, setPlaceId] = useState(() => places.find((place) => start(place))?.id ?? 'local');
   const place = places.find((entry) => entry.id === placeId) ?? places[0]!;
   const style = place.style;
+  const alias = (name: string) => (place.kind === 'server' ? aliasOf(name) : undefined);
+  const aliasMark = (name: string) => {
+    const label = alias(name);
+    return label && <small className="file-alias">{label}</small>;
+  };
   const [root, setRoot] = useState<string | null>(null);
   const [folders, setFolders] = useState<Record<string, Folder>>({});
   const [selected, setSelected] = useState<string | null>(null);
@@ -592,6 +600,7 @@ export default function FilePanel({
         )}
         {iconOf(node.data.name, directory, node.isOpen)}
         <span className="file-name">{node.data.name}</span>
+        {directory && aliasMark(node.data.name)}
         {directory && node.isOpen && folder?.error && (
           <small className="file-error">{folder.error}</small>
         )}
@@ -698,7 +707,11 @@ export default function FilePanel({
             disableEdit
             disableMultiSelection
             searchTerm={filter}
-            searchMatch={(node, term) => node.data.name.toLowerCase().includes(term.toLowerCase())}
+            searchMatch={(node, term) =>
+              `${node.data.name} ${alias(node.data.name) ?? ''}`
+                .toLowerCase()
+                .includes(term.toLowerCase())
+            }
             onToggle={(id) => {
               if (!folders[id]) void load(id);
             }}
@@ -720,7 +733,8 @@ export default function FilePanel({
     >
       <div className="file-list-caption" title={listFolder}>
         <FolderOpen />
-        {baseName(style, listFolder)}
+        <span className="file-name">{baseName(style, listFolder)}</span>
+        {aliasMark(baseName(style, listFolder))}
       </div>
       <table>
         <thead>
@@ -744,8 +758,11 @@ export default function FilePanel({
                 onContextMenu={(event) => entryMenu(event, path, directory)}
               >
                 <td>
-                  {iconOf(entry.name, directory)}
-                  <span>{entry.name}</span>
+                  <div>
+                    {iconOf(entry.name, directory)}
+                    <span>{entry.name}</span>
+                    {directory && aliasMark(entry.name)}
+                  </div>
                 </td>
                 <td>{directory ? '' : formatSize(entry.size)}</td>
                 <td>{formatTime(entry.mtime)}</td>
@@ -928,7 +945,8 @@ export default function FilePanel({
                 className={index === all.length - 1 ? 'current' : ''}
                 onClick={() => index < all.length - 1 && void go(step.path)}
               >
-                {step.label}
+                <span>{step.label}</span>
+                {aliasMark(step.label)}
               </button>
             ))}
           </span>

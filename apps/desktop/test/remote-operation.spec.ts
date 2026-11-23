@@ -48,7 +48,7 @@ test('another computer works on a session while its own is connected; both see t
   await expect(other.locator('.device-state.online')).toHaveCount(1);
   await other.locator('.session-row').filter({ hasText: title }).click();
   const bar = other.locator('.elsewhere-bar');
-  await expect(bar).toContainText('在这里发的消息');
+  await expect(bar).toContainText('作用于那台电脑');
   await send(other, '从另一台电脑发的话', 'tool');
   // The run is the first computer's: it shows there as well, and either window answers its approval.
   await expect(page.getByText('从另一台电脑发的话', { exact: true })).toBeVisible();
@@ -120,8 +120,11 @@ for (const supported of [false, true])
         if (typeof raw === 'string') {
           const message = JSON.parse(raw);
           if (message.type === 'ready' && !supported) {
+            message.protocolVersion = 28;
+            message.version = '0.4.61';
+            delete message.projects;
             message.features = (message.features ?? []).filter(
-              (feature: string) => feature !== 'device-projects',
+              (feature: string) => feature !== 'server-projects',
             );
             route.send(JSON.stringify(message));
             return;
@@ -132,14 +135,33 @@ for (const supported of [false, true])
       route.onMessage((raw) => {
         if (typeof raw === 'string') {
           const message = JSON.parse(raw);
-          if (message.type === 'device.projects') projects.push(message.projects);
+          if (!supported && message.type === 'auth') {
+            if (message.protocolVersion > 28) {
+              route.send(
+                JSON.stringify({
+                  type: 'connection.error',
+                  code: 'version_mismatch',
+                  service: '0.4.61',
+                  message: 'upgrade',
+                }),
+              );
+              return;
+            }
+            service.send(JSON.stringify({ ...message, protocolVersion: 29 }));
+            return;
+          }
+          if (message.type === 'project.add') projects.push([message.path]);
         }
         service.send(raw);
       });
     });
     await page.goto('/');
     await login(page);
-    await createSession(page, '项目兼容');
+    if (supported) await createSession(page, '项目兼容');
+    else {
+      await page.getByRole('button', { name: '添加项目', exact: true }).click();
+      await expect(page.getByRole('alert')).toContainText('请先升级服务端');
+    }
     if (supported)
       await expect
         .poll(() => projects.some((paths) => paths.includes('D:\\工作\\中文项目')))

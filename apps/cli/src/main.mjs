@@ -2,7 +2,7 @@ import { appendFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { FORCED_UPGRADE_SINCE } from '@cc-desk-tunnel/protocol';
+import { FORCED_UPGRADE_SINCE, projectOf } from '@cc-desk-tunnel/protocol';
 import { upgradeService } from '../../desktop/electron/service-upgrade.mjs';
 import { Config, hostOf, sameService, serviceKey } from './config.mjs';
 import { Service, proxyFor } from './connection.mjs';
@@ -10,10 +10,23 @@ import { readKeys } from './keys.mjs';
 import { pad, pick } from './picker.mjs';
 import { choices, entries, parse, readRemote, save, shown } from './settings.mjs';
 import { discard, protect, reveal } from './secret.mjs';
-import { bundled, releasePage, version } from './runtime.mjs';
+import { bundled, desktop, releasePage, version } from './runtime.mjs';
 import { relay } from './terminal.mjs';
 import { markOnline, onlineAt, stayOnline } from './online.mjs';
 import { FIRST_UPGRADABLE, download, install } from './upgrade.mjs';
+import { EXIT } from './agent.mjs';
+import { serveAcp } from './acp.mjs';
+import {
+  answer,
+  approve,
+  deny,
+  logs,
+  printTask,
+  status as statusOf,
+  stop,
+  tell,
+  wait,
+} from './tasks.mjs';
 import { UPDATE_TICK_MS, lookDue } from '../../desktop/src/update-check.ts';
 
 const HELP = `ccdt：在自己的终端里使用 CC Desk Tunnel 服务端上的原版 Claude Code，与图形客户端共用会话。
@@ -22,7 +35,7 @@ const HELP = `ccdt：在自己的终端里使用 CC Desk Tunnel 服务端上的�
   ccdt                   接着当前目录这个项目最近的会话；没有就新建
   ccdt -r                从当前项目的会话里选一个打开（加 --all 从全部会话里选）
   ccdt new [标题]        在当前目录新建会话
-  ccdt sessions [--all]  列出当前项目的会话；--all 列出全部
+  ccdt sessions [--all]  列出当前项目的会话；--all 列出全部；--json 输出 JSON
   ccdt online            不开终端，让这台电脑保持在线，Claude 可以在这里执行命令；
                          断线自动重连，Ctrl+C 结束。无图形界面的服务器上可放到后台运行
   ccdt usage             订阅额度与调用统计
@@ -30,8 +43,7 @@ const HELP = `ccdt：在自己的终端里使用 CC Desk Tunnel 服务端上的�
   ccdt config 名称 [值]  查看或修改一项，供脚本使用；值写 default 恢复默认
   ccdt server            已登录的服务端：选一个作为默认连接的，或登录新的
   ccdt login [wss 地址]  登录服务端；不写地址时从图形客户端保存的里选。--fingerprint 证书指纹，
-                         --token-stdin 从标准输入读凭据，--no-save 不保存，
-                         --no-verify 不连接验证、只保存（图形客户端交给 ccdt 已在用的凭据时用）
+                         --token-stdin 从标准输入读凭据，--no-save 不保存
   ccdt logout            退出一个服务端（登录了几个时先选），其他的不受影响
   ccdt open <会话 ID>    按 ID 打开（ID 可只写开头几位），供脚本使用
   ccdt upgrade [--yes]   升级服务端（升级前会问；--yes 不问），再把 ccdt 换成与服务端相同的版本；
@@ -39,13 +51,68 @@ const HELP = `ccdt：在自己的终端里使用 CC Desk Tunnel 服务端上的�
   ccdt upgrade --check   只检查有没有新版本
   ccdt --version         版本，须与服务端相同
 
+供程序和其他 agent 使用（写法同 claude -p；详见 ccdt help agents）：
+  ccdt -p "任务"         在当前目录的项目里新建会话、发出任务，这一轮结束后输出 Claude 的回复
+                         -c 接最近的会话，-r <会话> 接指定的会话，--bg 发出后立即返回
+  ccdt status <会话>     在做什么、在等什么
+  ccdt tell <会话> "…"   追加指示：运行中就加进正在进行的这一轮
+  ccdt wait <会话>       等到这一轮结束，或 Claude 等人批准、回答
+  ccdt approve|deny <会话>  批准或拒绝 Claude 等待的请求，再等到它下次停下；ccdt answer <会话> "答案" 回答提问
+  ccdt logs <会话>       最近的对话和工具调用
+  ccdt stop <会话>       停止正在进行的这一轮
+  ccdt acp               作为 ACP（Agent Client Protocol）agent 运行，供 Zed、JetBrains、acpx 等接入
+
 选项：
   -s                     先选服务端，再做后面的事，如 ccdt -s -r
   --server <名称>        直接指定服务端：图形客户端里的连接名、主机名或地址，写出能区分的一段即可
 不指定时连接上一次连接的服务端。
 
-用法和本地的 claude 一样：窗口开着它就一直运行，断网会自动接回；退出 Claude Code 或关掉窗口就结束。
-终端里聊的内容会记入这个会话，图形客户端里也能看到。`;
+用法和本地的 claude 一样：窗口开着它就一直运行，断网会自动接回；退出 Claude Code 或关掉窗口就结束。`;
+
+export const AGENT_HELP = `ccdt 供程序和其他 agent 使用：把任务交给服务端上的 Claude Code，跟进到它完成。
+会话和图形客户端里的是同一个：窗口里能看到它在做什么，也能插话、批准。
+
+派发（写法同 claude -p）：
+  ccdt -p "任务" [选项]
+    默认在当前目录的项目里新建会话；-c 接这个项目最近的会话；-r <会话> 接指定会话
+    --bg                    发出后立即返回会话 ID，不等结果
+    --output-format text|json|stream-json   默认 text：只输出 Claude 最后的回复
+    --permission-mode auto|default|plan|acceptEdits|bypassPermissions
+    --model <模型>  --effort low|medium|high|xhigh|max  --title <标题>
+    --timeout <秒>          最多等这么久；到时仍在运行就返回（退出码 6）
+  任务也可以从标准输入传入：echo "任务" | ccdt -p
+
+跟进（<会话> 写会话 ID，可只写开头几位）：
+  ccdt status <会话> [--json]     在做什么、在等什么
+  ccdt wait <会话> [--timeout 秒] [--output-format …]   等到这一轮结束或需要人处理
+  ccdt tell <会话> "补充"          追加指示；Claude 正在做时加进这一轮，用来中途纠偏
+  ccdt approve <会话> [--mode auto|acceptEdits|default]   批准请求；--mode 只用于计划
+  ccdt deny <会话> ["意见"]        拒绝；对计划，意见是让它怎么改
+  ccdt answer <会话> "答案1" ["答案2" …]   按顺序回答 Claude 的提问；多选用逗号隔开
+  ccdt logs <会话> [--last N] [--json]   最近 N 条（默认 20）对话和工具调用
+  ccdt stop <会话>                停止这一轮
+  ccdt sessions [--all] --json    列出会话
+
+ACP：会说 Agent Client Protocol 的编辑器和 agent（Zed、JetBrains、acpx 等）把 ccdt acp 配成 agent 命令即可，
+会话就在启动它的目录对应的项目里。
+
+退出码：0 完成（或 --bg 已发出）；2 在等批准或回答；3 失败；4 已停止；5 连不上或未登录；
+6 到 --timeout 时仍在运行；1 其他错误。结果在标准输出，说明和下一步该怎么做在标准错误。
+
+json 结果：{"session_id","state","result","is_error","approval"?}。state 为 completed、background（这一轮
+结束，后台任务还在运行，完成后 Claude 会自动接着做）、awaiting_approval、awaiting_answer、failed、cancelled
+或 running。approval 说明在等什么：{"kind":"tool","tool","input","reason"?}、{"kind":"plan","plan"}
+或 {"kind":"question","questions":[{"question","options","multiSelect"}]}。
+
+审批：Claude 请求批准或提问时，ccdt -p 和 ccdt wait 停下来，交给调用方用 approve、deny、answer 处理。
+这三个命令回复后像 ccdt -p 一样接着等、输出结果、退出码相同，等待期间提供这台电脑的执行通道；
+加 --bg 只回复不等（之后命令要在这台电脑上运行时，需图形客户端或 ccdt online 开着）。
+图形客户端里同时也能处理，谁先回答算谁的。要少被问，派发时带 --permission-mode。
+
+用法提示：
+- 任务长时，把 ccdt -p 放进你自己的后台任务里跑，它结束时你就会得知；或用 --bg 发出，之后 ccdt wait。
+- Claude 在哪台电脑上执行命令：会话所在的那台，新建的会话就是运行 ccdt 的这台。
+  ccdt -p 等待期间自己提供这台电脑的执行通道；用 --bg 发出后，要有图形客户端或 ccdt online 开着。`;
 
 const say = (text) => process.stderr.write(`${text}\n`);
 // `CCDT_LOG` names a file for what the connection did, for finding out why it failed.
@@ -313,6 +380,10 @@ const older = (a, b) => a.localeCompare(b, undefined, { numeric: true }) < 0;
 
 // The service first, the way the desktop client upgrades it: it fetches its newest release and restarts. Then ccdt
 // becomes the release of the service, which is what it can speak to: newer, or older where ccdt was ahead of it.
+// The ccdt the desktop client carries is updated with the client, which offers the service's release when it connects.
+const DESKTOP_UPGRADE = (next) =>
+  `这个 ccdt 随图形客户端安装，跟着它更新：打开图形客户端，按提示升级到 ${next} 即可。`;
+
 async function upgrade(config, values) {
   const server = await target(config, values);
   const token = credentials(server);
@@ -391,6 +462,10 @@ async function upgrade(config, values) {
   }
   if (!bundled) {
     say(`从源码运行的 ccdt 不自行更新：服务端是 ${next}，请换到这个版本的源码。`);
+    return 1;
+  }
+  if (desktop) {
+    say(DESKTOP_UPGRADE(next));
     return 1;
   }
   say(dim(`正在下载 ccdt ${next}……`));
@@ -592,9 +667,12 @@ async function show(config, values, service, session, fresh) {
   process.once('SIGHUP', close);
   process.once('SIGTERM', close);
   for (const stream of [process.stdin, process.stdout]) stream.on('error', close);
-  say(
-    `${dim('项目')} ${session.projectPath}  ${dim('会话')} ${session.title}${fresh ? dim('（新建）') : ''}`,
-  );
+  const project = projectOf(service.projects, session.device?.id, session.projectPath);
+  // A plain session's folder is no project, as the desktop client tells it.
+  const place = !project
+    ? `${dim('文件夹')} ${session.projectPath}`
+    : `${dim('项目')} ${project.name ? `${project.name} ${dim(session.projectPath)}` : session.projectPath}`;
+  say(`${place}  ${dim('会话')} ${session.title}${fresh ? dim('（新建）') : ''}`);
   if (newer(service.update)) say(notice(newer(service.update)));
   // A terminal of ccdt is taken over; a run from the desktop client has to finish first.
   const run = service.sessions.get(session.id)?.activeRun;
@@ -695,14 +773,119 @@ function shared(service) {
   };
 }
 
+// With -p, -r takes a session as claude -p's does, where alone it opens the list to choose from.
+export function printing(argv) {
+  if (!argv.some((arg) => arg === '-p' || arg === '--print')) return argv;
+  const args = [];
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    if ((arg === '-r' || arg === '--resume') && argv[index + 1] && !argv[index + 1].startsWith('-'))
+      args.push('--session', argv[++index]);
+    else args.push(arg);
+  }
+  return args;
+}
+
+const AGENT_COMMANDS = { status: statusOf, tell, wait, logs, stop, approve, deny, answer };
+
+// What the commands for programs need of ccdt: a quiet sign-in, and this computer's execution channel kept for a run
+// on it while they wait.
+function agentContext(config, values) {
+  const here = process.cwd();
+  // Every connection made, let go of when the command ends however it ends: one left open keeps ccdt running.
+  const made = new Set();
+  const deviceId = config.device();
+  const online = () => !!values.server && onlineAt(onlinePath(config), values.server);
+  return {
+    here,
+    version,
+    out: (text) => process.stdout.write(`${text}\n`),
+    err: say,
+    newest,
+    mine: (session) => sameDirectory(session.projectPath, here),
+    // Away from this computer the run needs nothing of this connection; here it needs a channel, ccdt online's
+    // while that carries it.
+    carried: (session) => (session.device && session.device.id !== deviceId) || online(),
+    // Without `tunnel` a channel is opened as for a terminal: unless ccdt online carries this computer's.
+    async connect(tunnel) {
+      try {
+        const service = await signIn(config, values, true, tunnel);
+        made.add(service);
+        return service;
+      } catch (error) {
+        throw Object.assign(error, { exit: error.exit ?? EXIT.connection });
+      }
+    },
+    async keep(service, session) {
+      if (session.device && session.device.id !== deviceId) return service;
+      if (service.tunnel) {
+        await service.channel();
+        return service;
+      }
+      try {
+        await service.channel(5000);
+        // Where ccdt online stops carrying it, the connection is let go, to be made again with a channel of its own.
+        shared(service);
+        return service;
+      } catch (error) {
+        if (service.ended && error.exit) throw error;
+        await service.close().catch(() => {});
+        const again = await this.connect(true);
+        await again.channel();
+        return again;
+      }
+    },
+    release: (service) => service.close().catch(() => {}),
+    async done() {
+      await Promise.all([...made].map((service) => service.close().catch(() => {})));
+    },
+  };
+}
+
+async function agentCommand(config, values, command, rest) {
+  const context = agentContext(config, values);
+  try {
+    return await commandFor(context, values, command, rest);
+  } finally {
+    await context.done();
+  }
+}
+async function commandFor(context, values, command, rest) {
+  if (values.print) {
+    let prompt = [command, ...rest].filter((word) => word !== undefined).join(' ');
+    if (!prompt.trim() && !process.stdin.isTTY) {
+      for await (const chunk of process.stdin) prompt += chunk;
+    }
+    return await printTask(context, values, prompt);
+  }
+  const [ref, ...words] = rest;
+  if (command === 'tell') return await tell(context, values, ref, words.join(' '));
+  if (command === 'deny') return await deny(context, values, ref, words.join(' '));
+  if (command === 'answer') return await answer(context, values, ref, words);
+  return await AGENT_COMMANDS[command](context, values, ref);
+}
+
 export async function main(argv) {
   let parsed;
   try {
     parsed = parseArgs({
-      args: argv,
+      args: printing(argv),
       allowPositionals: true,
       options: {
         resume: { type: 'boolean', short: 'r' },
+        print: { type: 'boolean', short: 'p' },
+        continue: { type: 'boolean', short: 'c' },
+        session: { type: 'string' },
+        bg: { type: 'boolean' },
+        'output-format': { type: 'string' },
+        'permission-mode': { type: 'string' },
+        model: { type: 'string' },
+        effort: { type: 'string' },
+        title: { type: 'string' },
+        timeout: { type: 'string' },
+        last: { type: 'string' },
+        mode: { type: 'string' },
+        json: { type: 'boolean' },
         server: { type: 'string' },
         select: { type: 'boolean', short: 's' },
         fingerprint: { type: 'string' },
@@ -726,8 +909,11 @@ export async function main(argv) {
   const config = new Config();
   let service;
   try {
-    if (values.help || command === 'help') return (say(HELP), 0);
+    if (values.help) return (say(values.print ? AGENT_HELP : HELP), 0);
     if (values.version) return (process.stdout.write(`ccdt ${version}\n`), 0);
+    // With -p every word is the task, whatever command it happens to name.
+    if (values.print) return await agentCommand(config, values, command, rest);
+    if (command === 'help') return (say(rest[0] === 'agents' ? AGENT_HELP : HELP), 0);
     if (command === 'login') return (await login(config, values, rest[0]), 0);
     if (command === 'upgrade') return await (values.check ? check : upgrade)(config, values);
     if (command === 'config') return await configure(config, values, rest);
@@ -746,18 +932,51 @@ export async function main(argv) {
       });
       process.exit(code);
     }
+    if (command === 'acp') {
+      const context = agentContext(config, values);
+      try {
+        return await serveAcp(context);
+      } finally {
+        await context.done();
+      }
+    }
+    if (AGENT_COMMANDS[command]) return await agentCommand(config, values, command, rest);
     if (command && !['new', 'open', 'sessions', 'usage'].includes(command))
       return (say(`没有这个命令：${command}\n\n${HELP}`), 2);
     // Listing sessions and usage runs no command on this computer.
     service = await signIn(
       config,
       values,
-      false,
+      !!values.json,
       ['sessions', 'usage'].includes(command) ? false : undefined,
     );
     const here = process.cwd();
     const all = [...service.sessions.values()];
     const mine = all.filter((session) => sameDirectory(session.projectPath, here));
+    if (command === 'sessions' && values.json) {
+      process.stdout.write(
+        `${JSON.stringify(
+          newest(values.all ? all : mine).map((session) => ({
+            session_id: session.id,
+            title: session.title,
+            project: session.projectPath,
+            ...(session.device ? { device: session.device.name } : {}),
+            state: !session.activeRun
+              ? 'idle'
+              : session.activeRun.surface === 'terminal'
+                ? 'terminal'
+                : session.activeRun.status === 'awaiting_approval'
+                  ? 'awaiting_approval'
+                  : session.activeRun.waiting === 'background'
+                    ? 'background'
+                    : 'running',
+            updated_at: session.updatedAt,
+          })),
+        )}\n`,
+      );
+      await service.close();
+      return 0;
+    }
     if (command === 'sessions') {
       const sessions = values.all ? all : mine;
       say(
@@ -824,6 +1043,7 @@ export async function main(argv) {
   } catch (error) {
     await service?.close().catch(() => {});
     say(error instanceof Error ? error.message : String(error));
+    if (error.exit !== undefined && error.code !== 'version_mismatch') return error.exit;
     // ccdt speaks the protocol of its own release, as the desktop client does. In a terminal it offers to become the
     // release of the service, or to upgrade the service first where ccdt is ahead of it.
     if (error.code === 'version_mismatch' && error.service) {
@@ -848,7 +1068,9 @@ export async function main(argv) {
           }
       }
       say(
-        `这个 ccdt 是 ${version}，服务端是 ${error.service}：运行 ccdt upgrade 升级，或安装与服务端相同版本的 ccdt：${releasePage(error.service)}`,
+        desktop && older(version, error.service)
+          ? DESKTOP_UPGRADE(error.service)
+          : `这个 ccdt 是 ${version}，服务端是 ${error.service}：运行 ccdt upgrade 升级，或安装与服务端相同版本的 ccdt：${releasePage(error.service)}`,
       );
     }
     return 1;

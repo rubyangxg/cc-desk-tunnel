@@ -132,7 +132,39 @@ function requested(argv, base) {
   return id && list(base).some((entry) => entry.id === id) ? id : '';
 }
 
+// Snapshot before the new renderer can save preferences without the old local project names.
+function snapshotLegacyProjects(base) {
+  const saved = readShared(base, 'personal-legacy-project-backup');
+  if (saved) return saved;
+  const legacy = readShared(base, 'legacy-projects');
+  const projects = readShared(base, 'projects') ?? legacy?.projects;
+  if (!Array.isArray(projects)) return null;
+  const names = readShared(base, 'prefs')?.projectNames ?? legacy?.names ?? {};
+  const snapshot = {
+    projects: projects.filter((item) => typeof item === 'string' && item.trim()),
+    names: Object.fromEntries(
+      Object.entries(names).filter(([, value]) => typeof value === 'string'),
+    ),
+  };
+  writeShared(base, 'personal-legacy-project-backup', snapshot);
+  return snapshot;
+}
+// Keep the legacy list as a backup; each service/profile and history generation acknowledges its own copy.
+function legacyProjects(base, key) {
+  if (!key || (readShared(base, 'legacy-project-migrations') ?? []).includes(key)) return null;
+  return snapshotLegacyProjects(base);
+}
+function projectsMoved(base, key) {
+  if (!key) return;
+  const previous = readShared(base, 'legacy-project-migrations');
+  writeShared(base, 'legacy-project-migrations', [
+    ...new Set([...(Array.isArray(previous) ? previous : []), key]),
+  ]);
+}
 module.exports = {
+  snapshotLegacyProjects,
+  legacyProjects,
+  projectsMoved,
   busy,
   create,
   directory,

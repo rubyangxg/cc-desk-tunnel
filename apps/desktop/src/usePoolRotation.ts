@@ -15,6 +15,7 @@ import type { Handoff } from './accountPool.ts';
 import { isHere } from './device.ts';
 import { transcript } from './transcript.ts';
 import type { Session } from '@cc-desk-tunnel/protocol';
+import { projectOf } from '@cc-desk-tunnel/protocol';
 import {
   attachSharedHistory,
   completeHistory,
@@ -173,6 +174,12 @@ export function usePoolRotation(options: {
       attempted,
     );
     handoff.manual = manual;
+    if ((client.state.serviceProtocol ?? 0) >= 29)
+      handoff.plain = !projectOf(
+        client.state.projects,
+        live.device?.id ?? client.state.device?.id,
+        live.projectPath,
+      );
     if (confirmedMessageIds.length) handoff.confirmedMessageIds = confirmedMessageIds;
     if (confirmedTaskIds.length) handoff.confirmedTaskIds = confirmedTaskIds;
     if (allowQueueHandoff && live.messageQueue?.items.length)
@@ -751,6 +758,9 @@ export function usePoolRotation(options: {
           type: 'session.create',
           title: handoff.session.title,
           projectPath: handoff.session.projectPath,
+          ...(handoff.plain && (client.state.serviceProtocol ?? 0) >= 29
+            ? { plain: true as const }
+            : {}),
         });
         if (!result.sessionId) throw new Error('续接会话创建失败。');
         const sessionId = result.sessionId;

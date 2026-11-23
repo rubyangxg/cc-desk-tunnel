@@ -58,6 +58,7 @@ async function open(
           version: '0.0.1',
           connectionId,
           adapter: 'claude-code',
+          projects: [],
           sessions: [session],
         });
         return;
@@ -196,6 +197,7 @@ test('idle compaction is set on the settings page and saved at once', async ({ p
           version: '0.0.1',
           connectionId: randomUUID(),
           adapter: 'claude-code',
+          projects: [],
           sessions: [],
         });
         return;

@@ -323,11 +323,11 @@ test('a turn report names the message it answered, or none for a turn a backgrou
   assert.equal(eventSchema.safeParse(event({ ...stats, partial: undefined })).success, false);
 });
 
-test('personal releases retain protocol 22/23/24 and current releases require 28', () => {
+test('personal releases retain protocol 22/23/24 and current releases require 29', () => {
   assert.equal(PROTOCOL_HISTORY['0.4.48'], 23);
   assert.equal(PROTOCOL_HISTORY['0.4.49'], 24);
   assert.equal(PROTOCOL_HISTORY['0.4.53'], 25);
-  assert.equal(PROTOCOL_VERSION, 28);
+  assert.equal(PROTOCOL_VERSION, 29);
   assert.equal(PROTOCOL_HISTORY['0.4.55'], 26);
   for (const service of ['0.4.53', '0.4.54'])
     assert.equal(
@@ -471,4 +471,26 @@ test('protocol 28 retains the personal 27 upgrade handshake', () => {
     );
   }
   assert.equal(PROTOCOL_HISTORY['0.4.60'], 28);
+});
+
+test('protocol 29 retains the protocol 28 upgrade entry and defaults the legacy project list', () => {
+  for (const service of ['0.4.60', '0.4.61', '0.3.17'])
+    assert.equal(
+      fallbackServerProtocol(
+        { type: 'connection.error', code: 'version_mismatch', service, message: 'upgrade' },
+        29,
+      ),
+      28,
+    );
+  assert.equal(PROTOCOL_HISTORY['0.4.62'], 29);
+  const ready = clientServerMessageSchema.parse({
+    type: 'ready',
+    protocolVersion: 28,
+    connectionId: randomUUID(),
+    adapter: 'simulation',
+    version: '0.4.61',
+    sessions: [],
+  });
+  assert.equal(ready.type, 'ready');
+  if (ready.type === 'ready') assert.deepEqual(ready.projects, []);
 });

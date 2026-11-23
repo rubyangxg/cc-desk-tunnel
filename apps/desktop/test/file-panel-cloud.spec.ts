@@ -47,6 +47,7 @@ test('simultaneous file panels read and preview only their own server', async ({
       createRoot(host).render(
         React.createElement(FilePanel, {
           profileId: profile,
+          aliasOf: () => undefined,
           places: [{ id: 'server', label: '服务端', kind: 'server', style: 'posix' }],
           start: () => '/workspace',
           sessionKey: profile,
