@@ -1042,6 +1042,9 @@ export default function Conversation({
   };
   const scroll = useRef<HTMLDivElement>(null);
   const pullStart = useRef<{ x: number; y: number } | null>(null);
+  // A long press by finger keeps the system's own selection and copy: with our menu open its handles could not
+  // widen the one word it picks.
+  const touched = useRef(false);
   // The view follows new output until the reader moves up from the end, and again once they come back down to it.
   const follow = useRef(true);
   // Shown while not following, as the way back to the end.
@@ -1142,7 +1145,8 @@ export default function Conversation({
         ref={scroll}
         onContextMenu={(event) => {
           const target = event.target as HTMLElement;
-          if (target.closest('input, textarea, [contenteditable="true"]')) return;
+          if (touched.current || target.closest('input, textarea, [contenteditable="true"]'))
+            return;
           event.preventDefault();
           const selection = window.getSelection()?.toString() ?? '';
           const message = target.closest<HTMLElement>('[data-copy-text]');
@@ -1154,13 +1158,13 @@ export default function Conversation({
             );
           };
           const items: MenuItem[] = [
-            { label: '复制选中文字', disabled: !selection, run: () => copy(selection) },
-            ...(block ? [{ label: '复制此代码块', run: () => copy(block.textContent ?? '') }] : []),
+            { label: '复制', disabled: !selection, run: () => copy(selection) },
+            ...(block ? [{ label: '复制代码', run: () => copy(block.textContent ?? '') }] : []),
             ...(message
-              ? [{ label: '复制整条消息', run: () => copy(message.dataset.copyText ?? '') }]
+              ? [{ label: '复制消息', run: () => copy(message.dataset.copyText ?? '') }]
               : []),
             {
-              label: '全选对话文字',
+              label: '全选',
               run: () => {
                 if (!transcriptRoot.current) return;
                 const range = document.createRange();
@@ -1170,7 +1174,7 @@ export default function Conversation({
                 selected?.addRange(range);
               },
             },
-            { label: '查找对话内容', separated: true, run: openFind },
+            { label: '查找', separated: true, run: openFind },
           ];
           const { clientX: x, clientY: y } = event;
           const element = target.closest<HTMLElement>('[data-link]');
@@ -1193,7 +1197,7 @@ export default function Conversation({
                   ...(openInFiles && link.kind !== 'web'
                     ? [
                         {
-                          label: '在文件面板中显示',
+                          label: '在文件面板显示',
                           run: () => openInFiles(link.path, link.kind === 'path'),
                         },
                       ]
@@ -1266,6 +1270,7 @@ export default function Conversation({
           }
         }}
         onPointerDown={(event) => {
+          touched.current = event.pointerType === 'touch';
           // Steps opened or closed are being read where they are.
           if ((event.target as HTMLElement).closest('summary')) leave();
         }}

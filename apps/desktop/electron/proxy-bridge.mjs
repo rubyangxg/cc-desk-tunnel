@@ -274,8 +274,9 @@ export async function openProxyBridge(
           leaving = true;
           return;
         }
+        // A connection whose computer has its execution channel by another, `ccdt online`, asks for none.
         if (message.type === 'auth') {
-          message.tunnel = true;
+          message.tunnel = config.tunnel !== false;
           token = String(message.token);
         }
         // The system this computer runs is said here, not by the page. Windows is what none means.
@@ -332,7 +333,11 @@ export async function openProxyBridge(
         // Only ever follows the credentials, which are sent once the channels can be opened.
         if (message.connectionId === nativeReady?.connectionId)
           current.channels?.open(message.channelId);
-      } else if (message.type === 'ready' && message.adapter === 'claude-code') {
+      } else if (
+        message.type === 'ready' &&
+        message.adapter === 'claude-code' &&
+        config.tunnel !== false
+      ) {
         nativeReady = message;
         release = message.client;
       } else if (message.type === 'tunnel.ready') {
@@ -393,6 +398,14 @@ export async function openProxyBridge(
       pair?.channels?.close();
       for (const channel of pair?.files ?? []) channel.terminate();
       await pair?.ssh?.close();
+      // What the window was last sent, such as why the connection was given up, reaches it before the end: cut
+      // at once, it would be lost with the rest of the socket's buffer.
+      const local = pair?.local;
+      if (local && local.readyState !== WebSocket.CLOSED)
+        await new Promise((resolve) => {
+          local.once('close', resolve);
+          setTimeout(resolve, 1000);
+        });
       for (const socket of wss.clients) socket.terminate();
       await new Promise((resolve) => wss.close(resolve));
       await new Promise((resolve) => server.close(resolve));

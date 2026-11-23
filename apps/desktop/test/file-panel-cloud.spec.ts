@@ -15,6 +15,7 @@ test('simultaneous file panels read and preview only their own server', async ({
     Object.defineProperty(window, 'fileCalls', { value: calls });
     Object.defineProperty(window, 'desktop', {
       value: {
+        saveDrafts: async () => {},
         files: {
           list: () => {
             throw Error('unscoped access');

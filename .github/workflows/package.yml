@@ -38,12 +38,14 @@ concurrency:
 # The steps that download Electron and the packaging tools are tried a second time after a minute: those
 # downloads now and then time out.
 jobs:
+  ssh:
+    uses: ./.github/workflows/windows-ssh.yml
   # The server image of the release, for amd64 and arm64 (see images.yml). It is built once every client is: an
   # image tag is never moved once pushed, so a release whose clients failed must not leave one behind, or trying
   # again after a fix would stop at the tag of the commit before.
   images:
-    if: always() && inputs.release != '' && needs.windows.result == 'success' && needs.server.result == 'success' && (needs.linux.result == 'success' || needs.linux.result == 'skipped') && (needs.android.result == 'success' || needs.android.result == 'skipped')
-    needs: [windows, linux, android, server]
+    if: always() && inputs.release != '' && needs.windows.result == 'success' && needs.ssh.result == 'success' && needs.server.result == 'success' && (needs.linux.result == 'success' || needs.linux.result == 'skipped') && (needs.android.result == 'success' || needs.android.result == 'skipped')
+    needs: [windows, linux, android, server, ssh]
     uses: ./.github/workflows/images.yml
     permissions:
       contents: read
@@ -299,7 +301,7 @@ jobs:
   attach:
     if: >-
       always() && !cancelled() && inputs.release != '' &&
-      needs.windows.result == 'success' &&
+      needs.windows.result == 'success' && needs.ssh.result == 'success' &&
       needs.server.result == 'success' &&
       needs.server-prebuilt.result == 'success' &&
       needs.images.result == 'success' &&
@@ -307,7 +309,7 @@ jobs:
        (inputs.android != true && needs.android.result == 'skipped')) &&
       ((inputs.target == 'all' && needs.linux.result == 'success') ||
        (inputs.target != 'all' && needs.linux.result == 'skipped'))
-    needs: [windows, linux, server, server-prebuilt, android, images]
+    needs: [windows, linux, server, server-prebuilt, android, images, ssh]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

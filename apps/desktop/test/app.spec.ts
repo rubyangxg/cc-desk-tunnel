@@ -330,7 +330,7 @@ test('a session forks whole, and an earlier message is edited in a fork that lea
   await page.getByRole('button', { name: '发送消息', exact: true }).click();
   await settled(page);
   await expect(questions).toHaveText(['第一问', '改过的第二问']);
-  await sessionAction(page, '分叉会话');
+  await sessionAction(page, '分叉');
   await expect(page.locator('.session-row.selected strong')).toHaveText(`${title}（分叉）（分叉）`);
   await expect(questions).toHaveText(['第一问', '改过的第二问']);
   await expect(box).toHaveValue('');
@@ -522,7 +522,7 @@ test('a session on another computer is listed apart, read, and taken over with a
   other.once('dialog', (dialog) => void dialog.accept('E:\\另一台\\接管目录'));
   await bar.getByRole('button', { name: '在本机继续…', exact: true }).click();
   // A computer that already has projects offers them first; the folder is then chosen from that list.
-  const elsewhere = other.getByRole('menuitem', { name: '选择其他文件夹…', exact: true });
+  const elsewhere = other.getByRole('menuitem', { name: '其他文件夹…', exact: true });
   if (await elsewhere.isVisible()) await elsewhere.click();
   await expect(bar).toHaveCount(0);
   await expect(
@@ -540,10 +540,15 @@ test('a session on another computer is listed apart, read, and taken over with a
   // This computer has projects, so the session comes back into one of them without a folder being asked for.
   await page.locator('.elsewhere-bar').getByRole('button', { name: '在本机继续…' }).click();
   const menu = page.getByRole('menu', { name: '会话所在的项目' });
-  await expect(menu).toContainText('这台电脑上的项目');
+  await expect(menu).toContainText('换了项目或电脑');
+  // The other computer's projects are there too, under its name, the session's own checked.
+  await expect(menu.getByRole('menuitemradio', { name: /接管目录/ })).toHaveAttribute(
+    'aria-checked',
+    'true',
+  );
   const choice = menu.getByRole('menuitemradio', { name: /中文项目/ });
   await expect(choice).toHaveAttribute('aria-checked', 'false');
-  await expect(menu.getByRole('menuitem', { name: '选择其他文件夹…' })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: '其他文件夹…' })).toBeVisible();
   await choice.click();
   await expect(page.locator('.elsewhere-bar')).toHaveCount(0);
   await expect(
@@ -730,7 +735,7 @@ test('a running session forks completed history while its original approval keep
   await settled(page);
   await send(page, '等待审批的任务', 'tool');
   await expect(page.getByRole('button', { name: '允许', exact: true })).toBeVisible();
-  await sessionAction(page, '分叉会话');
+  await sessionAction(page, '分叉');
   await expect(page.locator('.session-row.selected strong')).toHaveText(`${title}（分叉）`);
   await expect(page.locator('.message.user .message-content')).toHaveText(['已完成的任务']);
   await expect(page.locator('.message.assistant')).toContainText('离线模拟回复');
@@ -777,7 +782,7 @@ test('an older server keeps the running fork disabled with an upgrade hint', asy
     .locator('.session-row.selected')
     .getByRole('button', { name: '会话操作', exact: true })
     .click();
-  const item = page.getByRole('menuitem', { name: /分叉会话/ });
+  const item = page.getByRole('menuitem', { name: /分叉/ });
   await expect(item).toBeDisabled();
   await expect(item).toContainText('升级服务端');
   await page.keyboard.press('Escape');

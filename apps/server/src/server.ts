@@ -101,7 +101,15 @@ import { inOrder } from './question.ts';
 import { simulate } from './simulation.ts';
 import { SessionStore } from './store.ts';
 import { Throttle } from './throttle.ts';
-import { Door, Tunnel, program, sessionSsh, sessionSshPath } from './tunnel.ts';
+import {
+  Door,
+  ProbeFailure,
+  Tunnel,
+  program,
+  sessionSsh,
+  sessionSshPath,
+  writeDevices,
+} from './tunnel.ts';
 import { FileService } from './files.ts';
 import type { FilesOptions } from './files.ts';
 import type { TunnelOptions } from './tunnel.ts';
@@ -255,6 +263,8 @@ type Seat = {
   door?: Door;
   opening?: Promise<void>;
   away?: NodeJS.Timeout;
+  // The computer's projects, as its client last said them.
+  projects?: string[];
 };
 type Login = { process: NativeLogin; owner: Peer; url?: string };
 type CommandOf<T extends Command['type']> = Extract<Command, { type: T }>;
@@ -499,6 +509,23 @@ export function createProxyServer(options: ServerOptions) {
         send(peer, message);
     }
   }
+  // Where a session is made or moved to: the computer of the connection, or another of the user's that is
+  // connected, into one of the projects it said it has or holds sessions in.
+  function destination(peer: Peer, command: { deviceId?: string; projectPath: string }) {
+    if (!command.deviceId || command.deviceId === peer.device?.id) return deviceOf(peer);
+    const seat = seats.get(command.deviceId);
+    const device = seat && [...seat.peers].findLast((other) => other.device)?.device;
+    if (!device) throw new DomainError('device_offline', '那台电脑不在线。');
+    const key = pathKey(command.projectPath);
+    if (
+      !seat.projects?.some((path) => pathKey(path) === key) &&
+      !store
+        .list()
+        .some((other) => other.device?.id === device.id && pathKey(other.projectPath) === key)
+    )
+      throw new DomainError('unknown_project', '那台电脑上没有这个项目。');
+    return device;
+  }
   function deviceOf(peer: Peer) {
     if (!peer.device) throw new DomainError('device_unknown', '客户端没有报告设备标识。');
     return peer.device;
@@ -521,7 +548,8 @@ export function createProxyServer(options: ServerOptions) {
     const place = session.device ?? device!;
     const seat = seats.get(place.id);
     if (place.id === device?.id) {
-      if (execution && options.claude && !(peer.tunnel?.ssh && seat?.door?.ssh))
+      // Any connection of this computer may carry its commands: `ccdt online` does for a terminal of ccdt.
+      if (execution && options.claude && !(seat?.door?.ready && seat.door.ssh))
         throw new DomainError(
           'execution_offline',
           '本机的执行通道尚未就绪，请稍候；客户端正在建立或重新建立连接。',
@@ -560,13 +588,35 @@ export function createProxyServer(options: ServerOptions) {
               ready: !options.tunnel || !!seat.door?.ready,
               shells,
               ...(shell ? { shell } : {}),
+              ...(seat.projects ? { projects: seat.projects } : {}),
             },
           ];
         }),
       ],
     };
   }
+  // What sessions reach the user's computers by, other than their own (see `writeDevices`).
+  function reachable() {
+    writeDevices(
+      store.directory,
+      [...seats.values()].flatMap((seat) => {
+        const device = [...seat.peers].findLast((peer) => peer.device)?.device;
+        return device && seat.door
+          ? [
+              {
+                id: device.id,
+                name: device.name,
+                platform: platformOf(device),
+                ready: seat.door.ready,
+                door: seat.door,
+              },
+            ]
+          : [];
+      }),
+    );
+  }
   function announce() {
+    if (options.tunnel && !closing) reachable();
     const message = devices();
     const text = JSON.stringify(message);
     if (closing || text === presence) return;
@@ -1161,7 +1211,7 @@ export function createProxyServer(options: ServerOptions) {
           run.device === serverDevice.id
             ? undefined
             : door
-              ? sessionSsh(store.directory, run.sessionId, door)
+              ? sessionSsh(store.directory, run.sessionId, door, run.device)
               : {
                   configPath: join(sessionSshPath(store.directory, run.sessionId), 'config'),
                   bin: join(sessionSshPath(store.directory, run.sessionId), 'bin'),
@@ -1668,7 +1718,9 @@ export function createProxyServer(options: ServerOptions) {
       if (closing || peer.socket.readyState !== WebSocket.OPEN)
         throw new Error('Connection closed');
       completeOnboarding(claude.environment?.CLAUDE_CONFIG_DIR);
-      const reach = ssh ? sessionSsh(store.directory, session.id, ssh) : undefined;
+      const reach = ssh
+        ? sessionSsh(store.directory, session.id, ssh, session.device?.id)
+        : undefined;
       current.process = new NativeTerminal(
         claude.executable,
         terminalArguments(claude, session, reach, {
@@ -2617,6 +2669,12 @@ export function createProxyServer(options: ServerOptions) {
         store.prefer(deviceOf(peer).id, command.shell);
         announce();
         return undefined;
+      case 'device.projects': {
+        const seat = seats.get(deviceOf(peer).id);
+        if (seat) seat.projects = [...new Set(command.projects)];
+        announce();
+        return undefined;
+      }
       case 'instructions.get':
       case 'instructions.update': {
         if (!options.claude) throw new DomainError('native_unavailable', '离线模拟没有全局说明。');
@@ -2725,7 +2783,7 @@ export function createProxyServer(options: ServerOptions) {
           command.requestId,
           command.title,
           command.projectPath,
-          deviceOf(peer),
+          destination(peer, command),
         );
         peer.subscriptions.clear();
         peer.subscriptions.add(session.id);
@@ -2984,12 +3042,16 @@ export function createProxyServer(options: ServerOptions) {
           ),
         });
         break;
-      case 'session.move':
+      case 'session.move': {
+        const device = destination(peer, command);
+        if (session.activeRun && session.device?.id !== device.id)
+          throw new DomainError('run_active', '请先结束当前运行再把会话移到另一台电脑。');
         broadcast({
           type: 'session.updated',
-          session: store.move(command.sessionId, command.projectPath, deviceOf(peer)),
+          session: store.move(command.sessionId, command.projectPath, device),
         });
         break;
+      }
       case 'session.delete':
       case 'session.rename':
         await manageSession(command, session);
@@ -3089,6 +3151,7 @@ export function createProxyServer(options: ServerOptions) {
       features: [
         'idle-compaction',
         'remote-session-create',
+        'device-projects',
         'running-session-fork',
         'chunked-history',
         'quota-watch',
@@ -3223,14 +3286,13 @@ export function createProxyServer(options: ServerOptions) {
         .then(() => {
           send(peer, { type: 'tunnel.ready', connectionId: peer.id });
         })
-        .catch(() => {
+        .catch((error: unknown) => {
+          // What the device or ssh answered, which tells why: the user is shown it rather than a guess.
+          const said = error instanceof ProbeFailure ? error.message : '';
           send(peer, {
             type: 'connection.error',
             code: 'ssh_failed',
-            message:
-              platformOf(peer.device) === 'win32'
-                ? '服务端经隧道连不上本机的 SSH 服务。\n隧道已经建立，但探测命令没有得到应答：常见于安全软件拦截了内置的 sshd.exe 或 PowerShell，请检查保护记录后重新连接。'
-                : '服务端经隧道连不上本机的 SSH 服务。\n隧道已经建立，但探测命令没有得到应答：请重新连接；反复出现时在“设置 → 关于与更新”里打开连接日志查看原因。',
+            message: `隧道已建立，但本机 SSH 服务没有执行探测命令。${said ? `\n本机答复：${said}` : ''}`,
           });
           peer.socket.close(4003, 'SSH probe failed');
         }),

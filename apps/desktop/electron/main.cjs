@@ -1055,7 +1055,11 @@ app.whenReady().then(() => {
   // Electron does not provide an editing menu by default. Native roles keep text selection, undo and paste
   // in the focused input, without exposing clipboard reads to the renderer.
   window.webContents.on('context-menu', (_event, params) => {
-    if (!params.isEditable) return;
+    if (!params.isEditable) {
+      if (params.selectionText)
+        Menu.buildFromTemplate([{ role: 'copy', label: '复制' }]).popup({ window });
+      return;
+    }
     Menu.buildFromTemplate([
       { role: 'undo', label: '撤销', enabled: params.editFlags.canUndo },
       { role: 'redo', label: '重做', enabled: params.editFlags.canRedo },

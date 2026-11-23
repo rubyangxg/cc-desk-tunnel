@@ -6,6 +6,7 @@ import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import ssh2 from 'ssh2';
 import type { ServerChannel } from 'ssh2';
+import { serverAlgorithms } from './ssh2-hardening.ts';
 import { FILES_TARGET_ENV } from '@cc-desk-tunnel/protocol';
 
 // The file panel's way to the files of the service and of the user's online computers: SFTP, spoken by the
@@ -52,11 +53,21 @@ const MAX_SUBSYSTEMS = 16;
 // The entries of the data directory the file panel reaches; every other one is the service's own.
 const OPEN_IN_DATA = new Set(['native', 'home', 'workspace']);
 
+// ssh2 1.17 drops the leading zero bytes of an Ed25519 public key it makes, and so cannot read about one in 256 of its
+// own keys (the desktop's ssh-keys.mjs has the system's ssh-keygen make them instead). One it reads is kept.
+export function hostKey() {
+  for (;;) {
+    const key = ssh2.utils.generateKeyPairSync('ed25519').private;
+    if (!(ssh2.utils.parseKey(key) instanceof Error)) return key;
+  }
+}
+
 export class FileService {
   state?: FilesState;
   private dataDir: string;
   private options: FilesOptions;
-  private hostKey = ssh2.utils.generateKeyPairSync('ed25519').private;
+  private hostKey = hostKey();
+  private serverConfig = { hostKeys: [this.hostKey], algorithms: serverAlgorithms };
   private sftpServer?: string[];
   private landlock = false;
   // Every SFTP server started for a client, which ends with its connection or with the service.
@@ -123,7 +134,7 @@ export class FileService {
     stream.once('close', () => {
       for (const child of children) child.kill();
     });
-    const server = new ssh2.Server({ hostKeys: [this.hostKey] }, (client) => {
+    const server = new ssh2.Server(this.serverConfig, (client) => {
       client.on('error', () => stream.destroy());
       client.once('close', () => {
         for (const child of children) child.kill();

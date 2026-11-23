@@ -5,6 +5,29 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { createSession, login, send, settled, screenshots } from './helpers.ts';
 
+test.describe('on a touch screen', () => {
+  test.use({ hasTouch: true, isMobile: true });
+
+  test('a long press keeps the system selection and copy menu', async ({ page }) => {
+    await page.goto('/');
+    await login(page);
+    await createSession(page, '长按复制');
+    await send(page, '长按这一段文字');
+    await settled(page);
+    const text = page.locator('.message.user .message-content p');
+    await text.tap();
+    expect(
+      await text.evaluate(
+        (element) =>
+          !element.dispatchEvent(
+            new MouseEvent('contextmenu', { bubbles: true, cancelable: true }),
+          ),
+      ),
+    ).toBe(false);
+    await expect(page.getByRole('menu', { name: '对话文字操作' })).toHaveCount(0);
+  });
+});
+
 test('message dates, selection menu, code copy and conversation find work together', async ({
   page,
 }) => {
@@ -36,7 +59,7 @@ test('message dates, selection menu, code copy and conversation find work togeth
     return { x: box.x + 5, y: box.y + box.height / 2 };
   });
   await page.mouse.click(selectionPoint.x, selectionPoint.y, { button: 'right' });
-  await page.getByRole('menuitem', { name: '复制选中文字', exact: true }).click();
+  await page.getByRole('menuitem', { name: '复制', exact: true }).click();
   expect(await page.evaluate(() => (window as unknown as { copied: string }).copied)).toBe(
     '阅读唯一词',
   );
@@ -183,9 +206,15 @@ test('find covers the loaded part of a long session and follows it as earlier pa
   await page.locator('.conversation').hover();
   await page.mouse.wheel(0, -100000);
   await expect(page.getByRole('alert')).toContainText('历史服务暂时不可用，请重试。');
-  await page.getByRole('button', { name: '加载更早记录', exact: true }).click();
+  // The personal server bounds pages by bytes as well as event count. Read every earlier page,
+  // waiting for each reply rather than treating the temporary loading label as the end of history.
+  const earlier = page.getByRole('button', { name: '加载更早记录', exact: true });
+  for (let remaining = 20; remaining > 0 && (await earlier.count()); remaining--) {
+    await earlier.click();
+    await expect(page.getByRole('button', { name: '加载中', exact: true })).toHaveCount(0);
+  }
   await expect(page.getByRole('alert')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '加载更早记录', exact: true })).toHaveCount(0);
+  await expect(earlier).toHaveCount(0);
   await expect(page.locator('.find-count')).toHaveText('1 / 1');
   await expect(page.getByText('早期唯一词', { exact: true })).toBeVisible();
 });
