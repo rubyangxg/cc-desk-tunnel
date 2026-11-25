@@ -108,7 +108,7 @@ test('Electron: a second connection is a window of its own and shares what is th
       resolve('..'),
     );
     await expect(other.locator('.elsewhere-bar')).toContainText(
-      '连接“主连接”里有会话正在这个文件夹里运行',
+      '连接“主连接”里也有会话在这个文件夹运行，两边同时改动文件可能互相覆盖。',
     );
     await page.evaluate(() => window.desktop!.setBusy([]));
     await expect(other.locator('.elsewhere-bar')).toHaveCount(0);
