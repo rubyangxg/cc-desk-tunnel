@@ -103,6 +103,8 @@ contextBridge.exposeInMainWorld('desktop', {
   releaseNotes: (version) => ipcRenderer.invoke('release:notes', version),
   device: () => ipcRenderer.invoke('device:get'),
   installUpdate: (version, profileId) => ipcRenderer.invoke('update:install', version, profileId),
+  cancelUpdate: (profileId) => ipcRenderer.invoke('update:cancel', profileId),
+  probeService: (config) => ipcRenderer.invoke('service:probe', config),
   onUpdateProgress: (callback) => {
     const listener = (_event, progress) => callback(progress);
     ipcRenderer.on('update:progress', listener);

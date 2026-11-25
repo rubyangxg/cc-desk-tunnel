@@ -57,6 +57,7 @@ import Composer from './Composer.tsx';
 import SessionBar from './SessionBar.tsx';
 import { isHere, thisDevice } from './device.ts';
 import { selfUpdating } from './platform.ts';
+import { useClientUpgrade } from './client-upgrade.ts';
 import { useDrafts } from './drafts.ts';
 import { useDrawerSwipe } from './useDrawerSwipe.ts';
 import { useWebNavigation } from './useWebNavigation.ts';
@@ -663,30 +664,95 @@ export function App({
     isNewer(state.service, version)
       ? state.service
       : null;
+  // A service newer than this client that holds no installer for it yet, as just after its own upgrade: the
+  // release page has it. The service tells when its own arrives.
+  const behind =
+    selfUpdating && version && state.service && isNewer(state.service, version) && !upgrade
+      ? state.service
+      : null;
+  const upgrading = useClientUpgrade((message) => setError(message || null), profileId);
   // A service of a newer version: what that version changed can be read here, whether or not this system's
   // client upgrades itself.
   const ahead =
     state.mismatch && version && state.service && isNewer(state.service, version)
       ? state.service
       : null;
-  // How far an installer being fetched from the release page is, from 0 to 1.
-  const [downloaded, setDownloaded] = useState<number | null>(null);
-  useEffect(
-    () =>
-      window.desktop?.onUpdateProgress(({ received, size }) =>
-        setDownloaded(size ? received / size : 0),
-      ),
-    [],
-  );
-  const install = (version?: string) => {
-    void act(async () => {
-      try {
-        await window.desktop!.installUpdate(version, profileId);
-      } finally {
-        setDownloaded(null);
-      }
-    });
-  };
+  const [installerProbe, setInstallerProbe] = useState<{
+    service: string;
+    progress: number | null;
+  } | null>(null);
+  const [restart, setRestart] = useState<{ from: string; profile: ConnectionProfile } | null>(null);
+  const restartingService =
+    restart?.profile.url === form.url &&
+    restart.profile.fingerprint === form.fingerprint &&
+    restart.profile.token === form.token
+      ? restart.from
+      : null;
+  const preparing =
+    installerProbe?.service === state.service ? installerProbe.progress : state.preparing;
+  const needsInstaller = !!direct && !upgrade;
+  const canProbe =
+    foreground &&
+    !browser &&
+    form.mode === 'remote' &&
+    !!form.token.trim() &&
+    !!window.desktop?.probeService &&
+    !upgrading.step &&
+    state.status === 'disconnected' &&
+    (needsInstaller || !!restartingService);
+  // This App instance is tied to one service profile. Stop watching if it goes into the background or its endpoint changes.
+  useEffect(() => {
+    setInstallerProbe(null);
+    setRestart(null);
+  }, [form.url, form.fingerprint, form.token]);
+  useEffect(() => {
+    if (!canProbe) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const deadline = Date.now() + 180_000;
+    const poll = (delay: number) => {
+      timer = setTimeout(async () => {
+        const device = await thisDevice().catch(() => null);
+        if (cancelled) return;
+        const result = await window
+          .desktop!.probeService({
+            url: form.url,
+            fingerprint: form.fingerprint,
+            token: form.token.trim(),
+            deviceName: device?.name ?? 'CC Desk Tunnel',
+          })
+          .catch(() => null);
+        if (cancelled) return;
+        if (
+          result?.status === 'ready' ||
+          (result?.status === 'refused' &&
+            ((needsInstaller && !!result.release) ||
+              (restartingService && result.service !== restartingService)))
+        ) {
+          setRestart(null);
+          // Repeat the real sign-in so this profile's bridge captures the installer digest and credentials.
+          void login(form);
+          return;
+        }
+        if (result?.status === 'failed' || (restartingService && Date.now() >= deadline)) {
+          setRestart(null);
+          setError(
+            result?.status === 'failed' ? result.error : '服务端还没有重启好，请稍后重新连接。',
+          );
+          return;
+        }
+        const progress = result?.status === 'refused' ? result.preparing : null;
+        if (result?.status === 'refused' && result.service)
+          setInstallerProbe({ service: result.service, progress });
+        poll(restartingService || progress !== null ? 3000 : 15000);
+      }, delay);
+    };
+    poll(restartingService || state.preparing !== null ? 3000 : 15000);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [canProbe, needsInstaller, restartingService, form.url, form.fingerprint, form.token]);
 
   // A check or an upgrade of the service that failed says why to whoever asked for it. The checks a window makes by
   // itself while it is in use fail quietly, to be made again within the hour.
@@ -1795,19 +1861,26 @@ export function App({
       ? '未登录'
       : (state.account?.email ?? capabilities?.account.email ?? (nativeMode ? '账号' : '离线模拟'));
   const connectionName = serverPool ? `${accountName} · Claude Code` : adapterName;
-  const upgradeItem: MenuItem | null = upgrade
-    ? {
-        label: `升级客户端到 ${upgrade}${working.length ? `（${working.length} 个会话正在运行）` : ''}`,
-        icon: <Download />,
-        disabled: busy || working.length > 0,
-        run: () => {
-          void act(() => window.desktop!.installUpdate(undefined, profileId));
-        },
-      }
-    : null;
+  // The client's upgrade, from the service or the release page; while one runs, how it goes and a way to stop it.
+  const upgradeItems: MenuItem[] = upgrading.step
+    ? [
+        { label: upgrading.text!, icon: <Download />, disabled: true, run: () => undefined },
+        ...(upgrading.cancellable
+          ? [{ label: '取消客户端升级', icon: <X />, run: upgrading.cancel }]
+          : []),
+      ]
+    : [upgrade, behind]
+        .filter((target): target is string => !!target)
+        .map((target) => ({
+          label: `${target === upgrade ? '升级客户端到' : '从 GitHub 下载并升级到'} ${target}${working.length ? `（${working.length} 个会话正在运行）` : ''}`,
+          icon: <Download />,
+          disabled: busy || working.length > 0,
+          run: () => upgrading.start(target === upgrade ? undefined : target),
+        }));
   // What an upgrade would bring is read where the upgrade is offered, before it is taken.
   const newer =
     upgrade ??
+    behind ??
     ahead ??
     (update && ['available', 'manual'].includes(update.state) ? (update.latest ?? null) : null);
   const updates = [
@@ -1820,15 +1893,17 @@ export function App({
           },
         ]
       : []),
-    ...(upgradeItem ? [upgradeItem] : []),
+    ...upgradeItems,
     ...(serviceUpdate ? [serviceUpdate] : []),
   ];
   // The rail shows its button only for an update that exists, not for the standing offer to look for one.
-  const pendingUpdate = upgrade
-    ? `客户端可升级到 ${upgrade}`
-    : update && ['available', 'manual', 'installing', 'restarting'].includes(update.state)
-      ? (serviceUpdate?.label ?? null)
-      : null;
+  const pendingUpdate =
+    upgrading.text ??
+    (upgrade || behind
+      ? `客户端可升级到 ${upgrade ?? behind}`
+      : update && ['available', 'manual', 'installing', 'restarting'].includes(update.state)
+        ? (serviceUpdate?.label ?? null)
+        : null);
   // What a menu shows beside an item that has a shortcut.
   const hint = (action: Action) =>
     (prefs.shortcuts.enabled && comboText(keyFor(prefs, action))) || undefined;
@@ -2109,17 +2184,19 @@ export function App({
           form={form}
           change={changeForm}
           error={
-            currentError && state.mismatch && !upgrade && state.service && version
-              ? `${currentError}${
-                  isNewer(version, state.service)
-                    ? '此客户端较新，请先升级服务端。'
-                    : !selfUpdating
-                      ? '这个系统上的客户端需要手动升级：请到 GitHub 发布页下载与服务端同一版本的安装包。'
-                      : state.preparing !== null
-                        ? `服务端正在下载这一版的安装包（${Math.floor(state.preparing * 100)}%），稍后重新连接就能从服务端升级；也可以现在直接从 GitHub 发布页下载。`
-                        : '服务端还没有这一版的安装包，它会继续尝试下载；可以直接从 GitHub 发布页下载，或稍后重试。'
-                }`
-              : currentError
+            restartingService && !error
+              ? null
+              : currentError && state.mismatch && !upgrade && state.service && version
+                ? `${currentError}${
+                    isNewer(version, state.service)
+                      ? '此客户端较新，请先升级服务端。'
+                      : !selfUpdating
+                        ? '这个系统上的客户端需要手动升级：请到 GitHub 发布页下载与服务端同一版本的安装包。'
+                        : preparing !== null
+                          ? `服务端正在下载这一版的安装包（${Math.floor(preparing * 100)}%），好了会出现升级按钮。也可以现在从 GitHub 下载。`
+                          : '服务端还没有这一版的安装包，它会继续尝试下载；可以直接从 GitHub 发布页下载，或稍后重试。'
+                  }`
+                : currentError
           }
           upgrade={state.mismatch && window.desktop ? upgrade : null}
           older={
@@ -2131,8 +2208,8 @@ export function App({
               : null
           }
           direct={direct}
-          downloaded={downloaded}
-          install={install}
+          upgrading={upgrading}
+          serviceUpgraded={(from) => setRestart({ from, profile: form })}
           connecting={state.status === 'connecting' || proxyConnecting || busy}
           submit={() => {
             void login(form);

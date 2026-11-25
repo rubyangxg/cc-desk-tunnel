@@ -31,6 +31,7 @@ import { waitFields } from './setting-fields.ts';
 import { inSummary, sampleStats, statFields, summaryText } from './turnStats.ts';
 import { barText, inBar, sampleSession, sessionFields } from './sessionStats.ts';
 import { GithubMark, openProject, project } from './project.tsx';
+import { selfUpdating } from './platform.ts';
 import GlobalInstructions from './GlobalInstructions.tsx';
 import IdleCompactionSettings from './IdleCompactionSettings.tsx';
 import SettingsPanel from './SettingsPanel.tsx';
@@ -868,7 +869,11 @@ function About({
       <div className="card">
         <Row
           title="客户端与服务端需要同一版本"
-          detail="服务端跟随发布页；客户端的安装包由所连接的服务端提供，也可以在登录页改从 GitHub 发布页下载，校验后覆盖升级"
+          detail={
+            selfUpdating
+              ? '服务端跟随发布页；客户端的安装包由所连接的服务端提供，也可以在登录页改从 GitHub 发布页下载，校验后覆盖升级'
+              : '服务端跟随发布页；这个系统上的客户端要手动升级：下载与服务端同一版本的安装包，装好替换旧版'
+          }
         >
           <span className="setting-actions">
             {updates.map((item) => (
@@ -883,7 +888,23 @@ function About({
                 {item.label}
               </button>
             ))}
-            {updates.length === 0 && <span className="setting-value">没有可用的更新操作</span>}
+            {!selfUpdating && project.url ? (
+              <button
+                type="button"
+                className="button"
+                onClick={() =>
+                  void window.desktop!.openExternal(
+                    service
+                      ? `${project.url}/releases/tag/v${service}`
+                      : `${project.url}/releases/latest`,
+                  )
+                }
+              >
+                打开发布页
+              </button>
+            ) : (
+              updates.length === 0 && <span className="setting-value">没有可用的更新操作</span>
+            )}
           </span>
         </Row>
       </div>

@@ -226,6 +226,7 @@ npm ci
 npm run dev               # 本地模拟服务 + 浏览器界面，不需要任何账号
 npm test                  # 单元测试；另有 typecheck、test:ui、check
 npm run package:windows   # 生成 Windows 安装包，准备步骤见 apps/desktop/README.md
+npm run package:macos     # 在 Mac 上生成当前芯片的 DMG，输出到 artifacts/macos/
 npm run package:server    # 生成服务端程序包，传到服务器后运行其中的 deploy/install.sh
 ```
 

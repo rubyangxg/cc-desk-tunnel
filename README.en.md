@@ -207,6 +207,7 @@ npm ci
 npm run dev               # local simulated service + browser UI, no account needed
 npm test                  # unit tests; also typecheck, test:ui, check
 npm run package:windows   # builds the Windows installer; preparation in apps/desktop/README.md
+npm run package:macos     # on a Mac, builds a DMG for its CPU in artifacts/macos/
 npm run package:server    # builds the server archive; on the server, run its deploy/install.sh
 ```
 
