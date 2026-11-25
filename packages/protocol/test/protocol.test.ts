@@ -287,9 +287,16 @@ test('a session report is asked for by session and answers with its figures', ()
     modelMs: 11500,
     ttftMs: null,
     outputPerSecond: null,
+    costUsd: 0,
     firstRecordAt: null,
   };
   assert.equal(serverMessageSchema.safeParse(stats).success, true);
+  const { costUsd: _cost, ...legacy } = stats;
+  assert.equal(
+    serverMessageSchema.safeParse(legacy).success,
+    true,
+    'older services omit the API estimate',
+  );
   assert.equal(serverMessageSchema.safeParse({ ...stats, turns: -1 }).success, false);
   assert.equal(
     serverMessageSchema.safeParse({ ...stats, firstRecordAt: 'yesterday' }).success,

@@ -559,11 +559,18 @@ handle('service:upgrade', async (event, config) => {
     (error) => ({ error: error.message, code: error.code }),
   );
 });
+// The ccdt this client's package carries.
+const ownCcdt = () =>
+  app.isPackaged
+    ? path.join(
+        process.resourcesPath,
+        'ccdt',
+        process.platform === 'win32' ? 'ccdt.cmd' : path.join('bin', 'ccdt'),
+      )
+    : undefined;
 handle('ccdt:open', async (_event, request) => {
   const { openSession } = await import(pathToFileURL(path.join(__dirname, 'ccdt.mjs')).href);
-  // The ccdt this client carries, where its package has one (Windows).
-  const own = app.isPackaged ? path.join(process.resourcesPath, 'ccdt', 'ccdt.cmd') : undefined;
-  return openSession(request, { version: app.getVersion(), own });
+  return openSession(request, { version: app.getVersion(), own: ownCcdt() });
 });
 // Each token uses the current OS account's secure storage. The old single login becomes the default profile.
 handle('profiles:load', () => loadProfiles(readSettings(), safeStorage));

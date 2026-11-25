@@ -91,7 +91,6 @@ async function open(
               categories: [],
             },
             usage: null,
-            rateLimits: null,
             cacheTtl: ttl,
           }),
         ];

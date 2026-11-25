@@ -8,6 +8,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 import { eventPayloadSchema } from '@cc-desk-tunnel/protocol';
 import type {
+  AccountQuota,
   EventPayload,
   NativeCapabilities,
   NativeMetrics as Metrics,
@@ -17,7 +18,7 @@ type ContextUsage = Awaited<ReturnType<Query['getContextUsage']>>;
 type UsageReading = Awaited<
   ReturnType<Query['usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET']>
 >;
-type Windows = NonNullable<Metrics['rateLimits']>['windows'];
+type Windows = NonNullable<AccountQuota['rateLimits']>['windows'];
 export type ObservedQuota = { windows: Windows; measuredAt: string };
 // `seven_day_overage_included` is the weekly window of the models the plan counts apart. The response headers do not
 // say which models those are, so it keeps its own name rather than one guessed after native `/usage`, which names the
@@ -116,6 +117,9 @@ export class ObservedQuotas {
     const reading = merged(windows, this.of(login), now);
     if (reading) this.readings.set(login, reading);
   }
+  forget(login: string) {
+    this.readings.delete(login);
+  }
   // What was heard before the login was known becomes that login's, unless it has its own.
   adopt(from: string, to: string) {
     const reading = this.readings.get(from);
@@ -134,7 +138,10 @@ export function unexpired(observed: ObservedQuota | null, now = Date.now()): Obs
 }
 
 // The plan quota as the CLI's `/usage` data gives it, as of `measuredAt`.
-function planQuota(usage: UsageReading, measuredAt: string): NonNullable<Metrics['rateLimits']> {
+function planQuota(
+  usage: UsageReading,
+  measuredAt: string,
+): NonNullable<AccountQuota['rateLimits']> {
   const windows = usage.rate_limits
     ? Object.entries(usage.rate_limits).flatMap(([name, value]) => {
         if (!value || name === 'extra_usage') return [];
@@ -156,9 +163,17 @@ function planQuota(usage: UsageReading, measuredAt: string): NonNullable<Metrics
 // What a reading gets of the quota: what the service holds, why a read it made failed, and the CLI's whole
 // answer if that CLI was the one asked, whose session totals are then this session's.
 export type QuotaAnswer = {
-  rateLimits: Metrics['rateLimits'];
+  rateLimits: AccountQuota['rateLimits'];
   error?: string;
   usage?: UsageReading;
+};
+
+// A read of the plan quota through some CLI: when it began, what it gave, and why it failed if it did.
+type Read = {
+  at: number;
+  rateLimits: AccountQuota['rateLimits'];
+  error?: string;
+  pending?: Promise<unknown>;
 };
 
 // The limits that hold one model's weekly use: a refusal under one leaves requests with the other models.
@@ -178,10 +193,7 @@ export class Quotas {
   // The last `rate_limit_event` of each login and when it came: whether its requests are refused, which the
   // windows need not say.
   private limits = new Map<string, { info: SDKRateLimitEvent['rate_limit_info']; at: number }>();
-  private reads = new Map<
-    string,
-    { at: number; rateLimits: Metrics['rateLimits']; pending?: Promise<unknown> }
-  >();
+  private reads = new Map<string, Read>();
   // The login last seen in a run or a read. A terminal's CLI does not say whom it is signed in as; it is the service's
   // own CLI configuration, so it is taken to be this one.
   private login?: string;
@@ -189,24 +201,64 @@ export class Quotas {
   private terminalLogin(scope: string) {
     return JSON.stringify(['terminal', scope]);
   }
+  // Told of the quota whenever it stands otherwise (see `tell`); the service passes it on to every connection.
+  changed: (quota: AccountQuota, scope?: string) => void = () => {};
+  private told = new Map<string, string>();
+  private timers = new Map<string, ReturnType<typeof setTimeout>>();
   constructor(interval = 60_000) {
     this.interval = interval;
   }
   // Setup tokens need not expose an account identity, so replacing one can keep the same login key.
-  clear() {
+  clear(scope?: string) {
+    if (scope !== undefined) {
+      const logins = new Set([
+        this.scopedLogins.get(scope),
+        this.terminalLogin(scope),
+        ...[...this.reads.keys(), ...this.told.keys()].filter(
+          (login) => this.scopeOf(login) === scope,
+        ),
+      ]);
+      for (const login of logins) {
+        if (login === undefined) continue;
+        this.observed.forget(login);
+        this.limits.delete(login);
+        this.reads.delete(login);
+        this.told.delete(login);
+        clearTimeout(this.timers.get(login));
+        this.timers.delete(login);
+        if (this.login === login) this.login = undefined;
+      }
+      this.scopedLogins.delete(scope);
+      this.changed({ rateLimits: null }, scope);
+      return;
+    }
     this.observed = new ObservedQuotas();
     this.limits.clear();
     this.reads.clear();
+    const logins = [...this.told.keys()];
+    for (const timer of this.timers.values()) clearTimeout(timer);
+    this.timers.clear();
+    this.scopedLogins.clear();
     this.login = undefined;
+    this.told.clear();
+    for (const login of logins.length ? logins : [''])
+      this.changed({ rateLimits: null }, this.scopeOf(login));
+  }
+  private adopt(from: string, to: string) {
+    this.observed.adopt(from, to);
+    if (from === to) return;
+    clearTimeout(this.timers.get(from));
+    this.timers.delete(from);
+    this.told.delete(from);
   }
   private heard(login: string) {
-    if (this.login === undefined) this.observed.adopt('', login);
+    if (this.login === undefined) this.adopt('', login);
     this.login = login;
     // Personal pools isolate CLI configuration directories, even for token logins without email.
     try {
       const [scope] = JSON.parse(login);
       if (typeof scope === 'string') {
-        this.observed.adopt(this.terminalLogin(scope), login);
+        this.adopt(this.terminalLogin(scope), login);
         this.scopedLogins.set(scope, login);
       }
     } catch {
@@ -217,6 +269,7 @@ export class Quotas {
     this.heard(login);
     this.limits.set(login, { info: event.rate_limit_info, at: now });
     this.observed.observe(login, event, now);
+    this.tell(now, login);
   }
   // Whether the account last heard can take no request now, as far as the service knows; work the service starts on
   // its own leaves it alone then (see `compactIdle`). What was heard last decides, so an early reset (a reset card)
@@ -262,7 +315,53 @@ export class Quotas {
         ? (this.login ?? '')
         : (this.scopedLogins.get(scope) ?? this.terminalLogin(scope));
     this.observed.observeWindows(login, windows, now);
+    this.tell(now, login);
     return this.of(login, now);
+  }
+  // The quota of the login last heard, as the service holds it, and why its last read failed if it did.
+  current(now = Date.now(), scope?: string): AccountQuota {
+    const login =
+      scope === undefined
+        ? (this.login ?? '')
+        : (this.scopedLogins.get(scope) ?? this.terminalLogin(scope));
+    return this.forLogin(login, now);
+  }
+  private scopeOf(login: string): string | undefined {
+    try {
+      const [first, second] = JSON.parse(login);
+      return first === 'terminal' ? second : typeof first === 'string' ? first : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  private forLogin(login: string, now: number): AccountQuota {
+    const error = this.reads.get(login)?.error;
+    return { rateLimits: this.of(login, now), ...(error ? { error } : {}) };
+  }
+  // Tells `changed` when the quota stands otherwise than last told, and looks again once the next of its windows
+  // resets: a reading past its reset no longer holds, and no reply or read need come to say so.
+  private tell(now = Date.now(), login = this.login ?? '') {
+    const quota = this.forLogin(login, now);
+    const text = JSON.stringify(quota);
+    if (text !== this.told.get(login)) {
+      this.told.set(login, text);
+      this.changed(quota, this.scopeOf(login));
+    }
+    clearTimeout(this.timers.get(login));
+    this.timers.delete(login);
+    const next = Math.min(
+      ...(quota.rateLimits?.windows ?? []).flatMap((window) => {
+        const at = window.resetsAt ? Date.parse(window.resetsAt) : NaN;
+        return at > now ? [at] : [];
+      }),
+    );
+    if (!Number.isFinite(next)) return;
+    const timer = setTimeout(
+      () => this.tell(Date.now(), login),
+      Math.min(next - now + 1000, 2 ** 31 - 1),
+    );
+    this.timers.set(login, timer);
+    timer.unref?.();
   }
   // Reads anew through `query` when asked or due; a read under way is waited for instead.
   async through(
@@ -275,10 +374,7 @@ export class Quotas {
     if (held?.pending) await held.pending;
     else if (asked || (this.wanted() && (!held || now - held.at >= this.interval))) {
       const measuredAt = new Date(now).toISOString();
-      const entry: { at: number; rateLimits: Metrics['rateLimits']; pending?: Promise<unknown> } = {
-        at: now,
-        rateLimits: held?.rateLimits ?? null,
-      };
+      const entry: Read = { at: now, rateLimits: held?.rateLimits ?? null };
       this.reads.set(login, entry);
       const pending = optionalStatus(
         () =>
@@ -287,17 +383,28 @@ export class Quotas {
       );
       entry.pending = pending;
       const { value, error } = await pending;
+      if (this.reads.get(login) !== entry) return { rateLimits: null };
       entry.pending = undefined;
       // A failed read keeps the last reading, which says how old it is.
       if (value) entry.rateLimits = planQuota(value, measuredAt);
+      entry.error = error;
+      this.tell(now, login);
       return { rateLimits: this.of(login, now), error, ...(value ? { usage: value } : {}) };
     }
+    this.tell(now, login);
     return { rateLimits: this.of(login, now) };
   }
   // The windows the replies carried since the last read replace those of the read, which keeps the rest. Where the
   // CLI says the plan quota does not apply, as with a login by CLAUDE_CODE_OAUTH_TOKEN, the replies are all there is.
-  of(login: string, now = Date.now()): Metrics['rateLimits'] {
-    const read = this.reads.get(login)?.rateLimits ?? null;
+  // A window of the read past its reset no longer holds either; one without a reset time is kept.
+  of(login: string, now = Date.now()): AccountQuota['rateLimits'] {
+    const held = this.reads.get(login)?.rateLimits ?? null;
+    const read = held && {
+      ...held,
+      windows: held.windows.filter(
+        (window) => window.resetsAt === null || Date.parse(window.resetsAt) > now,
+      ),
+    };
     const observed = unexpired(this.observed.of(login), now);
     if (!observed) return read;
     if (!read?.available) return { available: true, ...observed };
@@ -442,8 +549,9 @@ function contextSummary(context: ContextUsage | null): Metrics['context'] {
     : null;
 }
 
-// `quota` gets the plan quota (see `Quotas`); without it this CLI is asked directly. `previous` holds the session
-// totals for a reading that brings none of its own.
+// A session's own figures. `quota` is the read of the plan quota (see `Quotas`), which the service holds apart and
+// which, when this CLI was the one asked, brings the session totals too; without it this CLI is asked directly.
+// `previous` holds the session totals for a reading that brings none of its own.
 export async function nativeMetrics(
   query: Query,
   result?: SDKResultMessage,
@@ -451,10 +559,12 @@ export async function nativeMetrics(
     timeoutMs = 5000,
     quota = (query) => new Quotas().through('', query, { asked: true, timeoutMs }),
     previous = null,
+    includeQuota = false,
   }: {
     timeoutMs?: number;
     quota?: (query: Query) => Promise<QuotaAnswer>;
     previous?: Metrics['usage'];
+    includeQuota?: boolean;
   } = {},
 ): Promise<EventPayload> {
   const [contextStatus, answer] = await Promise.all([
@@ -473,10 +583,13 @@ export async function nativeMetrics(
     type: 'native.metrics',
     context: contextSummary(contextStatus.value),
     usage: totals ? resultUsage(totals) : previous,
-    rateLimits: answer.rateLimits,
-    ...(contextStatus.error || answer.error
+    ...(includeQuota ? { rateLimits: answer.rateLimits } : {}),
+    ...(contextStatus.error || (includeQuota && answer.error)
       ? {
-          errors: { context: contextStatus.error, usage: answer.error },
+          errors: {
+            ...(contextStatus.error ? { context: contextStatus.error } : {}),
+            ...(includeQuota && answer.error ? { usage: answer.error } : {}),
+          },
         }
       : {}),
   });

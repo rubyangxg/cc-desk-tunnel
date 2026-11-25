@@ -235,9 +235,10 @@ type Terminal = {
     last?: string;
     settingsPath: string;
     hooksPath: string;
-    // What its CLI last showed in the status line, and the quota last heard from it.
+    // What its CLI last showed in the status line, and the quota and context last heard from it.
     statusPath: string;
     quota?: string;
+    context?: string;
     offset: number;
     heard: Promise<void>;
     activity?: TerminalActivity;
@@ -356,6 +357,30 @@ export function createProxyServer(options: ServerOptions) {
   const tasks = new Set<Promise<unknown>>();
   const tunnelTasks = new Set<Promise<unknown>>();
   let closing = false;
+  // Scope every update to the configuration that produced it, including terminal-only logins.
+  quotas.changed = (quota, scope) => {
+    if (closing) return;
+    const account =
+      scope === undefined
+        ? undefined
+        : pool?.accounts.find(
+            (account) =>
+              settingsPath(pool.options(account.id).environment?.CLAUDE_CONFIG_DIR) === scope,
+          );
+    if (scope !== undefined && !account) return;
+    const accountId = account?.id ?? 'default';
+    if (pool) {
+      pool.observe(accountId, quota.rateLimits, quota.error);
+      publishPool();
+    } else if (quota.rateLimits?.available) usage.observe(quota.rateLimits);
+    broadcast({ type: 'quota', ...quota, accountId });
+  };
+  const currentQuota = () =>
+    quotas.current(
+      Date.now(),
+      options.claude ? settingsPath(options.claude.environment?.CLAUDE_CONFIG_DIR) : undefined,
+    );
+
   const adapter = options.claude ? 'claude-code' : 'simulation';
   const origins = options.allowedOrigins ?? [
     'http://127.0.0.1:5173',
@@ -760,7 +785,7 @@ export function createProxyServer(options: ServerOptions) {
               );
               const metrics = events.find((event) => event.type === 'native.metrics');
               if (!closing && metrics?.type === 'native.metrics')
-                pool.observe(account.id, metrics.rateLimits, metrics.errors?.usage);
+                pool.observe(account.id, metrics.rateLimits ?? null, metrics.errors?.usage);
             } finally {
               poolProbes.delete(account.id);
             }
@@ -796,6 +821,7 @@ export function createProxyServer(options: ServerOptions) {
     publishPool();
     try {
       await accountLogout(claude.executable, claude.environment);
+      quotas.clear(settingsPath(claude.environment?.CLAUDE_CONFIG_DIR));
       pool!.update(id, {
         loggedIn: false,
         email: undefined,
@@ -868,6 +894,7 @@ export function createProxyServer(options: ServerOptions) {
         });
         updated(session.id);
       }
+      quotas.clear(settingsPath(pool.options(id).environment?.CLAUDE_CONFIG_DIR));
       pool.remove(id);
       publishPool();
       return;
@@ -895,11 +922,13 @@ export function createProxyServer(options: ServerOptions) {
     }
     if (command.type === 'pool.account.token') {
       configureSetupToken(command.token, settingsPath(claude.environment?.CLAUDE_CONFIG_DIR));
+      quotas.clear(settingsPath(claude.environment?.CLAUDE_CONFIG_DIR));
       pool.update(id, { error: undefined, limits: null, checkedAt: null, blockedUntil: null });
       publishPool();
       track(refreshPool());
       return;
     }
+    quotas.clear(settingsPath(claude.environment?.CLAUDE_CONFIG_DIR));
     pool.update(id, { error: undefined, limits: null });
     const signing: Login = {
       owner: peer,
@@ -955,7 +984,7 @@ export function createProxyServer(options: ServerOptions) {
     publishPool();
   }
 
-  // Stores an event and sends it to the session's subscribers; quota readings also drive the usage periods.
+  // Stores an event and sends it to the session's subscribers.
   function record(sessionId: string, runId: string, payload: EventPayload, createdAt?: string) {
     const accountId = store.get(sessionId).session.accountId ?? 'default';
     if (
@@ -963,7 +992,7 @@ export function createProxyServer(options: ServerOptions) {
       pool &&
       (payload.rateLimits || payload.errors?.usage)
     ) {
-      pool.observe(accountId, payload.rateLimits, payload.errors?.usage);
+      pool.observe(accountId, payload.rateLimits ?? null, payload.errors?.usage);
       publishPool();
     }
     if (
@@ -972,6 +1001,10 @@ export function createProxyServer(options: ServerOptions) {
       accountId === 'default'
     )
       usage.observe(payload.rateLimits);
+    if (payload.type === 'native.metrics') {
+      const { rateLimits: _quota, errors, ...figures } = payload;
+      payload = { ...figures, ...(errors?.context ? { errors: { context: errors.context } } : {}) };
+    }
     const event = store.append(sessionId, runId, payload, createdAt);
     broadcast({ type: 'session.event', event }, sessionId);
     if (payload.type === 'native.metrics' && payload.cacheTtl)
@@ -1515,7 +1548,7 @@ export function createProxyServer(options: ServerOptions) {
           `无法保存 setup token：${error instanceof Error ? error.message : String(error)}`,
         );
       }
-      quotas.clear();
+      quotas.clear(settingsPath(options.claude?.environment?.CLAUDE_CONFIG_DIR));
       await publishAccount();
       return;
     }
@@ -1527,7 +1560,7 @@ export function createProxyServer(options: ServerOptions) {
         logFailure('account logout', error);
         throw new DomainError('logout_failed', '退出登录失败，请在ccdt执行 /logout 确认。');
       }
-      quotas.clear();
+      quotas.clear(settingsPath(options.claude?.environment?.CLAUDE_CONFIG_DIR));
       await publishAccount();
       return;
     }
@@ -1546,7 +1579,7 @@ export function createProxyServer(options: ServerOptions) {
                   token,
                   settingsPath(options.claude?.environment?.CLAUDE_CONFIG_DIR),
                 );
-                quotas.clear();
+                quotas.clear(settingsPath(options.claude?.environment?.CLAUDE_CONFIG_DIR));
               } catch (error) {
                 succeeded = false;
                 notice = `令牌已生成但无法保存：${error instanceof Error ? error.message : String(error)}`;
@@ -1811,7 +1844,7 @@ export function createProxyServer(options: ServerOptions) {
       });
       updated(command.sessionId);
       watchFile(current.continued.hooksPath, { interval: 500 }, () => void heardTerminal(current));
-      watchFile(current.continued.statusPath, { interval: 1000 }, () => terminalQuota(current));
+      watchFile(current.continued.statusPath, { interval: 1000 }, () => terminalStatus(current));
       send(peer, { type: 'terminal.opened', sessionId: command.sessionId, terminalId: current.id });
     } catch (error) {
       logFailure(`terminal ${command.sessionId}`, error);
@@ -1956,13 +1989,13 @@ export function createProxyServer(options: ServerOptions) {
       type: 'native.metrics',
       context: terminalContext(terminal) ?? last?.context ?? null,
       usage: last?.usage ?? null,
-      rateLimits: null,
       cacheTtl: ttl,
     });
   }
-  // The quota a terminal's CLI showed in its status line, its replies' as a chat run's stream would carry it: it goes
-  // to the account's quota, and every connection is told, as the quota is the account's, not the session's.
-  function terminalQuota(terminal: Terminal) {
+  // What a terminal's CLI showed in its status line, each part where it belongs: the quota its replies carried, as a
+  // chat run's stream would, goes to the account's (see `Quotas`); how full the context is goes to the session, as a
+  // chat run's figures do during a turn.
+  function terminalStatus(terminal: Terminal) {
     const { continued } = terminal;
     let windows;
     let context;
@@ -1982,22 +2015,24 @@ export function createProxyServer(options: ServerOptions) {
       return;
     }
     const heard = JSON.stringify(windows);
-    if (!windows.length || heard === continued.quota) return;
-    continued.quota = heard;
-    const last = store.lastMetrics(terminal.sessionId);
-    const claude = pool!.options(store.get(terminal.sessionId).session.accountId ?? 'default');
-    const rateLimits = quotas.observeTerminal(
-      windows,
-      Date.now(),
-      settingsPath(claude.environment?.CLAUDE_CONFIG_DIR),
-    );
-    // Nothing the status line showed still holds: the quota the clients have is left as it is.
-    if (!rateLimits?.available) return;
+    if (windows.length && heard !== continued.quota) {
+      continued.quota = heard;
+      const claude = pool!.options(store.get(terminal.sessionId).session.accountId ?? 'default');
+      quotas.observeTerminal(
+        windows,
+        Date.now(),
+        settingsPath(claude.environment?.CLAUDE_CONFIG_DIR),
+      );
+    }
+    const shown = context
+      ? JSON.stringify([context.model, context.usedTokens, context.windowTokens])
+      : undefined;
+    if (!context || shown === continued.context) return;
+    continued.context = shown;
     record(terminal.sessionId, terminal.id, {
       type: 'native.metrics',
-      context: context ?? last?.context ?? null,
-      usage: last?.usage ?? null,
-      rateLimits,
+      context,
+      usage: store.lastMetrics(terminal.sessionId)?.usage ?? null,
     });
   }
   // A turn the user interrupts runs no hook and leaves nothing in the CLI's record (CLI 2.1.293). A key that
@@ -3113,6 +3148,7 @@ export function createProxyServer(options: ServerOptions) {
         sessions: store.list(),
         projects: store.projects(),
         historyId: store.historyId,
+        quota: currentQuota(),
         browser: {
           sessionId: peer.browser,
           serverDeviceId: serverDevice.id,
@@ -3194,6 +3230,7 @@ export function createProxyServer(options: ServerOptions) {
       ],
       projects: store.projects(),
       historyId: store.historyId,
+      quota: currentQuota(),
       ...(files?.state && auth.data.tunnel && options.tunnel ? { files: files.state } : {}),
     });
     send(peer, devices());

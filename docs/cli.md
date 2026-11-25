@@ -2,7 +2,7 @@
 
 `ccdt` 在你自己的终端里打开服务端上的原版 Claude Code：界面、快捷键和斜杠命令与本地的 `claude` 一样，Claude 的命令经执行通道在这台电脑上运行，与图形客户端相同。它和图形客户端共用会话：终端里接着图形客户端的对话，终端里聊的内容也记入会话。
 
-它是独立的程序，不需要安装或打开图形客户端；两者装在同一台电脑上时，服务端把它们当作同一台设备。Windows 图形客户端的安装包自带 `ccdt`，见[安装](#安装)。设计与取舍见[设计记录](research/standalone-cli.md)。
+它是独立的程序，不需要安装或打开图形客户端；两者装在同一台电脑上时，服务端把它们当作同一台设备。图形客户端在各个系统上都自带 `ccdt`，见[安装](#安装)。设计与取舍见[设计记录](research/standalone-cli.md)。
 
 ## 安装
 
@@ -56,13 +56,15 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 ./install.sh
 ```
 
-装好后打开一个新的终端窗口。不安装也可以直接运行包里的 `ccdt.cmd`（Windows）或 `bin/ccdt`。包里自带运行所需的一切：Node.js，Windows 上还有与图形客户端安装包相同的 PowerShell 7 和 OpenSSH，所以 Windows 的包有一百多 MB。
+装好后打开一个新的终端窗口。Windows 上在 PowerShell、cmd 和 Git Bash 里都可以直接运行 `ccdt`。不安装也可以直接运行包里的 `ccdt.cmd`（Windows；Git Bash 里是同一目录下的 `ccdt`）或 `bin/ccdt`。包里自带运行所需的一切：Node.js，Windows 上还有与图形客户端安装包相同的 PowerShell 7 和 OpenSSH，所以 Windows 的包有一百多 MB。
 
 **升级**：运行 `ccdt upgrade`，见下面的[升级](#升级)。0.3.8 及更早的 `ccdt` 没有这个命令：下载新版本的包，再运行一次安装脚本。
 
-图形客户端自带的 `ccdt` 和单独安装的可以同时存在：单独安装的在 PATH 里排在前面，运行 `ccdt` 时用的是它。
+**装了图形客户端就不用另装**：Windows 安装时把自带的 `ccdt` 加入当前用户的 PATH；macOS、Linux 上图形客户端启动时把 `~/.local/bin/ccdt` 链接到自带的那份，PATH 的处理与安装脚本相同。macOS 要先把应用拖进“应用程序”再打开，见 [macOS 客户端](macos.md#终端客户端-ccdt)。
 
-**卸载**：图形客户端自带的随图形客户端卸载，PATH 里的那一项一并去掉。单独安装的，删除安装目录（Windows 还要从用户 PATH 去掉它；macOS、Linux 还有 `~/.local/bin/ccdt`，以及 shell 配置文件里标着 `# ccdt` 的那一行，如果安装时加过）。设置与保存的登录在 `%APPDATA%\ccdt`（Windows）、`~/Library/Application Support/ccdt`（macOS）或 `~/.config/ccdt`（Linux）。设置里有这台电脑的设备 ID（装有图形客户端时用它的）：删掉设置再登录，服务端会把它当作另一台电脑，原来在这台电脑上的会话要在图形客户端里接到本机才能继续用。升级或重新安装不会动设置。
+两者都装时以图形客户端自带的为准：Windows 安装器把它排在 PATH 中单独安装的前面，macOS、Linux 上 `~/.local/bin/ccdt` 指向它。单独安装的那份留在原处；再运行它的安装脚本只更新文件，不会把命令改回去。
+
+**卸载**：图形客户端自带的随图形客户端卸载：Windows 上 PATH 里的那一项一并去掉；macOS、Linux 上留下的 `~/.local/bin/ccdt` 链接失效，删掉即可。单独安装的，删除安装目录（Windows 还要从用户 PATH 去掉它；macOS、Linux 还有 `~/.local/bin/ccdt`，以及 shell 配置文件里标着 `# ccdt` 的那一行，如果安装时加过）。设置与保存的登录在 `%APPDATA%\ccdt`（Windows）、`~/Library/Application Support/ccdt`（macOS）或 `~/.config/ccdt`（Linux）。设置里有这台电脑的设备 ID（装有图形客户端时用它的）：删掉设置再登录，服务端会把它当作另一台电脑，原来在这台电脑上的会话要在图形客户端里接到本机才能继续用。升级或重新安装不会动设置。
 
 ## 登录
 
@@ -177,7 +179,7 @@ ccdt -p "…" --permission-mode acceptEdits --model sonnet --effort high
 | `ccdt logs <会话> [--last N]` | 最近的对话和工具调用 |
 | `ccdt stop <会话>` | 停止这一轮 |
 
-这些命令都可以加 `--json`（`-p` 和 `wait` 用 `--output-format`，还有逐条输出事件的 `stream-json`）。结果写在标准输出，说明和下一步该怎么做写在标准错误。退出码：0 完成，2 在等批准或回答，3 失败，4 已停止，5 连不上或未登录，6 到 `--timeout` 时仍在运行。`ccdt help agents` 给出写给 agent 看的完整说明。
+这些命令都可以加 `--json`（`-p` 和 `wait` 用 `--output-format`，还有逐行输出事件的 `stream-json`：回复文字、工具调用与结果、状态和最后的结果；CLI 设置开了“显示思考过程”时也有思考）。结果写在标准输出，说明和下一步该怎么做写在标准错误。退出码：0 完成，2 在等批准或回答，3 失败，4 已停止，5 连不上或未登录，6 到 `--timeout` 时仍在运行。`ccdt help agents` 给出写给 agent 看的完整说明。
 
 - **审批交给调用方**：Claude 请求批准或提问时，`ccdt -p` 和 `ccdt wait` 停下来（退出码 2），把要批准什么、为什么一并输出，由调用方用 `approve`、`deny`、`answer` 处理。这三个命令回复后像 `ccdt -p` 一样接着等到 Claude 再停下，输出和退出码相同，等待期间提供这台电脑的执行通道；加 `--bg` 只回复不等。图形客户端里同时也能处理，谁先回答算谁的。不想被问，派发时带 `--permission-mode`。
 - **长任务**：调用方把 `ccdt -p` 放进自己的后台任务里运行，结束时它的工具就会通知它；或者用 `--bg` 发出，之后 `ccdt wait`。Claude 这一轮结束、只剩它启动的后台任务时，状态是 `background`：后台任务结束后 Claude 会自动接着做，`ccdt wait` 可以等到那时。
@@ -185,7 +187,7 @@ ccdt -p "…" --permission-mode acceptEdits --model sonnet --effort high
 
 ### ACP
 
-`ccdt acp` 让 `ccdt` 作为 [Agent Client Protocol](https://agentclientprotocol.com) 的 agent 运行，经标准输入输出通信。会说 ACP 的编辑器和 agent 工具（Zed、JetBrains、[acpx](https://github.com/openclaw/acpx) 等）把它配成 agent 命令，就能像使用本地 agent 一样使用服务端上的 Claude：会话在启动目录对应的项目里新建，也可以加载已有会话（回放最近一页记录）；回复和工具调用逐条显示；审批作为权限请求交给客户端；审批模式作为会话模式切换。
+`ccdt acp` 让 `ccdt` 作为 [Agent Client Protocol](https://agentclientprotocol.com) 的 agent 运行，经标准输入输出通信。会说 ACP 的编辑器和 agent 工具（Zed、JetBrains、[acpx](https://github.com/openclaw/acpx) 等）把它配成 agent 命令，就能像使用本地 agent 一样使用服务端上的 Claude：会话在启动目录对应的项目里新建，也可以加载已有会话（回放最近一页记录）；回复和工具调用逐条显示；审批作为权限请求交给客户端。模型、推理强度和审批模式作为会话选项（ACP 的 session config options）给出，客户端显示成选择器：模型列表就是图形客户端里的那份，取自 Claude Code，这个 `ccdt acp` 进程里第一次新建会话时读一次（要几秒）；选的模型和强度存在会话上，和在窗口里选的一样，在窗口里改了也会同步到客户端。只认会话模式的旧客户端照常能切换审批模式。
 
 ```json
 // acpx：项目目录里的 .acpxrc.json，之后 acpx ccdt "任务"、acpx ccdt exec "任务"
@@ -226,7 +228,7 @@ Windows 上 acpx 只接受可执行文件，写 `ccdt` 自带的 node 和脚本�
 
 ## 与图形客户端共用会话
 
-- 图形客户端的会话菜单里有“用 ccdt 打开”：用图形客户端当前的连接登录 `ccdt`（不用再输凭据，也不再连一次去验证），在系统的终端窗口里打开这个会话。Windows 上用图形客户端自带的 `ccdt`，版本总是对得上；其他系统上没装 `ccdt` 或版本不同时，给出安装命令。
+- 图形客户端的会话菜单里有“用 ccdt 打开”：用图形客户端当前的连接登录 `ccdt`（不用再输凭据，也不再连一次去验证），在系统的终端窗口里打开这个会话。用的是图形客户端自带的 `ccdt`，版本总是对得上。
 - 两边接续的是同一段原生对话，上下文完整：终端里能看到图形客户端聊过的内容，图形客户端的下一轮也知道终端里聊了什么。
 - 终端里的对话随 CLI 写下的记录分段记入会话，图形客户端里约一两秒后可见：问题、回答、工具调用和结果、压缩，问题标着“终端”，时间是当时的时间。一轮结束后和图形客户端里的一样折成“问题—用时—回答”，提示缓存的计时也从这一轮算起。`/model`、`/effort` 这类在终端里执行的命令，显示成回答下面的一行说明。记下的内容比图形客户端里直接运行的少：回复按段出现而不是逐字出现，也没有审批记录和每轮的用量统计。
 - 在 Claude Code 里用 `/clear` 或 `/resume` 换到另一段对话后，那之后的内容不属于这个会话，会话里会记一条提示；在终端里回退对话（`/rewind`）也会提示。要换会话，退出后用 `ccdt -r` 或 `ccdt new`。
@@ -253,7 +255,7 @@ Windows 上 acpx 只接受可执行文件，写 `ccdt` 自带的 node 和脚本�
 - Linux（x64）：在一台没有图形界面、经 SSH 登录的 Ubuntu 上，用 GitHub 打出的包验证过安装、登录（系统密钥服务用不了时凭据存进设置文件）、新建与选择会话、Claude 的命令经执行通道在这台电脑上运行、终端状态与每一轮的导入、服务端断开 50 秒后接回、关窗口即结束。arm64 的包在 GitHub 的 arm64 机器上打包、安装并启动过。
 - macOS：打包、安装脚本与安装后的启动，钥匙串的保存与读取，以及在真实终端里按键原样传过去（Ctrl+C 交给 Claude Code，不结束 `ccdt`）、窗口尺寸传过去，都在 GitHub 的 Mac 上检查；手头没有 Mac，需要有人操作的部分（连接真实服务端、在“终端”或 iTerm2 里使用、关窗口）没有实际用过。执行通道是与 macOS 图形客户端同一套代码。
 
-- 供程序和其他 agent 使用（`ccdt -p` 与跟进命令、`ccdt acp`）：在离线模拟服务上有自动测试，覆盖派发、续接、事件流输出、工具审批、按顺序回答提问、退回计划、停止、超时，以及 ACP 的新建与加载会话、逐条回复、权限请求、切换模式。在 Windows 上连接真实部署验证过：`ccdt -p` 得到回复；“每次询问”模式下停在审批，`approve` 后接着拿到结果；`--bg` 发出后 `tell` 中途改了指令，Claude 照新指令完成；用 acpx 0.22 经 `ccdt acp` 一次性和持久会话各跑通，权限请求的拒绝和批准都生效。在 Linux 上用真实的 Claude Code（接第三方模型）验证过：Claude 经 ccdt 的执行通道在这台电脑上运行命令，`approve`、`deny`、`answer` 回复后接着拿到结果，`ccdt online` 开着时 `--bg`、`tell`、`stop` 生效，acpx 经 `ccdt acp` 的批准和拒绝生效。Zed 和 JetBrains 没有实际接入过。
+- 供程序和其他 agent 使用（`ccdt -p` 与跟进命令、`ccdt acp`）：在离线模拟服务上有自动测试，覆盖派发、续接、事件流输出、工具审批、按顺序回答提问、退回计划、停止、超时，以及 ACP 的新建与加载会话、逐条回复、权限请求、切换模式、模型与推理强度的选项。在 Windows 上连接真实部署验证过：`ccdt -p` 得到回复；“每次询问”模式下停在审批，`approve` 后接着拿到结果；`--bg` 发出后 `tell` 中途改了指令，Claude 照新指令完成；用 acpx 0.22 经 `ccdt acp` 一次性和持久会话各跑通，权限请求的拒绝和批准都生效；`ccdt acp` 第一次新建会话时给出了账号可用的模型和各自的推理强度，选择后存在会话上。在 Linux 上用真实的 Claude Code（接第三方模型）验证过：Claude 经 ccdt 的执行通道在这台电脑上运行命令，`approve`、`deny`、`answer` 回复后接着拿到结果，`ccdt online` 开着时 `--bg`、`tell`、`stop` 生效，acpx 经 `ccdt acp` 的批准和拒绝生效。Zed 和 JetBrains 没有实际接入过。
 
 ## 致谢
 

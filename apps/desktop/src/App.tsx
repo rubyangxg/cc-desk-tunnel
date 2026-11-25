@@ -90,6 +90,9 @@ import { actions, comboOf, keyFor, show as comboText } from './shortcuts.ts';
 import type { Action } from './shortcuts.ts';
 import { nextMode } from './modes.ts';
 import Rail from './Rail.tsx';
+import { setHelpOpener } from './help-nav.ts';
+import { suggestions } from './help-content.ts';
+import type { Target } from './help-content.ts';
 import type { Page } from './Rail.tsx';
 import {
   AddProjectDialog,
@@ -112,6 +115,7 @@ import type { MenuItem, MenuPosition } from './ui.tsx';
 
 // The notes of every version so far are read only when asked for, and stay out of what the window starts with.
 const ReleaseNotes = lazy(() => import('./ReleaseNotes.tsx'));
+const HelpCenter = lazy(() => import('./HelpCenter.tsx'));
 
 // The newest event of a kind is the session's current native state.
 function latest<T extends EventPayload['type']>(events: SessionEvent[], type: T) {
@@ -347,6 +351,10 @@ export function App({
   const onThis = (session: Session) => !browser && isHere(session, state.device, absent);
   const sessions = state.sessions.filter((session) => onThis(session));
   const elsewhere = state.sessions.filter((session) => !onThis(session));
+  // The user's other computers that are online, by name, for the help's examples.
+  const onlineOthers = state.devices
+    .filter((device) => device.ready && !device.server && device.id !== state.device?.id)
+    .map((device) => device.name);
   // This computer's projects, as the service keeps them for all the user's computers.
   const projects = state.projects.filter((project) => project.device.id === state.device?.id);
   // The project a session is in, of whichever computer; one from before computers were told apart that is
@@ -539,16 +547,29 @@ export function App({
   );
   const capabilities = latest(events, 'native.capabilities') ?? state.capabilities;
   const metrics = latest(events, 'native.metrics');
-  // Quota belongs to the account, so the newest reading from any session wins over the selected session's.
-  const quota = [metrics, state.metrics]
+  // Old services put quota in session metrics; current services keep it at account scope.
+  const legacyMetrics = [metrics, state.metrics]
     .filter((item) => !!item?.rateLimits)
     .sort((a, b) =>
       (b!.rateLimits!.measuredAt ?? '').localeCompare(a!.rateLimits!.measuredAt ?? ''),
     )[0];
-  const accountMetrics =
-    (metrics ?? state.metrics) && quota
-      ? { ...(metrics ?? state.metrics)!, rateLimits: quota.rateLimits }
-      : (metrics ?? state.metrics);
+  const selectedPoolAccount = state.pool?.accounts.find(
+    (account) => account.id === (selected?.accountId ?? 'default'),
+  );
+  const quota = selectedPoolAccount
+    ? {
+        rateLimits: selectedPoolAccount.loggedIn === false ? null : selectedPoolAccount.limits,
+        error: selectedPoolAccount.error,
+      }
+    : (state.accountQuotas[selected?.accountId ?? 'default'] ??
+      (selected?.accountId && selected.accountId !== 'default' && state.quota
+        ? null
+        : state.account?.loggedIn === false
+          ? null
+          : (state.quota ??
+            (legacyMetrics
+              ? { rateLimits: legacyMetrics.rateLimits ?? null, error: legacyMetrics.errors?.usage }
+              : null))));
   const rotation = usePoolRotation({
     client,
     profiles,
@@ -1076,7 +1097,8 @@ export function App({
       last.page === next.page &&
       last.section === next.section &&
       last.settingsIndex === next.settingsIndex &&
-      last.sessionId === next.sessionId
+      last.sessionId === next.sessionId &&
+      last.article === next.article
     )
       return;
     trail.current = { places: [...places.slice(0, at + 1), next].slice(-50), at: 0 };
@@ -1109,6 +1131,30 @@ export function App({
     return false;
   };
   const show = (sessionId: string) => visit({ ...place, page: 'chat', sessionId });
+  // The help, at an article or its front page; any "?" in the window comes here.
+  const showHelp = (article?: string) => visit({ ...place, page: 'help', article });
+  useEffect(() => {
+    setHelpOpener(showHelp);
+    return () => setHelpOpener(null);
+  });
+  // What an article's button stands for: a setting, or something the window does.
+  const runHelp = (target: Target) => {
+    if ('article' in target) return showHelp(target.article);
+    if ('settings' in target) return open('settings', target.settings);
+    if (target.doing === 'schedules') return open('schedules');
+    open('chat');
+    if (target.doing === 'addProject') void addProject();
+    else if (target.doing === 'newSession') void newSession();
+    else if (target.doing === 'files' && !prefs.filePanel.open) toggleFiles();
+  };
+  // A new session with words put in its input box, for the user to change and send.
+  async function startWith(text: string) {
+    const made = await newSession();
+    if (made) {
+      setDraft(made, text);
+      show(made);
+    }
+  }
   const open = (page: Page, section: Section = place.section) => {
     if (!host.schedules && page === 'schedules') return;
     if (
@@ -1182,9 +1228,12 @@ export function App({
       ...(plain ? { plain } : {}),
     });
     if (response.sessionId) show(response.sessionId);
+    return response.sessionId;
   }
   async function createInProject(path: string) {
-    await act(() => createSession(path));
+    await act(async () => {
+      await createSession(path);
+    });
   }
   // A session in a project of another of the user's computers that is connected.
   async function createElsewhere(deviceId: string, projectPath: string) {
@@ -1213,30 +1262,36 @@ export function App({
     });
   }
   // The desktop gives an ordinary session a local directory; the browser creates one on the server.
-  async function newSession() {
+  async function newSession(): Promise<string | undefined> {
+    let made: string | undefined;
     if (browser) {
       await act(async () => {
         const response = await client.request({ type: 'server.session.create', title: '新会话' });
-        if (response.sessionId) show(response.sessionId);
+        made = response.sessionId;
+        if (made) show(made);
       });
-      return;
+      return made;
     }
     if (window.desktop) {
       await act(async () => {
         const directory = await window.desktop!.createWorkspace();
         try {
-          await createSession(directory, true);
+          made = await createSession(directory, true);
         } catch (error) {
           await window.desktop!.removeWorkspace(directory);
           throw error;
         }
       });
-      return;
+      return made;
     }
     const path =
       (away ? undefined : selected?.projectPath) ?? projects[0]?.path ?? sessions[0]?.projectPath;
-    if (path) await createInProject(path);
+    if (path)
+      await act(async () => {
+        made = await createSession(path);
+      });
     else await addProject();
+    return made;
   }
   // A due task is an ordinary message: to its session once that is idle, or to a session made for it. It is
   // never queued into a run, and waits while this window's native terminal is open.
@@ -1818,7 +1873,7 @@ export function App({
       separated: true,
       run: () => open('settings', 'general'),
     },
-    { label: '帮助', icon: <CircleHelp />, run: () => open('settings', 'help') },
+    { label: '帮助', icon: <CircleHelp />, run: () => showHelp() },
     {
       label: browser ? '退出登录' : '断开连接',
       icon: <LogOut />,
@@ -1908,7 +1963,7 @@ export function App({
     {
       label: '帮助',
       items: [
-        { label: '使用说明', run: () => open('settings', 'help') },
+        { label: '使用说明', run: () => showHelp() },
         {
           label: '快捷键',
           run: () => open('settings', 'shortcuts'),
@@ -2115,7 +2170,7 @@ export function App({
   const quotaFooter =
     inBrowser && nativeMode ? (
       <QuotaSummary
-        metrics={signedOut ? null : accountMetrics}
+        quota={quota}
         connected={connected}
         emptyMessage={signedOut ? '尚未登录 Claude' : undefined}
         onOpen={() => open('settings', 'account')}
@@ -2135,11 +2190,13 @@ export function App({
             ? (selected?.title ?? 'CC Desk Tunnel')
             : place.page === 'schedules'
               ? '定时任务'
-              : place.settingsIndex && narrow()
-                ? '设置'
-                : inBrowser && place.section === 'account'
-                  ? '订阅用量'
-                  : (sections.find((item) => item.id === place.section)?.name ?? '设置')
+              : place.page === 'help'
+                ? '帮助'
+                : place.settingsIndex && narrow()
+                  ? '设置'
+                  : inBrowser && place.section === 'account'
+                    ? '订阅用量'
+                    : (sections.find((item) => item.id === place.section)?.name ?? '设置')
         }
         back={
           !inBrowser && narrow() && place.page === 'settings'
@@ -2244,7 +2301,7 @@ export function App({
                 client={client}
                 account={nativeMode ? state.account : null}
                 capabilities={signedOut ? null : capabilities}
-                metrics={signedOut ? null : accountMetrics}
+                quota={signedOut ? null : quota}
                 refreshing={refreshing}
                 disabled={
                   !state.sessions.length ||
@@ -2262,6 +2319,19 @@ export function App({
             )
           }
         />
+      ) : place.page === 'help' ? (
+        <Suspense fallback={null}>
+          <HelpCenter
+            article={place.article}
+            here={state.device?.name ?? '这台电脑'}
+            others={onlineOthers}
+            browser={!!browser}
+            version={version || state.service || ''}
+            go={showHelp}
+            run={runHelp}
+            tryPrompt={host.localProjects ? (text) => void startWith(text) : undefined}
+          />
+        </Suspense>
       ) : place.page === 'schedules' ? (
         <SchedulePanel
           schedules={schedules}
@@ -2527,6 +2597,17 @@ export function App({
                 void newSession();
               }}
               loadEarlier={() => client.loadEarlier(selected!.id)}
+              suggestions={
+                !selected || controlsDisabled || away || inputDisabled
+                  ? undefined
+                  : suggestions({
+                      project: !!projectIn(selected!),
+                      other: onlineOthers[0],
+                      schedules: host.schedules,
+                    })
+              }
+              suggest={(text) => setDraft(selected!.id, text)}
+              moreExamples={() => showHelp()}
               edit={
                 controlsDisabled || away || !!linkedHistory
                   ? undefined
@@ -2713,6 +2794,7 @@ export function App({
                 capabilities={capabilities}
                 nativeSession={nativeSession}
                 metrics={metrics}
+                quota={quota}
                 queueEnabled={queueEnabled}
                 sendMode={sendMode}
                 setSendMode={(mode) => setPrefs((prefs) => ({ ...prefs, sendMode: mode }))}
@@ -2794,8 +2876,8 @@ export function App({
                       : null
                     : signedOut
                       ? null
-                      : (accountMetrics?.rateLimits ?? null),
-                  error: serverPool ? sessionAccount?.error : accountMetrics?.errors?.usage,
+                      : (quota?.rateLimits ?? null),
+                  error: serverPool ? sessionAccount?.error : quota?.error,
                 }}
                 openAccount={() => open('settings', 'account')}
               />

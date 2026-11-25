@@ -429,7 +429,7 @@ export class UsageLog {
   // prompts; a request without one belongs to no turn.
   sessionStats(sessionId: string, nativeIds: string[] = []) {
     const ids = [...new Set([sessionId, ...nativeIds])];
-    const { streamedTokens, streamedMs, costUsd, ...sums } = this.database
+    const { streamedTokens, streamedMs, ...sums } = this.database
       .prepare(
         `SELECT ${totals}, COUNT(DISTINCT prompt_id) AS turns, COALESCE(SUM(duration_ms), 0) AS modelMs, ${streaming}
       FROM api_requests WHERE session_id IN (${ids.map(() => '?').join(',')})`,

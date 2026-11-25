@@ -36,15 +36,15 @@ export function nativeContext(sessionId: string, info: SDKSessionInfo | undefine
   } satisfies EventPayload;
 }
 
-// Whether reasoning summaries are asked for. A settings file that cannot be read leaves them on.
+// Reasoning summaries follow the CLI default (off), within this account configuration.
 function thinkingShown(options: ClaudeOptions) {
   try {
     return (
       readNativeSettings(settingsPath(options.environment?.CLAUDE_CONFIG_DIR))
-        .showThinkingSummaries !== false
+        .showThinkingSummaries === true
     );
   } catch {
-    return true;
+    return false;
   }
 }
 
@@ -807,7 +807,11 @@ export async function readNativeStatus(
         initialized.commands,
         options.model,
       ),
-      await nativeMetrics(process, undefined, { quota: quotaOf(login, asked), previous }),
+      await nativeMetrics(process, undefined, {
+        quota: quotaOf(login, asked),
+        previous,
+        includeQuota: true,
+      }),
     ];
   } finally {
     clearTimeout(timer);

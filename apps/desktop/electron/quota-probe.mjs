@@ -181,6 +181,7 @@ function queryQuota(config, address, resolveProxy, timeoutMs, protocolVersion, c
       }
       if (message.type === 'ready') {
         ready = true;
+        if (message.quota) quota = message.quota.rateLimits;
         if (catalog === 'sessions') {
           quota = message.sessions;
           finish();
@@ -236,7 +237,13 @@ function queryQuota(config, address, resolveProxy, timeoutMs, protocolVersion, c
         finishPool();
         return;
       }
-      if (message.type === 'session.event' && message.event.payload.type === 'native.metrics')
+      if (message.type === 'quota' && (!message.accountId || message.accountId === 'default'))
+        quota = message.rateLimits;
+      if (
+        message.type === 'session.event' &&
+        message.event.payload.type === 'native.metrics' &&
+        message.event.payload.rateLimits !== undefined
+      )
         quota = message.event.payload.rateLimits;
       if (message.type === 'response' && message.requestId === subscriptionId) {
         if (!message.ok) finish(new Error(message.message ?? '额度查询失败。'));

@@ -16,6 +16,7 @@ import type {
   IdleCompaction,
   NativeCapabilities,
   NativeMetrics,
+  AccountQuota,
   ClientServerMessage as ServerMessage,
   Project,
   ServiceUpdate,
@@ -184,8 +185,12 @@ export type ClientState = {
   // still fetching it.
   preparing: number | null;
   model: string | null;
-  // The latest native readings from any session, for views that are not tied to the selected one.
+  // The latest capabilities from any session, for views that are not tied to the selected one.
   capabilities: NativeCapabilities | null;
+  // The plan quota the service holds for its account, as `ready` and each `quota` since gave it. It is the
+  // account's: no session's events carry it. Kept while disconnected, as the last reading.
+  quota: AccountQuota | null;
+  accountQuotas: Record<string, AccountQuota>;
   metrics: NativeMetrics | null;
   account: AccountState | null;
   // A newly generated token is held only until its one-time dialog closes or this connection ends.
@@ -230,6 +235,8 @@ export class ProxyClient {
     preparing: null,
     model: null,
     capabilities: null,
+    quota: null,
+    accountQuotas: {},
     metrics: null,
     account: null,
     setupToken: null,
@@ -385,6 +392,8 @@ export class ProxyClient {
       history: {},
       selectedId: null,
       capabilities: null,
+      quota: null,
+      accountQuotas: {},
       metrics: null,
       account: null,
       compaction: null,
@@ -696,6 +705,10 @@ export class ProxyClient {
           mismatch: false,
           update: message.update ?? null,
           model: message.model ?? null,
+          quota: message.quota ?? null,
+          accountQuotas: message.quota
+            ? { [message.quota.accountId ?? 'default']: message.quota }
+            : {},
         });
         if (message.historyId) {
           this.disk.use(message.historyId);
@@ -779,8 +792,22 @@ export class ProxyClient {
         const { type: _type, ...account } = message;
         // A signed-out account must not keep showing the previous one's identity and quota.
         this.update(
-          account.loggedIn ? { account } : { account, capabilities: null, metrics: null },
+          account.loggedIn
+            ? { account }
+            : {
+                account,
+                capabilities: null,
+                quota: null,
+                metrics: null,
+                accountQuotas: { ...this.state.accountQuotas, default: { rateLimits: null } },
+              },
         );
+      } else if (message.type === 'quota') {
+        const { type: _type, ...quota } = message;
+        this.update({
+          accountQuotas: { ...this.state.accountQuotas, [quota.accountId ?? 'default']: quota },
+          ...(!quota.accountId || quota.accountId === 'default' ? { quota } : {}),
+        });
       } else if (message.type === 'devices') {
         this.update({ devices: message.devices });
       } else if (message.type === 'projects') {
@@ -883,11 +910,11 @@ export class ProxyClient {
         this.ahead = Math.min(this.ahead, Date.now() - at);
         if (!['native.metrics', 'native.capabilities', 'native.context'].includes(payload.type))
           this.activity.set(message.event.sessionId, at);
+        if (payload.type === 'native.metrics' && (payload.rateLimits || payload.errors?.usage))
+          this.update({ metrics: payload });
         if (payload.type === 'native.capabilities') this.update({ capabilities: payload });
-        if (payload.type === 'native.metrics') this.update({ metrics: payload });
-        // The service streams the shown session's events, and only some events of the others (a terminal's quota goes
-        // to every connection): one of those in a cached history would move its cursor past what was never received,
-        // and showing that session again would not fetch it.
+        // The service streams the shown session's events, and may send some of another one's: one of those in a cached
+        // history would move its cursor past what was never received, and showing that session again would not fetch it.
         if (message.event.sessionId !== this.state.selectedId) return;
         this.streamEvents.push(message.event);
         this.streamTimer ??= setTimeout(() => this.flushStream(), 32);

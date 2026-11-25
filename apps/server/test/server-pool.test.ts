@@ -20,6 +20,8 @@ import { WebSocket } from 'ws';
 import { PROTOCOL_VERSION, serverMessageSchema } from '@cc-desk-tunnel/protocol';
 import type { ServerMessage } from '@cc-desk-tunnel/protocol';
 import { createProxyServer } from '../src/server.ts';
+import { quotas } from '../src/claude.ts';
+import { settingsPath } from '../src/native-settings.ts';
 
 // The deployed CLI adapter runs on Unix; Windows is a desktop client in this architecture.
 const nativeTest = process.platform === 'win32' ? test.skip : test;
@@ -216,6 +218,11 @@ nativeTest(
     const stats = await f.wait((m) => m.type === 'session.stats' && m.sessionId === sessionId);
     assert.ok(stats.type === 'session.stats');
     assert.equal(stats.requests, 2);
+    assert.equal(
+      stats.costUsd,
+      0.2,
+      'cost includes both native account segments, without unrelated sessions',
+    );
     assert.equal(stats.turns, 2);
     assert.equal(stats.outputTokens, 500, 'both accounts count, unrelated sessions do not');
     const nativeId = calls[1].sessionId;
@@ -743,7 +750,8 @@ nativeTest(
       JSON.stringify({
         loggedIn: true,
         email: 'b@example.test',
-        resetsAt: new Date(at).toISOString(),
+        // A new read after reset reports the next window, not the expired one.
+        resetsAt: new Date(at + 5 * 3600_000).toISOString(),
       }),
     );
     await f.wait(
@@ -1617,12 +1625,18 @@ nativeTest(
       .snapshot(b)
       .events.findLast((event) => event.payload.type === 'native.metrics')?.payload;
     const metricsB = latestB?.type === 'native.metrics' ? latestB : null;
+    assert.equal(metricsA?.rateLimits, undefined, 'quota is no longer saved with session context');
+    assert.equal(metricsB?.rateLimits, undefined);
     assert.equal(
-      metricsA?.rateLimits?.windows.find((w) => w.name === 'five_hour')?.utilization,
+      quotas
+        .current(Date.now(), settingsPath(f.config))
+        .rateLimits?.windows.find((w) => w.name === 'five_hour')?.utilization,
       33,
     );
     assert.equal(
-      metricsB?.rateLimits?.windows.find((w) => w.name === 'five_hour')?.utilization,
+      quotas
+        .current(Date.now(), settingsPath(join(f.dir, 'accounts', f.id, 'config')))
+        .rateLimits?.windows.find((w) => w.name === 'five_hour')?.utilization,
       78,
     );
     assert.equal(metricsA?.context?.percentage, 20);
@@ -2268,5 +2282,38 @@ nativeTest(
         message.event.payload.type === 'run.status' &&
         message.event.payload.status === 'cancelled',
     );
+  },
+);
+
+nativeTest(
+  'account-level quota broadcasts preserve the default and isolated pool accounts separately',
+  async (t) => {
+    const f = await fixture(t, 'none');
+    const at = Date.now();
+    const window = (utilization: number) => [
+      { name: 'five_hour', utilization, resetsAt: new Date(at + 3600000).toISOString() },
+    ];
+    f.messages.length = 0;
+    quotas.observeTerminal(window(78), at, settingsPath(f.config));
+    quotas.observeTerminal(window(21), at, settingsPath(join(f.dir, 'accounts', f.id, 'config')));
+    const primary = await f.wait(
+      (message) => message.type === 'quota' && message.accountId === 'default',
+    );
+    const secondary = await f.wait(
+      (message) => message.type === 'quota' && message.accountId === f.id,
+    );
+    assert.ok(primary.type === 'quota' && secondary.type === 'quota');
+    assert.equal(primary.rateLimits?.windows[0].utilization, 78);
+    assert.equal(secondary.rateLimits?.windows[0].utilization, 21);
+    await f.request({ type: 'pool.status' });
+    const state = await f.wait(
+      (message) =>
+        message.type === 'pool.state' &&
+        message.accounts.find((account) => account.id === 'default')?.limits?.windows[0]
+          .utilization === 78 &&
+        message.accounts.find((account) => account.id === f.id)?.limits?.windows[0].utilization ===
+          21,
+    );
+    assert.equal(state.type, 'pool.state');
   },
 );

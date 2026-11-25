@@ -255,6 +255,14 @@ export const serverPoolStateSchema = z.object({
 export type ServerPoolSettings = z.infer<typeof serverPoolSettingsSchema>;
 export type ServerPoolAccount = z.infer<typeof serverPoolAccountSchema>;
 export type ServerPoolState = z.infer<typeof serverPoolStateSchema>;
+// The plan quota of the account the service runs Claude Code under, as the service holds it (see `Quotas`): the
+// account's, not a session's. `error` says why the service's last read of it failed; the reading kept says how old it is.
+export const accountQuotaSchema = z.object({
+  rateLimits: rateLimitsSchema.nullable(),
+  error: z.string().optional(),
+  accountId: poolAccountIdSchema.optional(),
+});
+export type AccountQuota = z.infer<typeof accountQuotaSchema>;
 const usageTotals = {
   requests: z.number().int().nonnegative(),
   inputTokens: z.number().nonnegative(),
@@ -419,10 +427,11 @@ export const eventPayloadSchema = z.discriminatedUnion('type', [
     type: z.literal('native.metrics'),
     context: contextUsageSchema.nullable(),
     usage: nativeUsageSchema.nullable(),
-    rateLimits: rateLimitsSchema.nullable(),
     // How long the prompt cache the turn wrote lasts, as its requests were billed; only on a turn's end, and only when
     // it wrote one.
     cacheTtl: z.enum(['5m', '1h']).optional(),
+    // Legacy session metrics and internal account probes; new services publish quota separately.
+    rateLimits: rateLimitsSchema.nullable().optional(),
     errors: z.object({ context: z.string().optional(), usage: z.string().optional() }).optional(),
   }),
   z.object({ type: z.literal('native.title'), title: z.string().min(1).max(120) }),
@@ -1257,6 +1266,7 @@ const readyMessageSchema = z.object({
   sessions: z.array(sessionSchema),
   projects: z.array(projectSchema).default([]),
   features: z.array(z.string()).optional(),
+  quota: accountQuotaSchema.optional(),
   historyId: id.optional(),
   files: z
     .object({ server: z.boolean(), dataDir: z.string(), home: z.string(), protected: z.boolean() })
@@ -1307,6 +1317,8 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('session.updated'), session: sessionSchema }),
   z.object({ type: z.literal('session.deleted'), sessionId: id }),
+  // The plan quota as the service now holds it, sent to every connection whenever it changes.
+  z.object({ type: z.literal('quota'), ...accountQuotaSchema.shape }),
   z.object({ type: z.literal('session.event'), event: eventSchema }),
   z.object({
     type: z.literal('session.fragment'),
@@ -1347,6 +1359,8 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
     modelMs: z.number().nonnegative(),
     ttftMs: z.number().nonnegative().nullable(),
     outputPerSecond: z.number().nonnegative().nullable(),
+    // The official CLI's API-price estimate, not a subscription bill.
+    costUsd: z.number().nonnegative().optional(),
     // The oldest record the call log holds at all. The log is pruned, so a session older than this is counted from here.
     firstRecordAt: timestamp.nullable(),
   }),

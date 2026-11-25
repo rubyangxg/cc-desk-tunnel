@@ -721,8 +721,8 @@ export function usePoolRotation(options: {
 
   useEffect(() => {
     if (!state.features.includes('account-pool'))
-      pool.observe(id, state.metrics?.rateLimits ?? null);
-  }, [state.metrics?.rateLimits, state.features, id, pool.observe]);
+      pool.observe(id, state.quota?.rateLimits ?? state.metrics?.rateLimits ?? null);
+  }, [state.quota, state.metrics?.rateLimits, state.features, id, pool.observe]);
 
   useEffect(() => {
     const handoff = profiles.handoff;
